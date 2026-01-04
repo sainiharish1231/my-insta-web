@@ -1,23 +1,9 @@
 "use client"
 import { useRouter } from "next/navigation"
 import { useEffect, useState, useCallback } from "react"
-import {
-  Instagram,
-  Youtube,
-  Upload,
-  LogOut,
-  BarChart2,
-  MessageCircle,
-  Settings,
-  Plus,
-  ChevronDown,
-  Check,
-  Users,
-  X,
-  Clock,
-  FolderOpen,
-} from "lucide-react"
+import { Instagram, Youtube, Upload, LogOut, BarChart2, MessageCircle, Settings, Plus, ChevronDown, Check, Users, X, Clock, FolderOpen, Scissors } from "lucide-react"
 import { getMediaList, getMediaInsights } from "@/src/lib/meta"
+import { VideoSplitterView } from "@/components/video-splitter-view" // added VideoSplitterView import
 
 interface InstagramProfile {
   username: string
@@ -72,6 +58,7 @@ export default function Dashboard() {
   const [loadingInsights, setLoadingInsights] = useState(false)
   const [scheduledPosts, setScheduledPosts] = useState<any[]>([])
   const [showScheduled, setShowScheduled] = useState(false)
+  const [showVideoSplitter, setShowVideoSplitter] = useState(false) // added state for splitter
 
   const loadInstagramAccounts = useCallback(async (token: string) => {
     try {
@@ -298,6 +285,27 @@ export default function Dashboard() {
 
   const handleAddAccount = () => {
     router.push("/")
+  }
+
+  const handleAddSplitSegmentsToQueue = (segments: any[]) => {
+    const segmentsData = segments.map((segment) => ({
+      id: segment.id,
+      title: segment.title,
+      startTime: segment.startTime,
+      endTime: segment.endTime,
+      duration: segment.duration,
+      blobUrl: URL.createObjectURL(segment.blob!),
+      fileName: `${segment.title.replace(/[^a-zA-Z0-9]/g, "_")}.webm`,
+      size: segment.blob!.size,
+    }))
+
+    sessionStorage.setItem("pending_video_segments", JSON.stringify(segmentsData))
+    
+    // Navigate to bulk upload page
+    router.push("/bulk-upload?source=splitter")
+    
+    // Close the splitter modal
+    setShowVideoSplitter(false)
   }
 
   const navigateToUpload = (type: string) => {
@@ -547,9 +555,9 @@ export default function Dashboard() {
                     <div className="p-3 border-t border-white/10">
                       <button
                         onClick={handleAddAccount}
-                        className="w-full flex items-center justify-center gap-2 p-3 bg-white/5 hover:bg-white/10 rounded-xl transition-colors text-white/70 hover:text-white"
+                        className="w-full flex items-center justify-center gap-2 p-3 bg-white/5 hover:bg-white/10 rounded-xl text-sm text-white/70 hover:text-white transition-colors border border-white/10"
                       >
-                        <Plus className="w-5 h-5" />
+                        <Plus className="w-4 h-4" />
                         <span className="font-medium">Add Another Account</span>
                       </button>
                     </div>
@@ -654,7 +662,7 @@ export default function Dashboard() {
         </div>
 
         {/* Quick Actions */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
           <button
             onClick={() => navigateToUpload("post")}
             className="p-6 bg-gradient-to-br from-purple-500/20 to-pink-500/20 hover:from-purple-500/30 hover:to-pink-500/30 border border-purple-500/30 rounded-2xl transition-all group"
@@ -683,6 +691,15 @@ export default function Dashboard() {
           </button>
 
           <button
+            onClick={() => setShowVideoSplitter(true)}
+            className="p-6 bg-gradient-to-br from-rose-500/20 to-orange-500/20 hover:from-rose-500/30 hover:to-orange-500/30 border border-rose-500/30 rounded-2xl transition-all group"
+          >
+            <Scissors className="w-8 h-8 text-rose-400 mb-3 group-hover:scale-110 transition-transform" />
+            <h3 className="font-semibold text-white mb-1">Splitter</h3>
+            <p className="text-xs text-white/50">Split long videos</p>
+          </button>
+
+          <button
             onClick={() => router.push("/bulk-upload")}
             className="p-6 bg-gradient-to-br from-amber-500/20 to-orange-500/20 hover:from-amber-500/30 hover:to-orange-500/30 border border-amber-500/30 rounded-2xl transition-all group"
           >
@@ -691,6 +708,21 @@ export default function Dashboard() {
             <p className="text-xs text-white/50">Auto-post multiple videos</p>
           </button>
         </div>
+
+        {/* Video Splitter Modal/Section */}
+        {showVideoSplitter && (
+          <div className="fixed inset-0 z-[100] bg-slate-950/90 backdrop-blur-sm flex items-center justify-center p-4 md:p-8">
+            <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-6xl max-h-[90vh] overflow-y-auto relative p-6 md:p-10">
+              <button
+                onClick={() => setShowVideoSplitter(false)}
+                className="absolute top-6 right-6 p-2 text-white/40 hover:text-white hover:bg-white/10 rounded-xl transition-all"
+              >
+                <X className="w-6 h-6" />
+              </button>
+              <VideoSplitterView onAddToQueue={handleAddSplitSegmentsToQueue} />
+            </div>
+          </div>
+        )}
 
         {/* Scheduled Posts Section */}
         {scheduledPosts.length > 0 && (

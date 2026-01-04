@@ -34,11 +34,11 @@
 
 Add these to your Vercel project or .env.local file:
 
-```
+\`\`\`
 NEXT_PUBLIC_GOOGLE_CLIENT_ID=your_client_id_here
 GOOGLE_CLIENT_SECRET=your_client_secret_here
 NEXT_PUBLIC_APP_URL=http://localhost:3000 (or your production URL)
-```
+\`\`\`
 
 ## Step 4: Test YouTube Login
 
