@@ -1,7 +1,7 @@
-"use client"
-import { useEffect, useState } from "react"
-import { useRouter } from "next/navigation"
-import { generateCodeVerifier, generateCodeChallenge } from "@/src/lib/pkce"
+"use client";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { generateCodeVerifier, generateCodeChallenge } from "@/lib/pkce";
 import {
   Instagram,
   Youtube,
@@ -14,89 +14,103 @@ import {
   Globe,
   Crown,
   CheckCircle,
-} from "lucide-react"
+} from "lucide-react";
 
 export default function LoginPage() {
-  const router = useRouter()
-  const [isLoading, setIsLoading] = useState<"instagram" | "youtube" | null>(null)
-  const [showAddAccountMessage, setShowAddAccountMessage] = useState(false)
+  const router = useRouter();
+  const [isLoading, setIsLoading] = useState<"instagram" | "youtube" | null>(
+    null
+  );
+  const [showAddAccountMessage, setShowAddAccountMessage] = useState(false);
 
   useEffect(() => {
-    const token = localStorage.getItem("fb_access_token")
-    const igUserId = localStorage.getItem("ig_user_id")
-    const ytAccounts = localStorage.getItem("youtube_accounts")
+    const token = localStorage.getItem("fb_access_token");
+    const igUserId = localStorage.getItem("ig_user_id");
+    const ytAccounts = localStorage.getItem("youtube_accounts");
 
-    const hasAccounts = (token && igUserId) || (ytAccounts && JSON.parse(ytAccounts).length > 0)
+    const hasAccounts =
+      (token && igUserId) || (ytAccounts && JSON.parse(ytAccounts).length > 0);
 
     if (hasAccounts) {
-      setShowAddAccountMessage(true)
+      setShowAddAccountMessage(true);
     }
-  }, [router])
+  }, [router]);
 
   const loginInstagram = async () => {
-    setIsLoading("instagram")
-    const fbAppId = process.env.NEXT_PUBLIC_FACEBOOK_APP_ID
+    setIsLoading("instagram");
+    const fbAppId = process.env.NEXT_PUBLIC_FACEBOOK_APP_ID;
 
     if (!fbAppId) {
-      alert("Facebook App ID not configured. Please add NEXT_PUBLIC_FACEBOOK_APP_ID to environment variables.")
-      setIsLoading(null)
-      return
+      alert(
+        "Facebook App ID not configured. Please add NEXT_PUBLIC_FACEBOOK_APP_ID to environment variables."
+      );
+      setIsLoading(null);
+      return;
     }
 
     try {
-      const codeVerifier = await generateCodeVerifier()
-      const codeChallenge = await generateCodeChallenge(codeVerifier)
-      sessionStorage.setItem("pkce_code_verifier", codeVerifier)
+      const codeVerifier = await generateCodeVerifier();
+      const codeChallenge = await generateCodeChallenge(codeVerifier);
+      sessionStorage.setItem("pkce_code_verifier", codeVerifier);
 
-      const redirectUri = typeof window !== "undefined" ? `${window.location.origin}/auth/callback` : ""
+      const redirectUri =
+        typeof window !== "undefined"
+          ? `${window.location.origin}/auth/callback`
+          : "";
       const scope =
-        "instagram_basic,instagram_content_publish,instagram_manage_comments,instagram_manage_insights,pages_show_list,pages_read_engagement,business_management"
+        "instagram_basic,instagram_content_publish,instagram_manage_comments,instagram_manage_insights,pages_show_list,pages_read_engagement,business_management";
 
       const authUrl = `https://www.facebook.com/v21.0/dialog/oauth?client_id=${fbAppId}&redirect_uri=${encodeURIComponent(
-        redirectUri,
-      )}&scope=${scope}&response_type=code&code_challenge=${codeChallenge}&code_challenge_method=S256`
+        redirectUri
+      )}&scope=${scope}&response_type=code&code_challenge=${codeChallenge}&code_challenge_method=S256`;
 
-      window.location.href = authUrl
+      window.location.href = authUrl;
     } catch (error) {
-      console.error("PKCE generation error:", error)
-      alert("Failed to generate secure authentication. Please try again.")
-      setIsLoading(null)
+      console.error("PKCE generation error:", error);
+      alert("Failed to generate secure authentication. Please try again.");
+      setIsLoading(null);
     }
-  }
+  };
 
   const loginYouTube = async () => {
-    setIsLoading("youtube")
-    const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID
+    setIsLoading("youtube");
+    const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
 
     if (!googleClientId) {
-      alert("Google Client ID not configured. Please add NEXT_PUBLIC_GOOGLE_CLIENT_ID to environment variables.")
-      setIsLoading(null)
-      return
+      alert(
+        "Google Client ID not configured. Please add NEXT_PUBLIC_GOOGLE_CLIENT_ID to environment variables."
+      );
+      setIsLoading(null);
+      return;
     }
 
     try {
-      const redirectUri = typeof window !== "undefined" ? `${window.location.origin}/auth/youtube-callback` : ""
+      const redirectUri =
+        typeof window !== "undefined"
+          ? `${window.location.origin}/auth/youtube-callback`
+          : "";
       const scope = encodeURIComponent(
-        "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/youtube",
-      )
+        "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/youtube"
+      );
 
       const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${googleClientId}&redirect_uri=${encodeURIComponent(
-        redirectUri,
-      )}&response_type=code&scope=${scope}&access_type=offline&prompt=consent`
+        redirectUri
+      )}&response_type=code&scope=${scope}&access_type=offline&prompt=consent`;
 
-      window.location.href = authUrl
+      window.location.href = authUrl;
     } catch (error) {
-      console.error("YouTube auth error:", error)
-      alert("Failed to authenticate with YouTube. Please try again.")
-      setIsLoading(null)
+      console.error("YouTube auth error:", error);
+      alert("Failed to authenticate with YouTube. Please try again.");
+      setIsLoading(null);
     }
-  }
+  };
 
   const features = [
     {
       icon: Users,
       title: "Multi-Account Management",
-      description: "Manage unlimited Instagram & YouTube accounts from one dashboard",
+      description:
+        "Manage unlimited Instagram & YouTube accounts from one dashboard",
     },
     {
       icon: Upload,
@@ -113,13 +127,13 @@ export default function LoginPage() {
       title: "Secure & Private",
       description: "Enterprise-grade security with OAuth 2.0 authentication",
     },
-  ]
+  ];
 
   const stats = [
     { value: "10M+", label: "Posts Published" },
     { value: "50K+", label: "Active Users" },
     { value: "99.9%", label: "Uptime" },
-  ]
+  ];
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950">
@@ -171,7 +185,9 @@ export default function LoginPage() {
                 <>
                   <div className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-500/10 backdrop-blur-sm rounded-full border border-emerald-500/30 mb-6">
                     <CheckCircle className="w-4 h-4 text-emerald-400" />
-                    <span className="text-sm text-emerald-400">Add More Accounts</span>
+                    <span className="text-sm text-emerald-400">
+                      Add More Accounts
+                    </span>
                   </div>
                   <h1 className="text-4xl md:text-5xl font-bold text-white leading-tight mb-4">
                     Connect Another
@@ -180,14 +196,17 @@ export default function LoginPage() {
                     </span>
                   </h1>
                   <p className="text-lg text-white/50 max-w-2xl mx-auto">
-                    Manage multiple accounts from one dashboard. Connect Instagram and YouTube accounts to get started.
+                    Manage multiple accounts from one dashboard. Connect
+                    Instagram and YouTube accounts to get started.
                   </p>
                 </>
               ) : (
                 <>
                   <div className="inline-flex items-center gap-2 px-4 py-2 bg-white/5 backdrop-blur-sm rounded-full border border-white/10 mb-6">
                     <Sparkles className="w-4 h-4 text-amber-400" />
-                    <span className="text-sm text-white/80">Trusted by 50,000+ creators worldwide</span>
+                    <span className="text-sm text-white/80">
+                      Trusted by 50,000+ creators worldwide
+                    </span>
                   </div>
                   <h1 className="text-4xl md:text-6xl lg:text-7xl font-bold text-white leading-tight mb-6">
                     Manage All Your
@@ -196,8 +215,8 @@ export default function LoginPage() {
                     </span>
                   </h1>
                   <p className="text-lg md:text-xl text-white/50 max-w-2xl mx-auto">
-                    One powerful platform to manage Instagram, YouTube, and more. Post, analyze, and grow across all
-                    platforms.
+                    One powerful platform to manage Instagram, YouTube, and
+                    more. Post, analyze, and grow across all platforms.
                   </p>
                 </>
               )}
@@ -226,13 +245,25 @@ export default function LoginPage() {
                       <Instagram className="w-8 h-8 text-white" />
                     </div>
                     <div className="flex-1">
-                      <h3 className="text-xl font-bold text-white mb-1">Instagram Business</h3>
-                      <p className="text-sm text-white/50 mb-4">Connect your Instagram Business or Creator accounts</p>
+                      <h3 className="text-xl font-bold text-white mb-1">
+                        Instagram Business
+                      </h3>
+                      <p className="text-sm text-white/50 mb-4">
+                        Connect your Instagram Business or Creator accounts
+                      </p>
                       <div className="flex flex-wrap gap-2 mb-4">
-                        <span className="px-2 py-1 text-xs bg-white/10 text-white/70 rounded-md">Posts & Reels</span>
-                        <span className="px-2 py-1 text-xs bg-white/10 text-white/70 rounded-md">Analytics</span>
-                        <span className="px-2 py-1 text-xs bg-white/10 text-white/70 rounded-md">Comments</span>
-                        <span className="px-2 py-1 text-xs bg-white/10 text-white/70 rounded-md">Multi-Account</span>
+                        <span className="px-2 py-1 text-xs bg-white/10 text-white/70 rounded-md">
+                          Posts & Reels
+                        </span>
+                        <span className="px-2 py-1 text-xs bg-white/10 text-white/70 rounded-md">
+                          Analytics
+                        </span>
+                        <span className="px-2 py-1 text-xs bg-white/10 text-white/70 rounded-md">
+                          Comments
+                        </span>
+                        <span className="px-2 py-1 text-xs bg-white/10 text-white/70 rounded-md">
+                          Multi-Account
+                        </span>
                       </div>
                       <button
                         onClick={loginInstagram}
@@ -259,13 +290,25 @@ export default function LoginPage() {
                       <Youtube className="w-8 h-8 text-white" />
                     </div>
                     <div className="flex-1">
-                      <h3 className="text-xl font-bold text-white mb-1">YouTube Channel</h3>
-                      <p className="text-sm text-white/50 mb-4">Connect your YouTube channels for video management</p>
+                      <h3 className="text-xl font-bold text-white mb-1">
+                        YouTube Channel
+                      </h3>
+                      <p className="text-sm text-white/50 mb-4">
+                        Connect your YouTube channels for video management
+                      </p>
                       <div className="flex flex-wrap gap-2 mb-4">
-                        <span className="px-2 py-1 text-xs bg-white/10 text-white/70 rounded-md">Video Upload</span>
-                        <span className="px-2 py-1 text-xs bg-white/10 text-white/70 rounded-md">Shorts</span>
-                        <span className="px-2 py-1 text-xs bg-white/10 text-white/70 rounded-md">Analytics</span>
-                        <span className="px-2 py-1 text-xs bg-white/10 text-white/70 rounded-md">Multi-Channel</span>
+                        <span className="px-2 py-1 text-xs bg-white/10 text-white/70 rounded-md">
+                          Video Upload
+                        </span>
+                        <span className="px-2 py-1 text-xs bg-white/10 text-white/70 rounded-md">
+                          Shorts
+                        </span>
+                        <span className="px-2 py-1 text-xs bg-white/10 text-white/70 rounded-md">
+                          Analytics
+                        </span>
+                        <span className="px-2 py-1 text-xs bg-white/10 text-white/70 rounded-md">
+                          Multi-Channel
+                        </span>
                       </div>
                       <button
                         onClick={loginYouTube}
@@ -286,8 +329,8 @@ export default function LoginPage() {
                 </div>
 
                 <p className="text-center text-xs text-white/30 px-4">
-                  By connecting, you agree to our Terms of Service. We only request permissions needed for posting and
-                  analytics.
+                  By connecting, you agree to our Terms of Service. We only
+                  request permissions needed for posting and analytics.
                 </p>
               </div>
 
@@ -302,8 +345,12 @@ export default function LoginPage() {
                       <feature.icon className="w-6 h-6 text-pink-400" />
                     </div>
                     <div>
-                      <h3 className="font-semibold text-white mb-1">{feature.title}</h3>
-                      <p className="text-sm text-white/50">{feature.description}</p>
+                      <h3 className="font-semibold text-white mb-1">
+                        {feature.title}
+                      </h3>
+                      <p className="text-sm text-white/50">
+                        {feature.description}
+                      </p>
                     </div>
                     <CheckCircle className="w-5 h-5 text-emerald-400 ml-auto flex-shrink-0" />
                   </div>
@@ -313,7 +360,9 @@ export default function LoginPage() {
                 <div className="p-5 bg-gradient-to-br from-amber-500/10 to-orange-500/10 rounded-xl border border-amber-500/20">
                   <div className="flex items-center gap-3 mb-3">
                     <Crown className="w-6 h-6 text-amber-400" />
-                    <h3 className="font-bold text-white">Pro Features Included</h3>
+                    <h3 className="font-bold text-white">
+                      Pro Features Included
+                    </h3>
                   </div>
                   <ul className="space-y-2">
                     <li className="flex items-center gap-2 text-sm text-white/70">
@@ -338,15 +387,21 @@ export default function LoginPage() {
         {/* Footer */}
         <footer className="px-6 py-6 border-t border-white/5">
           <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
-            <p className="text-white/30 text-sm">2024 SocialHub Pro. Professional social media management.</p>
+            <p className="text-white/30 text-sm">
+              2024 SocialHub Pro. Professional social media management.
+            </p>
             <div className="flex items-center gap-6 text-sm text-white/30">
-              <span className="hover:text-white/50 cursor-pointer">Privacy</span>
+              <span className="hover:text-white/50 cursor-pointer">
+                Privacy
+              </span>
               <span className="hover:text-white/50 cursor-pointer">Terms</span>
-              <span className="hover:text-white/50 cursor-pointer">Support</span>
+              <span className="hover:text-white/50 cursor-pointer">
+                Support
+              </span>
             </div>
           </div>
         </footer>
       </div>
     </div>
-  )
+  );
 }

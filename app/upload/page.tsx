@@ -1,9 +1,9 @@
-"use client"
-import { useState, useEffect, useRef } from "react"
-import type React from "react"
+"use client";
+import { useState, useEffect, useRef } from "react";
+import type React from "react";
 
-import { useRouter, useSearchParams } from "next/navigation"
-import { createMedia, publishMedia, uploadMediaToBlob } from "@/src/lib/meta"
+import { useRouter, useSearchParams } from "next/navigation";
+import { createMedia, publishMedia, uploadMediaToBlob } from "@/lib/meta";
 import {
   ArrowLeft,
   Upload,
@@ -19,63 +19,71 @@ import {
   Clock,
   MapPin,
   Sparkles,
-} from "lucide-react"
-import { HashtagPicker } from "@/components/hashtag-picker"
+} from "lucide-react";
+import { HashtagPicker } from "@/components/hashtag-picker";
 
 interface SelectedAccount {
-  id: string
-  username: string
-  profile_picture_url?: string
-  platform: "instagram" | "youtube"
-  status: "pending" | "uploading" | "success" | "error"
-  error?: string
-  token?: string
+  id: string;
+  username: string;
+  profile_picture_url?: string;
+  platform: "instagram" | "youtube";
+  status: "pending" | "uploading" | "success" | "error";
+  error?: string;
+  token?: string;
 }
 
 interface AvailableAccount {
-  id: string
-  username: string
-  profile_picture_url?: string
-  platform: "instagram" | "youtube"
-  token?: string
-  followers_count?: number
-  subscriberCount?: string
+  id: string;
+  username: string;
+  profile_picture_url?: string;
+  platform: "instagram" | "youtube";
+  token?: string;
+  followers_count?: number;
+  subscriberCount?: string;
 }
 
-type ContentType = "POST" | "REEL" | "VIDEO" | "SHORT"
+type ContentType = "POST" | "REEL" | "VIDEO" | "SHORT";
 
 export default function UploadPage() {
-  const router = useRouter()
-  const searchParams = useSearchParams()
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const [caption, setCaption] = useState("")
-  const [title, setTitle] = useState("")
-  const [keywords, setKeywords] = useState("")
-  const [mediaUrl, setMediaUrl] = useState("")
-  const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [filePreview, setFilePreview] = useState<string>("")
-  const [contentType, setContentType] = useState<ContentType>("POST")
-  const [isLoading, setIsLoading] = useState(false)
-  const [error, setError] = useState("")
-  const [progress, setProgress] = useState<string>("")
-  const [selectedAccounts, setSelectedAccounts] = useState<SelectedAccount[]>([])
-  const [availableAccounts, setAvailableAccounts] = useState<AvailableAccount[]>([])
-  const [showAccountSelector, setShowAccountSelector] = useState(false)
-  const [uploadedFileUrl, setUploadedFileUrl] = useState<string>("")
-  const [scheduleType, setScheduleType] = useState<"now" | "schedule">("now")
-  const [scheduleDate, setScheduleDate] = useState("")
-  const [scheduleTime, setScheduleTime] = useState("")
-  const [selectedHashtags, setSelectedHashtags] = useState<string[]>([])
-  const [showHashtagPicker, setShowHashtagPicker] = useState(false)
-  const [location, setLocation] = useState("")
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [caption, setCaption] = useState("");
+  const [title, setTitle] = useState("");
+  const [keywords, setKeywords] = useState("");
+  const [mediaUrl, setMediaUrl] = useState("");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [filePreview, setFilePreview] = useState<string>("");
+  const [contentType, setContentType] = useState<ContentType>("POST");
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [progress, setProgress] = useState<string>("");
+  const [selectedAccounts, setSelectedAccounts] = useState<SelectedAccount[]>(
+    []
+  );
+  const [availableAccounts, setAvailableAccounts] = useState<
+    AvailableAccount[]
+  >([]);
+  const [showAccountSelector, setShowAccountSelector] = useState(false);
+  const [uploadedFileUrl, setUploadedFileUrl] = useState<string>("");
+  const [scheduleType, setScheduleType] = useState<"now" | "schedule">("now");
+  const [scheduleDate, setScheduleDate] = useState("");
+  const [scheduleTime, setScheduleTime] = useState("");
+  const [selectedHashtags, setSelectedHashtags] = useState<string[]>([]);
+  const [showHashtagPicker, setShowHashtagPicker] = useState(false);
+  const [location, setLocation] = useState("");
 
   useEffect(() => {
-    const igAccountsStored = JSON.parse(localStorage.getItem("ig_accounts") || "[]")
-    const ytAccountsStored = JSON.parse(localStorage.getItem("youtube_accounts") || "[]")
+    const igAccountsStored = JSON.parse(
+      localStorage.getItem("ig_accounts") || "[]"
+    );
+    const ytAccountsStored = JSON.parse(
+      localStorage.getItem("youtube_accounts") || "[]"
+    );
 
     if (igAccountsStored.length === 0 && ytAccountsStored.length === 0) {
-      router.push("/")
-      return
+      router.push("/");
+      return;
     }
 
     const allAvailable: AvailableAccount[] = [
@@ -95,25 +103,25 @@ export default function UploadPage() {
         token: acc.accessToken,
         subscriberCount: acc.subscriberCount,
       })),
-    ]
-    setAvailableAccounts(allAvailable)
+    ];
+    setAvailableAccounts(allAvailable);
 
     setSelectedAccounts(
       allAvailable.map((acc) => ({
         ...acc,
         status: "pending" as const,
-      })),
-    )
-  }, [router])
+      }))
+    );
+  }, [router]);
 
   const toggleAccountSelection = (accountId: string) => {
-    const account = availableAccounts.find((acc) => acc.id === accountId)
-    if (!account) return
+    const account = availableAccounts.find((acc) => acc.id === accountId);
+    if (!account) return;
 
     setSelectedAccounts((prev) => {
-      const isSelected = prev.some((acc) => acc.id === accountId)
+      const isSelected = prev.some((acc) => acc.id === accountId);
       if (isSelected) {
-        return prev.filter((acc) => acc.id !== accountId)
+        return prev.filter((acc) => acc.id !== accountId);
       } else {
         return [
           ...prev,
@@ -121,61 +129,73 @@ export default function UploadPage() {
             ...account,
             status: "pending" as const,
           },
-        ]
+        ];
       }
-    })
-  }
+    });
+  };
 
   const removeAccount = (accountId: string) => {
-    setSelectedAccounts((prev) => prev.filter((acc) => acc.id !== accountId))
-  }
+    setSelectedAccounts((prev) => prev.filter((acc) => acc.id !== accountId));
+  };
 
   const handleSubmit = async () => {
     if (selectedAccounts.length === 0) {
-      setError("Please select at least one account")
-      return
+      setError("Please select at least one account");
+      return;
     }
 
     if (scheduleType === "schedule") {
       if (!scheduleDate || !scheduleTime) {
-        setError("Please select a date and time for scheduling")
-        return
+        setError("Please select a date and time for scheduling");
+        return;
       }
-      const scheduledDateTime = new Date(`${scheduleDate}T${scheduleTime}`)
+      const scheduledDateTime = new Date(`${scheduleDate}T${scheduleTime}`);
       if (scheduledDateTime <= new Date()) {
-        setError("Scheduled time must be in the future")
-        return
+        setError("Scheduled time must be in the future");
+        return;
       }
     }
 
-    setIsLoading(true)
-    setError("")
+    setIsLoading(true);
+    setError("");
 
     try {
-      const ytAccountsStored = JSON.parse(localStorage.getItem("youtube_accounts") || "[]")
+      const ytAccountsStored = JSON.parse(
+        localStorage.getItem("youtube_accounts") || "[]"
+      );
 
-      let finalMediaUrl = mediaUrl
+      let finalMediaUrl = mediaUrl;
 
       if (selectedFile && !uploadedFileUrl) {
-        setProgress("Uploading file...")
-        finalMediaUrl = await uploadMediaToBlob(selectedFile)
-        setUploadedFileUrl(finalMediaUrl)
+        setProgress("Uploading file...");
+        finalMediaUrl = await uploadMediaToBlob(selectedFile);
+        setUploadedFileUrl(finalMediaUrl);
 
-        if (finalMediaUrl.includes("localhost") || finalMediaUrl.includes("127.0.0.1")) {
-          throw new Error("Local URLs won't work! Please deploy your app first.")
+        if (
+          finalMediaUrl.includes("localhost") ||
+          finalMediaUrl.includes("127.0.0.1")
+        ) {
+          throw new Error(
+            "Local URLs won't work! Please deploy your app first."
+          );
         }
       } else if (uploadedFileUrl) {
-        finalMediaUrl = uploadedFileUrl
+        finalMediaUrl = uploadedFileUrl;
       } else if (!mediaUrl) {
-        throw new Error("Please provide a media URL or select a file")
+        throw new Error("Please provide a media URL or select a file");
       }
 
-      const finalCaption = selectedHashtags.length > 0 ? `${caption}\n\n${selectedHashtags.join(" ")}` : caption
+      const finalCaption =
+        selectedHashtags.length > 0
+          ? `${caption}\n\n${selectedHashtags.join(" ")}`
+          : caption;
 
       if (scheduleType === "schedule") {
-        const scheduledDateTime = new Date(`${scheduleDate}T${scheduleTime}`)
+        const scheduledDateTime = new Date(`${scheduleDate}T${scheduleTime}`);
 
-        const scheduledPosts = JSON.parse(localStorage.getItem("scheduled_posts") || "[]")
+        const scheduledPosts = JSON.parse(
+          localStorage.getItem("scheduled_posts") || "[]"
+        );
         scheduledPosts.push({
           id: Date.now().toString(),
           mediaUrl: finalMediaUrl,
@@ -192,28 +212,34 @@ export default function UploadPage() {
           })),
           scheduledFor: scheduledDateTime.toISOString(),
           status: "scheduled",
-        })
-        localStorage.setItem("scheduled_posts", JSON.stringify(scheduledPosts))
+        });
+        localStorage.setItem("scheduled_posts", JSON.stringify(scheduledPosts));
 
-        setProgress("Post scheduled successfully!")
+        setProgress("Post scheduled successfully!");
         setTimeout(() => {
-          router.push("/dashboard")
-        }, 2000)
-        return
+          router.push("/dashboard");
+        }, 2000);
+        return;
       }
 
       for (let i = 0; i < selectedAccounts.length; i++) {
-        const account = selectedAccounts[i]
+        const account = selectedAccounts[i];
 
-        setSelectedAccounts((prev) => prev.map((a) => (a.id === account.id ? { ...a, status: "uploading" } : a)))
+        setSelectedAccounts((prev) =>
+          prev.map((a) =>
+            a.id === account.id ? { ...a, status: "uploading" } : a
+          )
+        );
 
         setProgress(
-          `Publishing to ${account.platform === "youtube" ? "" : "@"}${account.username} (${i + 1}/${selectedAccounts.length})...`,
-        )
+          `Publishing to ${account.platform === "youtube" ? "" : "@"}${
+            account.username
+          } (${i + 1}/${selectedAccounts.length})...`
+        );
 
         try {
           if (account.platform === "instagram" && account.token) {
-            const isReel = contentType === "REEL"
+            const isReel = contentType === "REEL";
             const creationId = await createMedia({
               igUserId: account.id,
               token: account.token,
@@ -221,17 +247,21 @@ export default function UploadPage() {
               caption: finalCaption,
               isReel,
               locationId: location || undefined,
-            })
+            });
 
             await publishMedia({
               igUserId: account.id,
               token: account.token,
               creationId,
-            })
+            });
           } else if (account.platform === "youtube") {
-            const ytAccount = ytAccountsStored.find((a: any) => a.id === account.id)
+            const ytAccount = ytAccountsStored.find(
+              (a: any) => a.id === account.id
+            );
             if (!ytAccount?.accessToken) {
-              throw new Error("YouTube access token not found. Please reconnect your YouTube account.")
+              throw new Error(
+                "YouTube access token not found. Please reconnect your YouTube account."
+              );
             }
 
             const uploadResponse = await fetch("/api/youtube/upload", {
@@ -251,59 +281,67 @@ export default function UploadPage() {
                 privacy: "public",
                 isShort: contentType === "SHORT",
               }),
-            })
+            });
 
             if (!uploadResponse.ok) {
-              const errorData = await uploadResponse.json()
-              throw new Error(errorData.error || "YouTube upload failed")
+              const errorData = await uploadResponse.json();
+              throw new Error(errorData.error || "YouTube upload failed");
             }
 
-            const result = await uploadResponse.json()
-            console.log("[v0] YouTube video uploaded:", result.url)
+            const result = await uploadResponse.json();
+            console.log("[v0] YouTube video uploaded:", result.url);
           }
 
-          setSelectedAccounts((prev) => prev.map((a) => (a.id === account.id ? { ...a, status: "success" } : a)))
+          setSelectedAccounts((prev) =>
+            prev.map((a) =>
+              a.id === account.id ? { ...a, status: "success" } : a
+            )
+          );
         } catch (err: any) {
           setSelectedAccounts((prev) =>
-            prev.map((a) => (a.id === account.id ? { ...a, status: "error", error: err.message } : a)),
-          )
+            prev.map((a) =>
+              a.id === account.id
+                ? { ...a, status: "error", error: err.message }
+                : a
+            )
+          );
         }
       }
 
-      setProgress("Done!")
+      setProgress("Done!");
 
-      const allSuccess = selectedAccounts.every((a) => a.status === "success")
+      const allSuccess = selectedAccounts.every((a) => a.status === "success");
       if (allSuccess) {
         setTimeout(() => {
-          router.push("/dashboard")
-        }, 2000)
+          router.push("/dashboard");
+        }, 2000);
       }
     } catch (err: any) {
-      setError(err.message)
+      setError(err.message);
     } finally {
-      setIsLoading(false)
+      setIsLoading(false);
     }
-  }
+  };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
+    const file = e.target.files?.[0];
     if (file) {
-      setSelectedFile(file)
-      const reader = new FileReader()
+      setSelectedFile(file);
+      const reader = new FileReader();
       reader.onloadend = () => {
-        setFilePreview(reader.result as string)
-      }
-      reader.readAsDataURL(file)
+        setFilePreview(reader.result as string);
+      };
+      reader.readAsDataURL(file);
     }
-  }
+  };
 
   const handleRemoveFile = () => {
-    setSelectedFile(null)
-    setFilePreview("")
+    setSelectedFile(null);
+    setFilePreview("");
     if (fileInputRef.current) {
-      fileInputRef.current.value = ""
+      fileInputRef.current.value = "";
     }
-  }
+  };
 
   return (
     <div className="min-h-screen bg-slate-950">
@@ -319,7 +357,9 @@ export default function UploadPage() {
             </button>
             <div className="flex items-center gap-2">
               <Globe className="w-5 h-5 text-pink-400" />
-              <h1 className="text-xl font-semibold text-white">Create Content</h1>
+              <h1 className="text-xl font-semibold text-white">
+                Create Content
+              </h1>
             </div>
           </div>
         </div>
@@ -333,7 +373,9 @@ export default function UploadPage() {
         )}
 
         <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-6 border border-white/10 mb-6">
-          <h2 className="text-lg font-semibold text-white mb-4">Content Type</h2>
+          <h2 className="text-lg font-semibold text-white mb-4">
+            Content Type
+          </h2>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <button
               onClick={() => setContentType("POST")}
@@ -386,7 +428,9 @@ export default function UploadPage() {
           {/* Left Column - Media Upload */}
           <div className="space-y-6">
             <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
-              <h2 className="text-lg font-semibold text-white mb-4">Media Upload</h2>
+              <h2 className="text-lg font-semibold text-white mb-4">
+                Media Upload
+              </h2>
 
               <div
                 onClick={() => fileInputRef.current?.click()}
@@ -395,7 +439,11 @@ export default function UploadPage() {
                 {filePreview ? (
                   <div className="relative">
                     {selectedFile?.type.startsWith("video/") ? (
-                      <video src={filePreview} className="max-h-64 mx-auto rounded-lg" controls />
+                      <video
+                        src={filePreview}
+                        className="max-h-64 mx-auto rounded-lg"
+                        controls
+                      />
                     ) : (
                       <img
                         src={filePreview || "/placeholder.svg"}
@@ -405,8 +453,8 @@ export default function UploadPage() {
                     )}
                     <button
                       onClick={(e) => {
-                        e.stopPropagation()
-                        handleRemoveFile()
+                        e.stopPropagation();
+                        handleRemoveFile();
                       }}
                       className="absolute top-2 right-2 p-2 bg-red-500 rounded-full hover:bg-red-600 transition-colors"
                     >
@@ -419,7 +467,9 @@ export default function UploadPage() {
                       <Upload className="w-8 h-8 text-white/40" />
                     </div>
                     <div>
-                      <p className="text-white font-medium mb-1">Click to upload</p>
+                      <p className="text-white font-medium mb-1">
+                        Click to upload
+                      </p>
                       <p className="text-sm text-white/40">or drag and drop</p>
                     </div>
                   </div>
@@ -434,7 +484,9 @@ export default function UploadPage() {
               />
 
               <div className="mt-4">
-                <label className="block text-sm font-medium text-white/70 mb-2">Or paste URL</label>
+                <label className="block text-sm font-medium text-white/70 mb-2">
+                  Or paste URL
+                </label>
                 <input
                   type="text"
                   value={mediaUrl}
@@ -446,12 +498,16 @@ export default function UploadPage() {
             </div>
 
             <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
-              <h2 className="text-lg font-semibold text-white mb-4">Content Details</h2>
+              <h2 className="text-lg font-semibold text-white mb-4">
+                Content Details
+              </h2>
 
               {(contentType === "VIDEO" || contentType === "SHORT") && (
                 <>
                   <div className="mb-4">
-                    <label className="block text-sm font-medium text-white/70 mb-2">Title</label>
+                    <label className="block text-sm font-medium text-white/70 mb-2">
+                      Title
+                    </label>
                     <input
                       type="text"
                       value={title}
@@ -460,11 +516,15 @@ export default function UploadPage() {
                       maxLength={100}
                       className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-pink-500"
                     />
-                    <p className="text-xs text-white/40 mt-1">{title.length}/100 characters</p>
+                    <p className="text-xs text-white/40 mt-1">
+                      {title.length}/100 characters
+                    </p>
                   </div>
 
                   <div className="mb-4">
-                    <label className="block text-sm font-medium text-white/70 mb-2">Keywords (comma separated)</label>
+                    <label className="block text-sm font-medium text-white/70 mb-2">
+                      Keywords (comma separated)
+                    </label>
                     <input
                       type="text"
                       value={keywords}
@@ -478,7 +538,9 @@ export default function UploadPage() {
 
               <div className="mb-4">
                 <label className="block text-sm font-medium text-white/70 mb-2">
-                  {contentType === "VIDEO" || contentType === "SHORT" ? "Description" : "Caption"}
+                  {contentType === "VIDEO" || contentType === "SHORT"
+                    ? "Description"
+                    : "Caption"}
                 </label>
                 <textarea
                   value={caption}
@@ -530,7 +592,9 @@ export default function UploadPage() {
             </div>
 
             <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
-              <h2 className="text-lg font-semibold text-white mb-4">Schedule</h2>
+              <h2 className="text-lg font-semibold text-white mb-4">
+                Schedule
+              </h2>
 
               <div className="grid grid-cols-2 gap-3 mb-4">
                 <button
@@ -560,7 +624,9 @@ export default function UploadPage() {
               {scheduleType === "schedule" && (
                 <div className="space-y-3">
                   <div>
-                    <label className="block text-sm font-medium text-white/70 mb-2">Date</label>
+                    <label className="block text-sm font-medium text-white/70 mb-2">
+                      Date
+                    </label>
                     <input
                       type="date"
                       value={scheduleDate}
@@ -570,7 +636,9 @@ export default function UploadPage() {
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-white/70 mb-2">Time</label>
+                    <label className="block text-sm font-medium text-white/70 mb-2">
+                      Time
+                    </label>
                     <input
                       type="time"
                       value={scheduleTime}
@@ -587,7 +655,9 @@ export default function UploadPage() {
           <div className="space-y-6">
             <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-semibold text-white">Selected Accounts ({selectedAccounts.length})</h2>
+                <h2 className="text-lg font-semibold text-white">
+                  Selected Accounts ({selectedAccounts.length})
+                </h2>
                 <button
                   onClick={() => setShowAccountSelector(!showAccountSelector)}
                   className="text-sm text-pink-400 hover:text-pink-300 font-medium"
@@ -598,10 +668,14 @@ export default function UploadPage() {
 
               {showAccountSelector && (
                 <div className="mb-4 p-4 bg-white/5 rounded-xl border border-white/10 max-h-64 overflow-y-auto">
-                  <p className="text-sm text-white/60 mb-3">Select accounts to post to:</p>
+                  <p className="text-sm text-white/60 mb-3">
+                    Select accounts to post to:
+                  </p>
                   <div className="space-y-2">
                     {availableAccounts.map((account) => {
-                      const isSelected = selectedAccounts.some((acc) => acc.id === account.id)
+                      const isSelected = selectedAccounts.some(
+                        (acc) => acc.id === account.id
+                      );
                       return (
                         <button
                           key={account.id}
@@ -635,23 +709,34 @@ export default function UploadPage() {
                           </div>
                           <div className="flex-1 text-left">
                             <p className="font-medium text-white text-sm">
-                              {account.platform === "instagram" ? `@${account.username}` : account.username}
+                              {account.platform === "instagram"
+                                ? `@${account.username}`
+                                : account.username}
                             </p>
                             <p className="text-xs text-white/40">
                               {account.platform === "instagram"
-                                ? `${account.followers_count?.toLocaleString() || 0} followers`
-                                : `${Number.parseInt(account.subscriberCount || "0").toLocaleString()} subscribers`}
+                                ? `${
+                                    account.followers_count?.toLocaleString() ||
+                                    0
+                                  } followers`
+                                : `${Number.parseInt(
+                                    account.subscriberCount || "0"
+                                  ).toLocaleString()} subscribers`}
                             </p>
                           </div>
                           <div
                             className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-colors ${
-                              isSelected ? "bg-pink-500 border-pink-500" : "border-white/30"
+                              isSelected
+                                ? "bg-pink-500 border-pink-500"
+                                : "border-white/30"
                             }`}
                           >
-                            {isSelected && <Check className="w-4 h-4 text-white" />}
+                            {isSelected && (
+                              <Check className="w-4 h-4 text-white" />
+                            )}
                           </div>
                         </button>
-                      )
+                      );
                     })}
                   </div>
                 </div>
@@ -665,7 +750,10 @@ export default function UploadPage() {
                   >
                     <div className="relative flex-shrink-0">
                       <img
-                        src={account.profile_picture_url || "/placeholder.svg?height=40&width=40&query=user avatar"}
+                        src={
+                          account.profile_picture_url ||
+                          "/placeholder.svg?height=40&width=40&query=user avatar"
+                        }
                         alt={account.username}
                         className="w-10 h-10 rounded-full object-cover"
                       />
@@ -685,9 +773,13 @@ export default function UploadPage() {
                     </div>
                     <div className="flex-1">
                       <p className="font-medium text-white text-sm">
-                        {account.platform === "instagram" ? `@${account.username}` : account.username}
+                        {account.platform === "instagram"
+                          ? `@${account.username}`
+                          : account.username}
                       </p>
-                      {account.status === "error" && <p className="text-xs text-red-400">{account.error}</p>}
+                      {account.status === "error" && (
+                        <p className="text-xs text-red-400">{account.error}</p>
+                      )}
                     </div>
                     <div className="flex items-center gap-2">
                       {!isLoading && (
@@ -702,9 +794,15 @@ export default function UploadPage() {
                       {account.status === "pending" && (
                         <div className="w-6 h-6 rounded-full border-2 border-white/30" />
                       )}
-                      {account.status === "uploading" && <Loader2 className="w-6 h-6 text-pink-400 animate-spin" />}
-                      {account.status === "success" && <CheckCircle className="w-6 h-6 text-emerald-400" />}
-                      {account.status === "error" && <XCircle className="w-6 h-6 text-red-400" />}
+                      {account.status === "uploading" && (
+                        <Loader2 className="w-6 h-6 text-pink-400 animate-spin" />
+                      )}
+                      {account.status === "success" && (
+                        <CheckCircle className="w-6 h-6 text-emerald-400" />
+                      )}
+                      {account.status === "error" && (
+                        <XCircle className="w-6 h-6 text-red-400" />
+                      )}
                     </div>
                   </div>
                 ))}
@@ -723,12 +821,16 @@ export default function UploadPage() {
                   <span>{progress || "Publishing..."}</span>
                 </>
               ) : (
-                <span>{scheduleType === "schedule" ? "Schedule Post" : "Publish Now"}</span>
+                <span>
+                  {scheduleType === "schedule"
+                    ? "Schedule Post"
+                    : "Publish Now"}
+                </span>
               )}
             </button>
           </div>
         </div>
       </main>
     </div>
-  )
+  );
 }

@@ -1,106 +1,128 @@
-"use client"
-import { useRouter } from "next/navigation"
-import { useEffect, useState, useCallback } from "react"
-import { Instagram, Youtube, Upload, LogOut, BarChart2, MessageCircle, Settings, Plus, ChevronDown, Check, Users, X, Clock, FolderOpen, Scissors } from "lucide-react"
-import { getMediaList, getMediaInsights } from "@/src/lib/meta"
-import { VideoSplitterView } from "@/components/video-splitter-view" // added VideoSplitterView import
+"use client";
+import { useRouter } from "next/navigation";
+import { useEffect, useState, useCallback } from "react";
+import {
+  Instagram,
+  Youtube,
+  Upload,
+  LogOut,
+  BarChart2,
+  MessageCircle,
+  Settings,
+  Plus,
+  ChevronDown,
+  Check,
+  Users,
+  X,
+  Clock,
+  FolderOpen,
+  Scissors,
+} from "lucide-react";
+import { getMediaList, getMediaInsights } from "@/lib/meta";
+import { VideoSplitterView } from "@/components/video-splitter-view"; // added VideoSplitterView import
 
 interface InstagramProfile {
-  username: string
-  followers_count?: number
-  follows_count?: number
-  media_count?: number
-  profile_picture_url?: string
+  username: string;
+  followers_count?: number;
+  follows_count?: number;
+  media_count?: number;
+  profile_picture_url?: string;
 }
 
 interface InstagramAccount {
-  id: string
-  username: string
-  profile_picture_url?: string
-  followers_count?: number
-  platform: "instagram"
+  id: string;
+  username: string;
+  profile_picture_url?: string;
+  followers_count?: number;
+  platform: "instagram";
 }
 
 interface YouTubeAccount {
-  id: string
-  name: string
-  thumbnail?: string
-  subscriberCount?: string
-  accessToken: string
-  refreshToken: string
-  platform: "youtube"
+  id: string;
+  name: string;
+  thumbnail?: string;
+  subscriberCount?: string;
+  accessToken: string;
+  refreshToken: string;
+  platform: "youtube";
 }
 
-type SocialAccount = InstagramAccount | YouTubeAccount
+type SocialAccount = InstagramAccount | YouTubeAccount;
 
 interface MediaInsights {
-  totalLikes: number
-  totalViews: number
-  totalReach: number
-  engagementRate: number
+  totalLikes: number;
+  totalViews: number;
+  totalReach: number;
+  engagementRate: number;
 }
 
 export default function Dashboard() {
-  const router = useRouter()
-  const [profile, setProfile] = useState<InstagramProfile | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [instagramAccounts, setInstagramAccounts] = useState<InstagramAccount[]>([])
-  const [youtubeAccounts, setYoutubeAccounts] = useState<YouTubeAccount[]>([])
-  const [selectedAccounts, setSelectedAccounts] = useState<string[]>([])
-  const [accountDropdownOpen, setAccountDropdownOpen] = useState(false)
-  const [activeTab, setActiveTab] = useState<"all" | "instagram" | "youtube">("all")
+  const router = useRouter();
+  const [profile, setProfile] = useState<InstagramProfile | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [instagramAccounts, setInstagramAccounts] = useState<
+    InstagramAccount[]
+  >([]);
+  const [youtubeAccounts, setYoutubeAccounts] = useState<YouTubeAccount[]>([]);
+  const [selectedAccounts, setSelectedAccounts] = useState<string[]>([]);
+  const [accountDropdownOpen, setAccountDropdownOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<"all" | "instagram" | "youtube">(
+    "all"
+  );
   const [insights, setInsights] = useState<MediaInsights>({
     totalLikes: 0,
     totalViews: 0,
     totalReach: 0,
     engagementRate: 0,
-  })
-  const [loadingInsights, setLoadingInsights] = useState(false)
-  const [scheduledPosts, setScheduledPosts] = useState<any[]>([])
-  const [showScheduled, setShowScheduled] = useState(false)
-  const [showVideoSplitter, setShowVideoSplitter] = useState(false) // added state for splitter
+  });
+  const [loadingInsights, setLoadingInsights] = useState(false);
+  const [scheduledPosts, setScheduledPosts] = useState<any[]>([]);
+  const [showScheduled, setShowScheduled] = useState(false);
+  const [showVideoSplitter, setShowVideoSplitter] = useState(false); // added state for splitter
 
   const loadInstagramAccounts = useCallback(async (token: string) => {
     try {
-      const storedAccounts = localStorage.getItem("ig_accounts")
+      const storedAccounts = localStorage.getItem("ig_accounts");
 
       if (storedAccounts) {
         // New multi-account format
         const accounts = JSON.parse(storedAccounts).map((a: any) => ({
           ...a,
           platform: "instagram" as const,
-        }))
-        setInstagramAccounts(accounts)
+        }));
+        setInstagramAccounts(accounts);
 
         // Select first account by default if none selected
         if (accounts.length > 0) {
-          const storedId = localStorage.getItem("ig_user_id")
+          const storedId = localStorage.getItem("ig_user_id");
           if (storedId && accounts.some((a: any) => a.id === storedId)) {
-            setSelectedAccounts((prev) => [...new Set([...prev, storedId])])
+            setSelectedAccounts((prev) => [...new Set([...prev, storedId])]);
           } else {
-            setSelectedAccounts((prev) => [...new Set([...prev, accounts[0].id])])
-            localStorage.setItem("ig_user_id", accounts[0].id)
+            setSelectedAccounts((prev) => [
+              ...new Set([...prev, accounts[0].id]),
+            ]);
+            localStorage.setItem("ig_user_id", accounts[0].id);
           }
         }
-        return
+        return;
       }
 
       // Fallback: old single-account format - fetch from API
       const res = await fetch(
-        `https://graph.facebook.com/v21.0/me/accounts?fields=instagram_business_account&access_token=${token}`,
-      )
-      const data = await res.json()
+        `https://graph.facebook.com/v21.0/me/accounts?fields=instagram_business_account&access_token=${token}`
+      );
+      const data = await res.json();
 
       if (data.data) {
-        const igAccounts: InstagramAccount[] = []
+        const igAccounts: InstagramAccount[] = [];
 
         for (const page of data.data) {
           if (page.instagram_business_account) {
-            const igId = page.instagram_business_account.id
+            const igId = page.instagram_business_account.id;
             const profileRes = await fetch(
-              `https://graph.facebook.com/v21.0/${igId}?fields=username,profile_picture_url,followers_count&access_token=${token}`,
-            )
-            const profileData = await profileRes.json()
+              `https://graph.facebook.com/v21.0/${igId}?fields=username,profile_picture_url,followers_count&access_token=${token}`
+            );
+            const profileData = await profileRes.json();
 
             if (profileData.username) {
               igAccounts.push({
@@ -109,183 +131,198 @@ export default function Dashboard() {
                 profile_picture_url: profileData.profile_picture_url,
                 followers_count: profileData.followers_count,
                 platform: "instagram",
-              })
+              });
             }
           }
         }
 
-        setInstagramAccounts(igAccounts)
+        setInstagramAccounts(igAccounts);
 
-        const storedId = localStorage.getItem("ig_user_id")
+        const storedId = localStorage.getItem("ig_user_id");
         if (storedId && igAccounts.some((a) => a.id === storedId)) {
-          setSelectedAccounts((prev) => [...new Set([...prev, storedId])])
+          setSelectedAccounts((prev) => [...new Set([...prev, storedId])]);
         } else if (igAccounts.length > 0) {
-          setSelectedAccounts((prev) => [...new Set([...prev, igAccounts[0].id])])
-          localStorage.setItem("ig_user_id", igAccounts[0].id)
+          setSelectedAccounts((prev) => [
+            ...new Set([...prev, igAccounts[0].id]),
+          ]);
+          localStorage.setItem("ig_user_id", igAccounts[0].id);
         }
       }
     } catch (err) {
-      console.error("[v0] Error loading Instagram accounts:", err)
+      console.error("[v0] Error loading Instagram accounts:", err);
     }
-  }, [])
+  }, []);
 
   const loadYouTubeAccounts = useCallback(() => {
-    const stored = localStorage.getItem("youtube_accounts")
+    const stored = localStorage.getItem("youtube_accounts");
     if (stored) {
       const accounts = JSON.parse(stored).map((a: any) => ({
         ...a,
         platform: "youtube",
-      }))
-      setYoutubeAccounts(accounts)
+      }));
+      setYoutubeAccounts(accounts);
     }
-  }, [])
+  }, []);
 
   const loadProfile = useCallback(async (token: string, igUserId: string) => {
     try {
-      const storedAccounts = localStorage.getItem("ig_accounts")
-      let accountToken = token
+      const storedAccounts = localStorage.getItem("ig_accounts");
+      let accountToken = token;
 
       if (storedAccounts) {
-        const accounts = JSON.parse(storedAccounts)
-        const account = accounts.find((a: any) => a.id === igUserId)
+        const accounts = JSON.parse(storedAccounts);
+        const account = accounts.find((a: any) => a.id === igUserId);
         if (account && account.token) {
-          accountToken = account.token
+          accountToken = account.token;
         }
       }
 
       const res = await fetch(
-        `https://graph.facebook.com/v21.0/${igUserId}?fields=username,followers_count,follows_count,media_count,profile_picture_url&access_token=${accountToken}`,
-      )
-      const data = await res.json()
+        `https://graph.facebook.com/v21.0/${igUserId}?fields=username,followers_count,follows_count,media_count,profile_picture_url&access_token=${accountToken}`
+      );
+      const data = await res.json();
 
       if (data.username) {
-        setProfile(data)
+        setProfile(data);
       }
-      setLoading(false)
+      setLoading(false);
     } catch (err) {
-      console.error("[v0] Error fetching profile:", err)
-      setLoading(false)
+      console.error("[v0] Error fetching profile:", err);
+      setLoading(false);
     }
-  }, [])
+  }, []);
 
   const loadInsights = useCallback(
     async (token: string, igUserId: string) => {
-      setLoadingInsights(true)
+      setLoadingInsights(true);
       try {
-        const storedAccounts = localStorage.getItem("ig_accounts")
-        let accountToken = token
+        const storedAccounts = localStorage.getItem("ig_accounts");
+        let accountToken = token;
 
         if (storedAccounts) {
-          const accounts = JSON.parse(storedAccounts)
-          const account = accounts.find((a: any) => a.id === igUserId)
+          const accounts = JSON.parse(storedAccounts);
+          const account = accounts.find((a: any) => a.id === igUserId);
           if (account && account.token) {
-            accountToken = account.token
+            accountToken = account.token;
           }
         }
 
-        const mediaList = await getMediaList(igUserId, accountToken)
+        const mediaList = await getMediaList(igUserId, accountToken);
 
-        let totalLikes = 0
-        let totalViews = 0
-        let totalReach = 0
-        let mediaWithInsights = 0
+        let totalLikes = 0;
+        let totalViews = 0;
+        let totalReach = 0;
+        let mediaWithInsights = 0;
 
-        const recentMedia = mediaList.slice(0, 10)
+        const recentMedia = mediaList.slice(0, 10);
 
         for (const media of recentMedia) {
           try {
-            const mediaInsights = await getMediaInsights(media.id, accountToken, media.media_type)
+            const mediaInsights = await getMediaInsights(
+              media.id,
+              accountToken,
+              media.media_type
+            );
             if (mediaInsights && mediaInsights.engagement !== "N/A") {
-              totalLikes += Number(mediaInsights.engagement) || 0
-              totalViews += Number(mediaInsights.views) || 0
-              totalReach += Number(mediaInsights.reach) || 0
-              mediaWithInsights++
+              totalLikes += Number(mediaInsights.engagement) || 0;
+              totalViews += Number(mediaInsights.views) || 0;
+              totalReach += Number(mediaInsights.reach) || 0;
+              mediaWithInsights++;
             }
           } catch (e) {
-            console.log("Could not get insights for media:", media.id)
+            console.log("Could not get insights for media:", media.id);
           }
         }
 
-        const followers = profile?.followers_count || 1
-        const engagementRate = mediaWithInsights > 0 ? (totalLikes / mediaWithInsights / followers) * 100 : 0
+        const followers = profile?.followers_count || 1;
+        const engagementRate =
+          mediaWithInsights > 0
+            ? (totalLikes / mediaWithInsights / followers) * 100
+            : 0;
 
         setInsights({
           totalLikes,
           totalViews,
           totalReach,
           engagementRate: Math.round(engagementRate * 100) / 100,
-        })
+        });
       } catch (err) {
-        console.error("[v0] Error loading insights:", err)
+        console.error("[v0] Error loading insights:", err);
       } finally {
-        setLoadingInsights(false)
+        setLoadingInsights(false);
       }
     },
-    [profile?.followers_count],
-  )
+    [profile?.followers_count]
+  );
 
   useEffect(() => {
-    const token = localStorage.getItem("fb_access_token")
-    const igUserId = localStorage.getItem("ig_user_id")
+    const token = localStorage.getItem("fb_access_token");
+    const igUserId = localStorage.getItem("ig_user_id");
 
-    loadYouTubeAccounts()
+    loadYouTubeAccounts();
 
     if (token && igUserId) {
-      loadProfile(token, igUserId)
-      loadInstagramAccounts(token)
+      loadProfile(token, igUserId);
+      loadInstagramAccounts(token);
     } else {
       // Check if we have YouTube accounts
-      const ytAccounts = localStorage.getItem("youtube_accounts")
+      const ytAccounts = localStorage.getItem("youtube_accounts");
       if (ytAccounts && JSON.parse(ytAccounts).length > 0) {
-        setLoading(false)
+        setLoading(false);
       } else {
-        router.push("/")
+        router.push("/");
       }
     }
 
     const loadScheduledPosts = () => {
-      const posts = JSON.parse(localStorage.getItem("scheduled_posts") || "[]")
-      const futurePosts = posts.filter((p: any) => new Date(p.scheduledFor) > new Date())
-      setScheduledPosts(futurePosts)
-    }
-    loadScheduledPosts()
-  }, [router, loadProfile, loadInstagramAccounts, loadYouTubeAccounts])
+      const posts = JSON.parse(localStorage.getItem("scheduled_posts") || "[]");
+      const futurePosts = posts.filter(
+        (p: any) => new Date(p.scheduledFor) > new Date()
+      );
+      setScheduledPosts(futurePosts);
+    };
+    loadScheduledPosts();
+  }, [router, loadProfile, loadInstagramAccounts, loadYouTubeAccounts]);
 
   const handleDeleteScheduledPost = (postId: string) => {
-    const posts = JSON.parse(localStorage.getItem("scheduled_posts") || "[]")
-    const updated = posts.filter((p: any) => p.id !== postId)
-    localStorage.setItem("scheduled_posts", JSON.stringify(updated))
-    setScheduledPosts(updated.filter((p: any) => new Date(p.scheduledFor) > new Date()))
-  }
+    const posts = JSON.parse(localStorage.getItem("scheduled_posts") || "[]");
+    const updated = posts.filter((p: any) => p.id !== postId);
+    localStorage.setItem("scheduled_posts", JSON.stringify(updated));
+    setScheduledPosts(
+      updated.filter((p: any) => new Date(p.scheduledFor) > new Date())
+    );
+  };
 
   const toggleAccountSelection = (accountId: string) => {
     setSelectedAccounts((prev) => {
       if (prev.includes(accountId)) {
-        if (prev.length === 1) return prev
-        return prev.filter((id) => id !== accountId)
+        if (prev.length === 1) return prev;
+        return prev.filter((id) => id !== accountId);
       } else {
-        return [...prev, accountId]
+        return [...prev, accountId];
       }
-    })
-  }
+    });
+  };
 
   const selectAllAccounts = () => {
-    setSelectedAccounts([...instagramAccounts, ...youtubeAccounts].map((a) => a.id))
-  }
+    setSelectedAccounts(
+      [...instagramAccounts, ...youtubeAccounts].map((a) => a.id)
+    );
+  };
 
   const handleLogout = () => {
-    localStorage.removeItem("fb_access_token")
-    localStorage.removeItem("ig_user_id")
-    localStorage.removeItem("fb_page_id")
-    localStorage.removeItem("ig_accounts")
-    localStorage.removeItem("youtube_accounts")
-    localStorage.removeItem("selected_accounts")
-    router.push("/")
-  }
+    localStorage.removeItem("fb_access_token");
+    localStorage.removeItem("ig_user_id");
+    localStorage.removeItem("fb_page_id");
+    localStorage.removeItem("ig_accounts");
+    localStorage.removeItem("youtube_accounts");
+    localStorage.removeItem("selected_accounts");
+    router.push("/");
+  };
 
   const handleAddAccount = () => {
-    router.push("/")
-  }
+    router.push("/");
+  };
 
   const handleAddSplitSegmentsToQueue = (segments: any[]) => {
     const segmentsData = segments.map((segment) => ({
@@ -297,69 +334,88 @@ export default function Dashboard() {
       blobUrl: URL.createObjectURL(segment.blob!),
       fileName: `${segment.title.replace(/[^a-zA-Z0-9]/g, "_")}.webm`,
       size: segment.blob!.size,
-    }))
+    }));
 
-    sessionStorage.setItem("pending_video_segments", JSON.stringify(segmentsData))
-    
+    sessionStorage.setItem(
+      "pending_video_segments",
+      JSON.stringify(segmentsData)
+    );
+
     // Navigate to bulk upload page
-    router.push("/bulk-upload?source=splitter")
-    
+    router.push("/bulk-upload?source=splitter");
+
     // Close the splitter modal
-    setShowVideoSplitter(false)
-  }
+    setShowVideoSplitter(false);
+  };
 
   const navigateToUpload = (type: string) => {
-    localStorage.setItem("selected_accounts", JSON.stringify(selectedAccounts))
+    localStorage.setItem("selected_accounts", JSON.stringify(selectedAccounts));
     localStorage.setItem(
       "selected_platforms",
       JSON.stringify(
         selectedAccounts
           .map((id) => {
-            const ig = instagramAccounts.find((a) => a.id === id)
-            const yt = youtubeAccounts.find((a) => a.id === id)
-            return ig ? "instagram" : yt ? "youtube" : null
+            const ig = instagramAccounts.find((a) => a.id === id);
+            const yt = youtubeAccounts.find((a) => a.id === id);
+            return ig ? "instagram" : yt ? "youtube" : null;
           })
-          .filter(Boolean),
-      ),
-    )
-    router.push(`/upload?type=${type}`)
-  }
+          .filter(Boolean)
+      )
+    );
+    router.push(`/upload?type=${type}`);
+  };
 
-  const selectedIGCount = selectedAccounts.filter((id) => instagramAccounts.some((a) => a.id === id)).length
+  const selectedIGCount = selectedAccounts.filter((id) =>
+    instagramAccounts.some((a) => a.id === id)
+  ).length;
 
-  const selectedYTCount = selectedAccounts.filter((id) => youtubeAccounts.some((a) => a.id === id)).length
+  const selectedYTCount = selectedAccounts.filter((id) =>
+    youtubeAccounts.some((a) => a.id === id)
+  ).length;
 
-  const handleRemoveAccount = (accountId: string, platform: "instagram" | "youtube") => {
+  const handleRemoveAccount = (
+    accountId: string,
+    platform: "instagram" | "youtube"
+  ) => {
     if (platform === "instagram") {
-      const accounts = JSON.parse(localStorage.getItem("ig_accounts") || "[]")
-      const updatedAccounts = accounts.filter((a: any) => a.id !== accountId)
+      const accounts = JSON.parse(localStorage.getItem("ig_accounts") || "[]");
+      const updatedAccounts = accounts.filter((a: any) => a.id !== accountId);
 
       if (updatedAccounts.length > 0) {
-        localStorage.setItem("ig_accounts", JSON.stringify(updatedAccounts))
-        setInstagramAccounts(updatedAccounts.map((a: any) => ({ ...a, platform: "instagram" })))
+        localStorage.setItem("ig_accounts", JSON.stringify(updatedAccounts));
+        setInstagramAccounts(
+          updatedAccounts.map((a: any) => ({ ...a, platform: "instagram" }))
+        );
       } else {
-        localStorage.removeItem("ig_accounts")
-        localStorage.removeItem("fb_access_token")
-        localStorage.removeItem("ig_user_id")
-        localStorage.removeItem("fb_page_id")
-        setInstagramAccounts([])
+        localStorage.removeItem("ig_accounts");
+        localStorage.removeItem("fb_access_token");
+        localStorage.removeItem("ig_user_id");
+        localStorage.removeItem("fb_page_id");
+        setInstagramAccounts([]);
       }
     } else {
-      const accounts = JSON.parse(localStorage.getItem("youtube_accounts") || "[]")
-      const updatedAccounts = accounts.filter((a: any) => a.id !== accountId)
+      const accounts = JSON.parse(
+        localStorage.getItem("youtube_accounts") || "[]"
+      );
+      const updatedAccounts = accounts.filter((a: any) => a.id !== accountId);
 
       if (updatedAccounts.length > 0) {
-        localStorage.setItem("youtube_accounts", JSON.stringify(updatedAccounts))
-        setYoutubeAccounts(updatedAccounts.map((a: any) => ({ ...a, platform: "youtube" })))
+        localStorage.setItem(
+          "youtube_accounts",
+          JSON.stringify(updatedAccounts)
+        );
+        setYoutubeAccounts(
+          updatedAccounts.map((a: any) => ({ ...a, platform: "youtube" }))
+        );
       } else {
-        localStorage.removeItem("youtube_accounts")
-        setYoutubeAccounts([])
+        localStorage.removeItem("youtube_accounts");
+        setYoutubeAccounts([]);
       }
     }
 
     // Remove from selected accounts
-    setSelectedAccounts((prev) => prev.filter((id) => id !== accountId))
-  }
+    setSelectedAccounts((prev) => prev.filter((id) => id !== accountId));
+  };
 
   if (loading) {
     return (
@@ -369,11 +425,17 @@ export default function Dashboard() {
           <p className="text-white/60">Loading your dashboard...</p>
         </div>
       </div>
-    )
+    );
   }
 
-  const allAccounts: SocialAccount[] = [...instagramAccounts, ...youtubeAccounts]
-  const filteredAccounts = activeTab === "all" ? allAccounts : allAccounts.filter((a) => a.platform === activeTab)
+  const allAccounts: SocialAccount[] = [
+    ...instagramAccounts,
+    ...youtubeAccounts,
+  ];
+  const filteredAccounts =
+    activeTab === "all"
+      ? allAccounts
+      : allAccounts.filter((a) => a.platform === activeTab);
 
   return (
     <div className="min-h-screen bg-slate-950">
@@ -406,20 +468,30 @@ export default function Dashboard() {
                 >
                   <div className="flex -space-x-2">
                     {selectedAccounts.slice(0, 3).map((accountId) => {
-                      const igAccount = instagramAccounts.find((a) => a.id === accountId)
-                      const ytAccount = youtubeAccounts.find((a) => a.id === accountId)
-                      const account = igAccount || ytAccount
-                      const imgUrl = igAccount?.profile_picture_url || ytAccount?.thumbnail
+                      const igAccount = instagramAccounts.find(
+                        (a) => a.id === accountId
+                      );
+                      const ytAccount = youtubeAccounts.find(
+                        (a) => a.id === accountId
+                      );
+                      const account = igAccount || ytAccount;
+                      const imgUrl =
+                        igAccount?.profile_picture_url || ytAccount?.thumbnail;
                       return (
                         <div key={accountId} className="relative">
                           <img
-                            src={imgUrl || "/placeholder.svg?height=32&width=32&query=user avatar"}
+                            src={
+                              imgUrl ||
+                              "/placeholder.svg?height=32&width=32&query=user avatar"
+                            }
                             alt={igAccount?.username || ytAccount?.name}
                             className="w-8 h-8 rounded-full border-2 border-slate-900 object-cover"
                           />
                           <div
                             className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-slate-900 flex items-center justify-center ${
-                              igAccount ? "bg-gradient-to-br from-purple-500 to-pink-500" : "bg-red-500"
+                              igAccount
+                                ? "bg-gradient-to-br from-purple-500 to-pink-500"
+                                : "bg-red-500"
                             }`}
                           >
                             {igAccount ? (
@@ -429,7 +501,7 @@ export default function Dashboard() {
                             )}
                           </div>
                         </div>
-                      )
+                      );
                     })}
                     {selectedAccounts.length > 3 && (
                       <div className="w-8 h-8 rounded-full border-2 border-slate-900 bg-slate-700 flex items-center justify-center text-xs font-medium text-white">
@@ -448,7 +520,9 @@ export default function Dashboard() {
                   <div className="absolute right-0 mt-2 w-96 bg-slate-900 rounded-2xl shadow-2xl border border-white/10 overflow-hidden z-50">
                     <div className="p-4 border-b border-white/10">
                       <div className="flex items-center justify-between mb-3">
-                        <h3 className="font-semibold text-white">Select Accounts</h3>
+                        <h3 className="font-semibold text-white">
+                          Select Accounts
+                        </h3>
                         <button
                           onClick={selectAllAccounts}
                           className="text-sm text-pink-400 hover:text-pink-300 font-medium"
@@ -461,7 +535,9 @@ export default function Dashboard() {
                         <button
                           onClick={() => setActiveTab("all")}
                           className={`px-3 py-1.5 text-sm rounded-lg transition-colors ${
-                            activeTab === "all" ? "bg-white/10 text-white" : "text-white/50 hover:text-white"
+                            activeTab === "all"
+                              ? "bg-white/10 text-white"
+                              : "text-white/50 hover:text-white"
                           }`}
                         >
                           All ({allAccounts.length})
@@ -492,9 +568,9 @@ export default function Dashboard() {
                     </div>
                     <div className="max-h-72 overflow-y-auto">
                       {filteredAccounts.map((account) => {
-                        const isIG = account.platform === "instagram"
-                        const igAcc = account as InstagramAccount
-                        const ytAcc = account as YouTubeAccount
+                        const isIG = account.platform === "instagram";
+                        const igAcc = account as InstagramAccount;
+                        const ytAcc = account as YouTubeAccount;
                         return (
                           <button
                             key={account.id}
@@ -507,14 +583,17 @@ export default function Dashboard() {
                                   isIG
                                     ? igAcc.profile_picture_url ||
                                       "/placeholder.svg?height=40&width=40&query=user avatar"
-                                    : ytAcc.thumbnail || "/placeholder.svg?height=40&width=40&query=youtube channel"
+                                    : ytAcc.thumbnail ||
+                                      "/placeholder.svg?height=40&width=40&query=youtube channel"
                                 }
                                 alt={isIG ? igAcc.username : ytAcc.name}
                                 className="w-10 h-10 rounded-full object-cover"
                               />
                               <div
                                 className={`absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full border-2 border-slate-900 flex items-center justify-center ${
-                                  isIG ? "bg-gradient-to-br from-purple-500 to-pink-500" : "bg-red-500"
+                                  isIG
+                                    ? "bg-gradient-to-br from-purple-500 to-pink-500"
+                                    : "bg-red-500"
                                 }`}
                               >
                                 {isIG ? (
@@ -525,11 +604,18 @@ export default function Dashboard() {
                               </div>
                             </div>
                             <div className="flex-1 text-left">
-                              <p className="font-medium text-white">{isIG ? `@${igAcc.username}` : ytAcc.name}</p>
+                              <p className="font-medium text-white">
+                                {isIG ? `@${igAcc.username}` : ytAcc.name}
+                              </p>
                               <p className="text-xs text-white/50">
                                 {isIG
-                                  ? `${igAcc.followers_count?.toLocaleString() || 0} followers`
-                                  : `${Number.parseInt(ytAcc.subscriberCount || "0").toLocaleString()} subscribers`}
+                                  ? `${
+                                      igAcc.followers_count?.toLocaleString() ||
+                                      0
+                                    } followers`
+                                  : `${Number.parseInt(
+                                      ytAcc.subscriberCount || "0"
+                                    ).toLocaleString()} subscribers`}
                               </p>
                             </div>
                             <div
@@ -539,15 +625,20 @@ export default function Dashboard() {
                                   : "border-white/30"
                               }`}
                             >
-                              {selectedAccounts.includes(account.id) && <Check className="w-4 h-4 text-white" />}
+                              {selectedAccounts.includes(account.id) && (
+                                <Check className="w-4 h-4 text-white" />
+                              )}
                             </div>
                           </button>
-                        )
+                        );
                       })}
                       {filteredAccounts.length === 0 && (
                         <div className="p-6 text-center text-white/50">
                           <Users className="w-8 h-8 mx-auto mb-2 text-white/30" />
-                          <p>No {activeTab === "all" ? "" : activeTab} accounts found</p>
+                          <p>
+                            No {activeTab === "all" ? "" : activeTab} accounts
+                            found
+                          </p>
                         </div>
                       )}
                     </div>
@@ -582,7 +673,12 @@ export default function Dashboard() {
       </header>
 
       {/* Click outside to close dropdown */}
-      {accountDropdownOpen && <div className="fixed inset-0 z-40" onClick={() => setAccountDropdownOpen(false)} />}
+      {accountDropdownOpen && (
+        <div
+          className="fixed inset-0 z-40"
+          onClick={() => setAccountDropdownOpen(false)}
+        />
+      )}
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
         {/* Welcome Banner */}
@@ -593,7 +689,8 @@ export default function Dashboard() {
                 Welcome back{profile ? `, @${profile.username}` : ""}!
               </h1>
               <p className="text-white/50">
-                Manage your social media presence across {allAccounts.length} connected account
+                Manage your social media presence across {allAccounts.length}{" "}
+                connected account
                 {allAccounts.length !== 1 ? "s" : ""}
               </p>
             </div>
@@ -601,13 +698,17 @@ export default function Dashboard() {
               {selectedIGCount > 0 && (
                 <div className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-purple-500/20 to-pink-500/20 rounded-xl border border-pink-500/30">
                   <Instagram className="w-4 h-4 text-pink-400" />
-                  <span className="text-sm font-medium text-pink-400">{selectedIGCount} Instagram</span>
+                  <span className="text-sm font-medium text-pink-400">
+                    {selectedIGCount} Instagram
+                  </span>
                 </div>
               )}
               {selectedYTCount > 0 && (
                 <div className="flex items-center gap-2 px-3 py-2 bg-red-500/20 rounded-xl border border-red-500/30">
                   <Youtube className="w-4 h-4 text-red-400" />
-                  <span className="text-sm font-medium text-red-400">{selectedYTCount} YouTube</span>
+                  <span className="text-sm font-medium text-red-400">
+                    {selectedYTCount} YouTube
+                  </span>
                 </div>
               )}
             </div>
@@ -623,8 +724,12 @@ export default function Dashboard() {
               </div>
               <span className="text-sm text-white/50">Total Engagement</span>
             </div>
-            <p className="text-2xl font-bold text-white">{insights.totalLikes.toLocaleString()}</p>
-            <p className="text-xs text-emerald-400 mt-1">+12.5% from last week</p>
+            <p className="text-2xl font-bold text-white">
+              {insights.totalLikes.toLocaleString()}
+            </p>
+            <p className="text-xs text-emerald-400 mt-1">
+              +12.5% from last week
+            </p>
           </div>
 
           <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-5 border border-white/10">
@@ -634,8 +739,12 @@ export default function Dashboard() {
               </div>
               <span className="text-sm text-white/50">Total Views</span>
             </div>
-            <p className="text-2xl font-bold text-white">{insights.totalViews.toLocaleString()}</p>
-            <p className="text-xs text-emerald-400 mt-1">+8.2% from last week</p>
+            <p className="text-2xl font-bold text-white">
+              {insights.totalViews.toLocaleString()}
+            </p>
+            <p className="text-xs text-emerald-400 mt-1">
+              +8.2% from last week
+            </p>
           </div>
 
           <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-5 border border-white/10">
@@ -645,8 +754,12 @@ export default function Dashboard() {
               </div>
               <span className="text-sm text-white/50">Total Reach</span>
             </div>
-            <p className="text-2xl font-bold text-white">{insights.totalReach.toLocaleString()}</p>
-            <p className="text-xs text-emerald-400 mt-1">+15.3% from last week</p>
+            <p className="text-2xl font-bold text-white">
+              {insights.totalReach.toLocaleString()}
+            </p>
+            <p className="text-xs text-emerald-400 mt-1">
+              +15.3% from last week
+            </p>
           </div>
 
           <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-5 border border-white/10">
@@ -656,7 +769,9 @@ export default function Dashboard() {
               </div>
               <span className="text-sm text-white/50">Engagement Rate</span>
             </div>
-            <p className="text-2xl font-bold text-white">{insights.engagementRate}%</p>
+            <p className="text-2xl font-bold text-white">
+              {insights.engagementRate}%
+            </p>
             <p className="text-xs text-emerald-400 mt-1">Above average</p>
           </div>
         </div>
@@ -729,7 +844,9 @@ export default function Dashboard() {
           <div className="mb-8">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
-                <h2 className="text-lg font-semibold text-white">Scheduled Posts</h2>
+                <h2 className="text-lg font-semibold text-white">
+                  Scheduled Posts
+                </h2>
                 <span className="px-2 py-1 bg-pink-500/20 text-pink-400 text-xs font-medium rounded-full">
                   {scheduledPosts.length}
                 </span>
@@ -751,12 +868,19 @@ export default function Dashboard() {
                   >
                     <div className="flex items-start justify-between mb-3">
                       <div className="flex items-center gap-2">
-                        {post.contentType === "POST" && <Instagram className="w-4 h-4 text-pink-400" />}
-                        {post.contentType === "REEL" && <Instagram className="w-4 h-4 text-purple-400" />}
-                        {(post.contentType === "VIDEO" || post.contentType === "SHORT") && (
+                        {post.contentType === "POST" && (
+                          <Instagram className="w-4 h-4 text-pink-400" />
+                        )}
+                        {post.contentType === "REEL" && (
+                          <Instagram className="w-4 h-4 text-purple-400" />
+                        )}
+                        {(post.contentType === "VIDEO" ||
+                          post.contentType === "SHORT") && (
                           <Youtube className="w-4 h-4 text-red-400" />
                         )}
-                        <span className="text-xs font-medium text-white/60">{post.contentType}</span>
+                        <span className="text-xs font-medium text-white/60">
+                          {post.contentType}
+                        </span>
                       </div>
                       <button
                         onClick={() => handleDeleteScheduledPost(post.id)}
@@ -766,11 +890,15 @@ export default function Dashboard() {
                       </button>
                     </div>
 
-                    <p className="text-white text-sm mb-2 line-clamp-2">{post.title || post.caption || "No caption"}</p>
+                    <p className="text-white text-sm mb-2 line-clamp-2">
+                      {post.title || post.caption || "No caption"}
+                    </p>
 
                     <div className="flex items-center gap-2 mb-3">
                       <Clock className="w-3 h-3 text-white/40" />
-                      <span className="text-xs text-white/50">{new Date(post.scheduledFor).toLocaleString()}</span>
+                      <span className="text-xs text-white/50">
+                        {new Date(post.scheduledFor).toLocaleString()}
+                      </span>
                     </div>
 
                     <div className="flex items-center gap-2">
@@ -789,7 +917,9 @@ export default function Dashboard() {
                         ))}
                       </div>
                       {post.accounts.length > 3 && (
-                        <span className="text-xs text-white/40">+{post.accounts.length - 3}</span>
+                        <span className="text-xs text-white/40">
+                          +{post.accounts.length - 3}
+                        </span>
                       )}
                     </div>
                   </div>
@@ -802,7 +932,9 @@ export default function Dashboard() {
         {/* Connected Accounts Overview */}
         <div>
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold text-white">Connected Accounts</h2>
+            <h2 className="text-lg font-semibold text-white">
+              Connected Accounts
+            </h2>
             <button
               onClick={handleAddAccount}
               className="flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 rounded-xl text-sm text-white/70 hover:text-white transition-colors border border-white/10"
@@ -820,7 +952,10 @@ export default function Dashboard() {
                 <div className="flex items-center gap-4 mb-4">
                   <div className="relative">
                     <img
-                      src={account.profile_picture_url || "/placeholder.svg?height=56&width=56&query=user avatar"}
+                      src={
+                        account.profile_picture_url ||
+                        "/placeholder.svg?height=56&width=56&query=user avatar"
+                      }
                       alt={account.username}
                       className="w-14 h-14 rounded-full object-cover"
                     />
@@ -829,7 +964,9 @@ export default function Dashboard() {
                     </div>
                   </div>
                   <div className="flex-1">
-                    <p className="font-semibold text-white">@{account.username}</p>
+                    <p className="font-semibold text-white">
+                      @{account.username}
+                    </p>
                     <p className="text-sm text-white/50">Instagram Business</p>
                   </div>
                   <button
@@ -842,7 +979,9 @@ export default function Dashboard() {
                 </div>
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-white/40">Followers</span>
-                  <span className="font-semibold text-white">{account.followers_count?.toLocaleString() || 0}</span>
+                  <span className="font-semibold text-white">
+                    {account.followers_count?.toLocaleString() || 0}
+                  </span>
                 </div>
               </div>
             ))}
@@ -854,7 +993,10 @@ export default function Dashboard() {
                 <div className="flex items-center gap-4 mb-4">
                   <div className="relative">
                     <img
-                      src={account.thumbnail || "/placeholder.svg?height=56&width=56&query=youtube channel"}
+                      src={
+                        account.thumbnail ||
+                        "/placeholder.svg?height=56&width=56&query=youtube channel"
+                      }
                       alt={account.name}
                       className="w-14 h-14 rounded-full object-cover"
                     />
@@ -877,7 +1019,9 @@ export default function Dashboard() {
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-white/40">Subscribers</span>
                   <span className="font-semibold text-white">
-                    {Number.parseInt(account.subscriberCount || "0").toLocaleString()}
+                    {Number.parseInt(
+                      account.subscriberCount || "0"
+                    ).toLocaleString()}
                   </span>
                 </div>
               </div>
@@ -898,5 +1042,5 @@ export default function Dashboard() {
         </div>
       </main>
     </div>
-  )
+  );
 }
