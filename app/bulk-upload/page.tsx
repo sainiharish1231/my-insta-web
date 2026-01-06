@@ -1,19 +1,20 @@
 "use client";
 import { useState, useRef, useEffect } from "react";
 import type React from "react";
-import { Suspense } from "react"; // added Suspense import
+import { Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowLeft,
   FolderOpen,
   Upload,
   Check,
-  Clock,
   AlertCircle,
   Play,
   Pause,
   Trash2,
   Download,
+  Instagram,
+  Youtube,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -36,6 +37,17 @@ interface QueueSettings {
   startDelayMinutes?: number;
 }
 
+interface Account {
+  id: string;
+  username: string;
+  profile_picture_url?: string;
+  platform: "instagram" | "youtube";
+  token?: string;
+  accessToken?: string;
+  name?: string;
+  thumbnail?: string;
+}
+
 function BulkUploadContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -53,6 +65,10 @@ function BulkUploadContent() {
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const [loadingSegments, setLoadingSegments] = useState(false);
 
+  const [allAccounts, setAllAccounts] = useState<Account[]>([]);
+  const [selectedAccounts, setSelectedAccounts] = useState<Account[]>([]);
+  const [showAccountSelector, setShowAccountSelector] = useState(false);
+
   useEffect(() => {
     const loadSegmentsFromSplitter = async () => {
       const source = searchParams.get("source");
@@ -65,11 +81,9 @@ function BulkUploadContent() {
             const segmentsData = JSON.parse(segmentsJson);
             console.log("[v0] Loading segments from splitter:", segmentsData);
 
-            // Convert blob URLs back to File objects
             const loadedVideos: VideoFile[] = await Promise.all(
               segmentsData.map(async (segment: any) => {
                 try {
-                  // Fetch the blob from the blob URL
                   const response = await fetch(segment.blobUrl);
                   const blob = await response.blob();
 
@@ -80,7 +94,7 @@ function BulkUploadContent() {
                   return {
                     id: segment.id,
                     file,
-                    preview: segment.blobUrl, // Keep the blob URL for preview
+                    preview: segment.blobUrl,
                     status: "pending" as const,
                     originalTitle: segment.title,
                   };
@@ -96,7 +110,6 @@ function BulkUploadContent() {
             ) as VideoFile[];
             setVideos(validVideos);
 
-            // Clear session storage
             sessionStorage.removeItem("pending_video_segments");
 
             if (validVideos.length > 0) {
@@ -114,6 +127,25 @@ function BulkUploadContent() {
     };
 
     loadSegmentsFromSplitter();
+
+    const igAccounts = JSON.parse(localStorage.getItem("ig_accounts") || "[]");
+    const ytAccounts = JSON.parse(
+      localStorage.getItem("youtube_accounts") || "[]"
+    );
+
+    const all: Account[] = [
+      ...igAccounts.map((acc: any) => ({
+        ...acc,
+        platform: "instagram" as const,
+      })),
+      ...ytAccounts.map((acc: any) => ({
+        ...acc,
+        platform: "youtube" as const,
+      })),
+    ];
+
+    setAllAccounts(all);
+    setSelectedAccounts(all); // Default: select all accounts
 
     return () => {
       if (intervalRef.current) {
@@ -163,9 +195,29 @@ function BulkUploadContent() {
     toast.success("Download started");
   };
 
+  const toggleAccount = (account: Account) => {
+    setSelectedAccounts((prev) => {
+      const isSelected = prev.some(
+        (a) => a.id === account.id && a.platform === account.platform
+      );
+      if (isSelected) {
+        return prev.filter(
+          (a) => !(a.id === account.id && a.platform === account.platform)
+        );
+      } else {
+        return [...prev, account];
+      }
+    });
+  };
+
   const startBulkUpload = async () => {
     if (videos.length === 0) {
       toast.error("Please add at least one video");
+      return;
+    }
+
+    if (selectedAccounts.length === 0) {
+      toast.error("Please select at least one account");
       return;
     }
 
@@ -243,15 +295,15 @@ function BulkUploadContent() {
       const { url } = await uploadRes.json();
       console.log("[v0] Video uploaded to:", url);
 
-      const igAccounts = JSON.parse(
-        localStorage.getItem("ig_accounts") || "[]"
+      const igAccounts = selectedAccounts.filter(
+        (a) => a.platform === "instagram"
       );
-      const ytAccounts = JSON.parse(
-        localStorage.getItem("youtube_accounts") || "[]"
+      const ytAccounts = selectedAccounts.filter(
+        (a) => a.platform === "youtube"
       );
 
       console.log(
-        "[v0] Found accounts - Instagram:",
+        "[v0] Uploading to accounts - Instagram:",
         igAccounts.length,
         "YouTube:",
         ytAccounts.length
@@ -272,7 +324,6 @@ function BulkUploadContent() {
           console.log("[v0] Instagram caption:", caption);
           console.log("[v0] Video URL for Instagram:", url);
 
-          // Step 1: Create media container
           const createRes = await fetch(
             `https://graph.facebook.com/v21.0/${account.id}/media`,
             {
@@ -307,7 +358,6 @@ function BulkUploadContent() {
           const containerId = createData.id;
           console.log("[v0] Instagram media container created:", containerId);
 
-          // Step 2: Wait for media to be ready (poll status)
           console.log("[v0] Waiting for Instagram to process the video...");
           let mediaReady = false;
           let attempts = 0;
@@ -315,7 +365,7 @@ function BulkUploadContent() {
 
           while (!mediaReady && attempts < maxAttempts) {
             attempts++;
-            await new Promise((resolve) => setTimeout(resolve, 3000)); // Wait 3 seconds between checks
+            await new Promise((resolve) => setTimeout(resolve, 3000));
 
             try {
               const statusRes = await fetch(
@@ -349,7 +399,6 @@ function BulkUploadContent() {
             throw new Error("Media processing timed out after 90 seconds");
           }
 
-          // Step 3: Publish the media
           console.log("[v0] Publishing media to Instagram...");
           const publishRes = await fetch(
             `https://graph.facebook.com/v21.0/${account.id}/media_publish`,
@@ -400,13 +449,16 @@ function BulkUploadContent() {
 
       for (const account of ytAccounts) {
         try {
-          console.log("[v0] Uploading to YouTube account:", account.name);
+          console.log(
+            "[v0] Uploading to YouTube account:",
+            account.name || account.username
+          );
 
           const uploadResponse = await fetch("/api/youtube/upload", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              accessToken: account.accessToken,
+              accessToken: account.accessToken || account.token,
               videoUrl: url,
               title: videoTitle,
               description: settings.description,
@@ -428,7 +480,7 @@ function BulkUploadContent() {
               uploadData.error
             );
             toast.error(
-              `YouTube upload failed for ${account.name}: ${
+              `YouTube upload failed for ${account.name || account.username}: ${
                 uploadData.error || "Unknown error"
               }`
             );
@@ -437,6 +489,9 @@ function BulkUploadContent() {
               "[v0] Successfully uploaded to YouTube:",
               uploadData.videoId
             );
+            toast.success(
+              `Published to YouTube: ${account.name || account.username}`
+            );
           }
         } catch (err) {
           console.error(
@@ -444,7 +499,7 @@ function BulkUploadContent() {
             err
           );
           toast.error(
-            `YouTube upload failed for ${account.name}: ${
+            `YouTube upload failed for ${account.name || account.username}: ${
               err instanceof Error ? err.message : "Unknown error"
             }`
           );
@@ -637,22 +692,22 @@ function BulkUploadContent() {
 
                 <div>
                   <label className="block text-sm font-medium text-white/70 mb-2">
-                    Description (for Instagram caption)
+                    Description
                   </label>
                   <textarea
                     value={settings.description}
                     onChange={(e) =>
                       setSettings({ ...settings, description: e.target.value })
                     }
-                    placeholder="Enter description..."
-                    rows={4}
-                    className="w-full px-4 py-2 bg-white/5 border border-white/10 rounded-xl text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-pink-500 resize-none"
+                    placeholder="Enter video description..."
+                    rows={3}
+                    className="w-full px-4 py-2 bg-white/5 border border-white/10 rounded-xl text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-pink-500"
                   />
                 </div>
 
                 <div>
                   <label className="block text-sm font-medium text-white/70 mb-2">
-                    Keywords (comma separated)
+                    Keywords (comma-separated)
                   </label>
                   <input
                     type="text"
@@ -660,78 +715,146 @@ function BulkUploadContent() {
                     onChange={(e) =>
                       setSettings({ ...settings, keywords: e.target.value })
                     }
-                    placeholder="tech, coding, tutorial"
+                    placeholder="keyword1, keyword2, keyword3..."
                     className="w-full px-4 py-2 bg-white/5 border border-white/10 rounded-xl text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-pink-500"
                   />
-                  <p className="text-xs text-white/40 mt-1">
-                    Will be added as hashtags for Instagram
-                  </p>
                 </div>
 
                 <div>
                   <label className="block text-sm font-medium text-white/70 mb-2">
-                    Upload Interval
+                    Interval Between Uploads
                   </label>
-                  <select
+                  <input
+                    type="number"
                     value={settings.intervalMinutes}
                     onChange={(e) =>
                       setSettings({
                         ...settings,
-                        intervalMinutes: Number(e.target.value),
+                        intervalMinutes: Number.parseInt(e.target.value) || 5,
                       })
                     }
-                    className="w-full px-4 py-2 bg-white/5 border border-white/10 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-pink-500"
-                  >
-                    <option value="1">Every 1 minute (Testing)</option>
-                    <option value="5">Every 5 minutes</option>
-                    <option value="10">Every 10 minutes</option>
-                    <option value="15">Every 15 minutes</option>
-                    <option value="30">Every 30 minutes</option>
-                    <option value="60">Every 1 hour</option>
-                  </select>
+                    min="1"
+                    className="w-full px-4 py-2 bg-white/5 border border-white/10 rounded-xl text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-pink-500"
+                  />
                   <p className="text-xs text-white/40 mt-1">
-                    Time between each upload
+                    Minutes between each upload
                   </p>
                 </div>
 
                 <div>
                   <label className="block text-sm font-medium text-white/70 mb-2">
-                    Start Delay (Minutes)
+                    Start Delay
                   </label>
                   <input
                     type="number"
-                    min="0"
-                    value={settings.startDelayMinutes}
+                    value={settings.startDelayMinutes || 0}
                     onChange={(e) =>
                       setSettings({
                         ...settings,
-                        startDelayMinutes: Number(e.target.value),
+                        startDelayMinutes: Number.parseInt(e.target.value) || 0,
                       })
                     }
-                    className="w-full px-4 py-2 bg-white/5 border border-white/10 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-pink-500"
+                    min="0"
+                    className="w-full px-4 py-2 bg-white/5 border border-white/10 rounded-xl text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-pink-500"
                   />
                   <p className="text-xs text-white/40 mt-1">
-                    Wait before starting the first upload
+                    Wait before uploading first video (minutes)
                   </p>
                 </div>
 
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={isProcessing || loadingSegments}
-                  className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-white/5 hover:bg-white/10 border-2 border-dashed border-white/20 rounded-xl text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <FolderOpen className="w-5 h-5" />
-                  Select Videos from Folder
-                </button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="video/*"
-                  multiple
-                  onChange={handleFilesSelect}
-                  className="hidden"
-                />
+                <div className="pt-4 border-t border-white/10">
+                  <button
+                    onClick={() => setShowAccountSelector(!showAccountSelector)}
+                    className="w-full px-4 py-2 bg-white/10 hover:bg-white/20 rounded-xl text-white font-medium transition-colors flex items-center justify-between"
+                  >
+                    <span>
+                      Select Accounts ({selectedAccounts.length}/
+                      {allAccounts.length})
+                    </span>
+                    <span className="text-xs">
+                      {showAccountSelector ? "▼" : "▶"}
+                    </span>
+                  </button>
+
+                  {showAccountSelector && (
+                    <div className="mt-3 space-y-2 max-h-64 overflow-y-auto">
+                      {allAccounts.length === 0 ? (
+                        <p className="text-sm text-white/50 text-center py-4">
+                          No accounts connected
+                        </p>
+                      ) : (
+                        allAccounts.map((account) => (
+                          <div
+                            key={`${account.id}-${account.platform}`}
+                            className="flex items-center gap-3 p-3 bg-white/5 rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
+                            onClick={() => toggleAccount(account)}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selectedAccounts.some(
+                                (a) =>
+                                  a.id === account.id &&
+                                  a.platform === account.platform
+                              )}
+                              onChange={() => toggleAccount(account)}
+                              className="w-4 h-4 rounded cursor-pointer"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                {account.platform === "instagram" ? (
+                                  <Instagram className="w-4 h-4 text-pink-500 flex-shrink-0" />
+                                ) : (
+                                  <Youtube className="w-4 h-4 text-red-500 flex-shrink-0" />
+                                )}
+                                <p className="text-sm font-medium text-white truncate">
+                                  {account.username || account.name}
+                                </p>
+                              </div>
+                              <p className="text-xs text-white/40 capitalize">
+                                {account.platform}
+                              </p>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
+            </div>
+
+            <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-semibold text-white">Add Videos</h2>
+                {videos.length > 0 && (
+                  <button
+                    onClick={() => setVideos([])}
+                    className="text-xs px-3 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-lg transition-colors"
+                  >
+                    Clear All
+                  </button>
+                )}
+              </div>
+
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="w-full py-8 border-2 border-dashed border-white/20 hover:border-white/40 rounded-xl transition-colors flex flex-col items-center justify-center gap-2 cursor-pointer"
+              >
+                <Upload className="w-5 h-5 text-white/60" />
+                <span className="text-sm font-medium text-white/70">
+                  Click to select videos
+                </span>
+                <span className="text-xs text-white/40">or drag and drop</span>
+              </button>
+
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept="video/*"
+                onChange={handleFilesSelect}
+                className="hidden"
+              />
             </div>
           </div>
 
@@ -741,115 +864,87 @@ function BulkUploadContent() {
                 Video Queue ({videos.length})
               </h2>
 
-              {videos.length === 0 ? (
-                <div className="text-center py-12">
-                  <Upload className="w-12 h-12 text-white/20 mx-auto mb-3" />
-                  <p className="text-white/40">No videos in queue</p>
-                  <p className="text-sm text-white/30 mt-1">
-                    Select videos from a folder or use the Video Splitter from
-                    the dashboard
-                  </p>
-                </div>
-              ) : (
-                <div className="space-y-3 max-h-[600px] overflow-y-auto pr-2">
-                  {videos.map((video, index) => (
+              <div className="space-y-2 max-h-[600px] overflow-y-auto">
+                {videos.length === 0 ? (
+                  <div className="text-center py-12">
+                    <p className="text-white/50">No videos added yet</p>
+                  </div>
+                ) : (
+                  videos.map((video, index) => (
                     <div
                       key={video.id}
-                      className={`flex items-center gap-4 p-4 rounded-xl border transition-all ${
-                        video.status === "processing"
-                          ? "border-blue-500/50 bg-blue-500/5"
+                      className={`p-4 rounded-lg border transition-all ${
+                        video.status === "pending"
+                          ? "bg-white/5 border-white/10 hover:border-white/20"
+                          : video.status === "processing"
+                          ? "bg-blue-500/10 border-blue-500/30"
                           : video.status === "uploaded"
-                          ? "border-green-500/50 bg-green-500/5"
-                          : video.status === "error"
-                          ? "border-red-500/50 bg-red-500/5"
-                          : "border-white/10 bg-white/5"
+                          ? "bg-green-500/10 border-green-500/30"
+                          : "bg-red-500/10 border-red-500/30"
                       }`}
                     >
-                      <div className="relative">
+                      <div className="flex items-start gap-4">
                         <video
                           src={video.preview}
-                          className="w-20 h-20 object-cover rounded-lg"
+                          className="w-16 h-16 rounded-lg object-cover bg-black flex-shrink-0"
                         />
-                        {video.status === "processing" && (
-                          <div className="absolute inset-0 bg-black/50 rounded-lg flex items-center justify-center">
-                            <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                          </div>
-                        )}
-                      </div>
 
-                      <div className="flex-1 min-w-0">
-                        <p className="text-white font-medium truncate">
-                          {video.originalTitle || video.file.name}
-                        </p>
-                        <p className="text-sm text-white/40">
-                          {(video.file.size / 1024 / 1024).toFixed(2)} MB
-                        </p>
-                        {video.processedAt && (
-                          <p className="text-xs text-green-400 mt-1">
-                            Uploaded at{" "}
-                            {new Date(video.processedAt).toLocaleTimeString()}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-white truncate">
+                            {video.originalTitle || video.file.name}
                           </p>
-                        )}
-                        {video.error && (
-                          <p className="text-xs text-red-400 mt-1">
-                            {video.error}
+                          <p className="text-xs text-white/40">
+                            {(video.file.size / (1024 * 1024)).toFixed(2)} MB
                           </p>
-                        )}
-                      </div>
 
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => downloadVideo(video)}
-                          className="p-2 hover:bg-white/10 rounded-lg transition-colors"
-                          title="Download video"
-                        >
-                          <Download className="w-4 h-4 text-white/60 hover:text-white" />
-                        </button>
-
-                        {video.status === "pending" && (
-                          <>
-                            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-yellow-500/10 rounded-lg">
-                              <Clock className="w-4 h-4 text-yellow-400" />
-                              <span className="text-sm text-yellow-400">
-                                Pending
+                          {video.status === "processing" && (
+                            <div className="mt-2 flex items-center gap-2">
+                              <div className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+                              <span className="text-xs text-blue-400">
+                                Uploading...
                               </span>
                             </div>
-                            <button
-                              onClick={() => removeVideo(video.id)}
-                              disabled={isProcessing}
-                              className="p-2 hover:bg-red-500/20 rounded-lg transition-colors disabled:opacity-50"
-                            >
-                              <Trash2 className="w-4 h-4 text-red-400" />
-                            </button>
-                          </>
-                        )}
-                        {video.status === "processing" && (
-                          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-500/10 rounded-lg">
-                            <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-                            <span className="text-sm text-blue-400">
-                              Uploading...
-                            </span>
-                          </div>
-                        )}
-                        {video.status === "uploaded" && (
-                          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-green-500/10 rounded-lg">
-                            <Check className="w-4 h-4 text-green-400" />
-                            <span className="text-sm text-green-400">
-                              Uploaded
-                            </span>
-                          </div>
-                        )}
-                        {video.status === "error" && (
-                          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500/10 rounded-lg">
-                            <AlertCircle className="w-4 h-4 text-red-400" />
-                            <span className="text-sm text-red-400">Failed</span>
-                          </div>
-                        )}
+                          )}
+
+                          {video.status === "uploaded" && (
+                            <div className="mt-2 flex items-center gap-2">
+                              <Check className="w-4 h-4 text-green-400" />
+                              <span className="text-xs text-green-400">
+                                Uploaded
+                              </span>
+                            </div>
+                          )}
+
+                          {video.status === "error" && (
+                            <div className="mt-2 flex items-center gap-2">
+                              <AlertCircle className="w-4 h-4 text-red-400" />
+                              <span className="text-xs text-red-400">
+                                {video.error}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          <button
+                            onClick={() => downloadVideo(video)}
+                            className="p-2 hover:bg-white/10 rounded-lg transition-colors"
+                            title="Download video"
+                          >
+                            <Download className="w-4 h-4 text-white/60 hover:text-white" />
+                          </button>
+                          <button
+                            onClick={() => removeVideo(video.id)}
+                            className="p-2 hover:bg-red-500/20 rounded-lg transition-colors"
+                          >
+                            <Trash2 className="w-4 h-4 text-red-400" />
+                          </button>
+                        </div>
                       </div>
                     </div>
-                  ))}
-                </div>
-              )}
+                  ))
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -860,7 +955,7 @@ function BulkUploadContent() {
 
 export default function BulkUploadPage() {
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<div>Loading...</div>}>
       <BulkUploadContent />
     </Suspense>
   );
