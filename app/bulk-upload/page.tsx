@@ -73,9 +73,8 @@ function BulkUploadContent() {
                   const response = await fetch(segment.blobUrl);
                   const blob = await response.blob();
 
-                  // Create a File object from the blob
                   const file = new File([blob], segment.fileName, {
-                    type: "video/webm",
+                    type: "video/mp4",
                   });
 
                   return {
@@ -157,10 +156,8 @@ function BulkUploadContent() {
     const a = document.createElement("a");
     a.href = url;
     a.download = video.originalTitle
-      ? `${video.originalTitle.replace(/[^a-zA-Z0-9]/g, "_")}.${
-          video.file.type.split("/")[1]
-        }`
-      : video.file.name;
+      ? `${video.originalTitle.replace(/[^a-zA-Z0-9]/g, "_")}.mp4`
+      : `${video.file.name.split(".")[0]}.mp4`;
     a.click();
     URL.revokeObjectURL(url);
     toast.success("Download started");

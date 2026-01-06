@@ -208,15 +208,16 @@ async function extractVideoSegmentSimple(
           );
         }
 
-        // Determine supported mime type
         const mimeTypes = [
+          "video/mp4;codecs=h264,mp4a.40.2",
+          "video/mp4",
           "video/webm;codecs=vp9,opus",
           "video/webm;codecs=vp8,opus",
           "video/webm;codecs=vp8",
           "video/webm",
         ];
 
-        let selectedMimeType = "video/webm";
+        let selectedMimeType = "video/mp4";
         for (const type of mimeTypes) {
           if (MediaRecorder.isTypeSupported(type)) {
             selectedMimeType = type;
@@ -239,7 +240,7 @@ async function extractVideoSegmentSimple(
         mediaRecorder.onstop = () => {
           console.log("[v0] Recording stopped, chunks:", chunks.length);
           if (chunks.length > 0) {
-            const blob = new Blob(chunks, { type: selectedMimeType });
+            const blob = new Blob(chunks, { type: "video/mp4" });
             cleanup();
             resolve(blob);
           } else {

@@ -6,9 +6,15 @@ export async function POST(request: NextRequest) {
 
     const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
     const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-    const redirectUri = `${
-      process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"
-    }/auth/youtube-callback`;
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+    const redirectUri = `${appUrl}/auth/youtube-callback`;
+
+    console.log("[v0] YouTube auth config:", {
+      redirectUri,
+      appUrl,
+      clientIdConfigured: !!clientId,
+      clientSecretConfigured: !!clientSecret,
+    });
 
     if (!clientId || !clientSecret) {
       console.error(
@@ -34,7 +40,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    console.log("[v0] Exchanging YouTube auth code for tokens");
+    console.log(
+      "[v0] Exchanging YouTube auth code for tokens with redirect URI:",
+      redirectUri
+    );
 
     // Exchange code for tokens
     const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
