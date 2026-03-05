@@ -34,7 +34,7 @@
     "**/*.tsx",
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts"
-  ],
+, "app/api/auth/youtube"  ],
   "exclude": [
     "node_modules"
   ]
