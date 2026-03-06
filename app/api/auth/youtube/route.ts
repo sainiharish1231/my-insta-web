@@ -34,7 +34,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    console.log("[v0] Exchanging YouTube auth code for tokens");
+    console.log("[v0] Exchanging YouTube auth code for tokens", {
+      redirectUri,
+      clientIdPrefix: clientId?.substring(0, 10) + "...",
+    });
 
     // Exchange code for tokens
     const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
@@ -52,9 +55,20 @@ export async function POST(request: NextRequest) {
     const tokenData = await tokenRes.json();
 
     if (tokenData.error) {
-      console.error("[v0] Token exchange failed:", tokenData);
+      console.error("[v0] Token exchange failed:", {
+        error: tokenData.error,
+        description: tokenData.error_description,
+        redirectUri,
+        code: code?.substring(0, 20) + "...",
+      });
       return NextResponse.json(
-        { error: tokenData.error_description || "Token exchange failed" },
+        {
+          error: tokenData.error_description || "Token exchange failed",
+          details:
+            tokenData.error === "redirect_uri_mismatch"
+              ? `Expected: ${redirectUri}. Verify this is registered in Google Cloud Console OAuth credentials.`
+              : undefined,
+        },
         { status: 400 },
       );
     }
