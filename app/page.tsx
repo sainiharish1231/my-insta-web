@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { generateCodeVerifier, generateCodeChallenge } from "@/lib/pkce";
+import { setPkceCodeVerifier } from "@/lib/pkce-storage";
 import {
   Instagram,
   Youtube,
@@ -51,7 +52,7 @@ export default function LoginPage() {
     try {
       const codeVerifier = await generateCodeVerifier();
       const codeChallenge = await generateCodeChallenge(codeVerifier);
-      sessionStorage.setItem("pkce_code_verifier", codeVerifier);
+      setPkceCodeVerifier(codeVerifier);
 
       const redirectUri =
         typeof window !== "undefined"

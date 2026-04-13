@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CircularProgress, Stack, Typography, Alert, Box } from "@mui/material";
+import { clearPkceCodeVerifier, getPkceCodeVerifier } from "@/lib/pkce-storage";
 
 export default function AuthCallback() {
   const router = useRouter();
@@ -34,8 +35,10 @@ export default function AuthCallback() {
         setStatus("Exchanging authorization code for access token...");
         console.log("[v0] Exchanging code for token with PKCE");
 
-        const codeVerifier = sessionStorage.getItem("pkce_code_verifier");
+        const { codeVerifier, source } = getPkceCodeVerifier();
         const fbAppId = process.env.NEXT_PUBLIC_FACEBOOK_APP_ID;
+
+        console.log("[v0] PKCE verifier source:", source);
 
         if (!codeVerifier) {
           throw new Error(
@@ -74,8 +77,8 @@ export default function AuthCallback() {
 
         const accessToken = tokenData.access_token;
 
-        // Clear the code verifier
-        sessionStorage.removeItem("pkce_code_verifier");
+        // Clear the code verifier from all storage locations
+        clearPkceCodeVerifier();
 
         setStatus("Fetching Instagram account...");
         console.log("[v0] Fetching Instagram account");
