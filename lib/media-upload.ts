@@ -10,14 +10,6 @@ function sanitizeFilename(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
-function hasFirebaseStorageConfig() {
-  return Boolean(
-    process.env.NEXT_PUBLIC_FIREBASE_API_KEY &&
-      process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID &&
-      process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET
-  );
-}
-
 export function validateMediaFile(file: File): string | null {
   if (!file) {
     return "Please select a file.";
@@ -38,6 +30,12 @@ async function uploadToFirebase(
   file: File,
   onProgress?: UploadProgressCallback
 ): Promise<string> {
+  if (!app.options.apiKey || !app.options.projectId || !app.options.storageBucket) {
+    throw new Error(
+      "Firebase Storage is not configured. Add NEXT_PUBLIC_FIREBASE_* variables in your deployed environment."
+    );
+  }
+
   const storage = getStorage(app);
   const safeName = sanitizeFilename(file.name);
   const path = `uploads/${new Date().toISOString().slice(0, 10)}/${Date.now()}-${safeName}`;
@@ -105,6 +103,12 @@ async function uploadViaApi(
     body: formData,
   });
 
+  if (res.status === 413) {
+    throw new Error(
+      "Request entity too large. Configure Firebase direct upload for large videos."
+    );
+  }
+
   if (!res.ok) {
     const errorText = await res.text();
     throw new Error(`Failed to upload file: ${errorText}`);
@@ -128,8 +132,16 @@ export async function uploadMediaToBlob(
     throw new Error(validationError);
   }
 
-  if (hasFirebaseStorageConfig()) {
-    return uploadToFirebase(file, onProgress);
+  try {
+    return await uploadToFirebase(file, onProgress);
+  } catch (firebaseError: any) {
+    console.error("[v0] Direct Firebase upload failed:", firebaseError);
+  }
+
+  if (file.size > API_FALLBACK_MAX_SIZE_BYTES) {
+    throw new Error(
+      "Large uploads require Firebase direct upload. Set NEXT_PUBLIC_FIREBASE_* variables and allow Firebase Storage uploads."
+    );
   }
 
   return uploadViaApi(file, onProgress);
