@@ -10,6 +10,10 @@ import {
   validateMediaFile,
 } from "@/lib/media-upload";
 import {
+  needsInstagramVideoNormalization,
+  normalizeVideoForInstagram,
+} from "@/lib/instagram-video-normalizer";
+import {
   ArrowLeft,
   Upload,
   Youtube,
@@ -183,9 +187,23 @@ export default function UploadPage() {
 
       let finalMediaUrl = mediaUrl;
 
-      if (selectedFile && !uploadedFileUrl) {
+      let uploadFile = selectedFile;
+      const shouldNormalizeInstagramVideo =
+        uploadFile !== null &&
+        uploadFile.type.startsWith("video/") &&
+        selectedAccounts.some((account) => account.platform === "instagram") &&
+        needsInstagramVideoNormalization(uploadFile);
+
+      if (uploadFile && shouldNormalizeInstagramVideo) {
+        setProgress("Optimizing phone video for Instagram... 0%");
+        uploadFile = await normalizeVideoForInstagram(uploadFile, (percent) => {
+          setProgress(`Optimizing phone video for Instagram... ${percent}%`);
+        });
+      }
+
+      if (uploadFile && !uploadedFileUrl) {
         setProgress("Uploading file... 0%");
-        finalMediaUrl = await uploadMediaToBlob(selectedFile, (percent) => {
+        finalMediaUrl = await uploadMediaToBlob(uploadFile, (percent) => {
           setProgress(`Uploading file... ${percent}%`);
         });
         setUploadedFileUrl(finalMediaUrl);

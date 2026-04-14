@@ -93,34 +93,53 @@ export async function publishMedia({ igUserId, token, creationId }: any) {
   return data
 }
 
-export async function checkMediaStatus(containerId: string, token: string): Promise<string> {
-  const res = await fetch(`https://graph.facebook.com/v21.0/${containerId}?fields=status_code&access_token=${token}`)
+export async function checkMediaStatus(
+  containerId: string,
+  token: string
+): Promise<{ statusCode: string; status: string }> {
+  const res = await fetch(
+    `https://graph.facebook.com/v21.0/${containerId}?fields=status_code,status&access_token=${token}`
+  )
   const data = await res.json()
 
   if (data.error) {
     throw new Error(`Status check failed: ${data.error.message}`)
   }
 
-  return data.status_code || "UNKNOWN"
+  return {
+    statusCode: data.status_code || "UNKNOWN",
+    status:
+      (typeof data.status === "string" && data.status) ||
+      data.status?.message ||
+      data.status?.description ||
+      "",
+  }
 }
 
 export async function waitForMediaReady(containerId: string, token: string, maxAttempts = 240): Promise<void> {
   console.log("[v0] Waiting for media to be ready...")
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const status = await checkMediaStatus(containerId, token)
-    console.log(`[v0] Media status (attempt ${attempt + 1}/${maxAttempts}):`, status)
+    const { statusCode, status } = await checkMediaStatus(containerId, token)
+    console.log(
+      `[v0] Media status (attempt ${attempt + 1}/${maxAttempts}):`,
+      statusCode,
+      status
+    )
 
-    if (status === "FINISHED") {
+    if (statusCode === "FINISHED") {
       console.log("[v0] Media is ready for publishing!")
       return
     }
 
-    if (status === "ERROR") {
-      throw new Error("Media processing failed on Instagram's side")
+    if (statusCode === "ERROR") {
+      throw new Error(
+        status ||
+          "Instagram could not process this video. Phone-recorded .mov/.hevc videos often need conversion to H.264 MP4."
+      )
     }
 
-    if (status === "EXPIRED") {
+    if (statusCode === "EXPIRED") {
       throw new Error("Media container has expired. Please try uploading again.")
     }
 
