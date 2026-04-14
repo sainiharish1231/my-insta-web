@@ -49,6 +49,10 @@ interface AvailableAccount {
 
 type ContentType = "POST" | "REEL" | "VIDEO" | "SHORT";
 
+function isLikelyVideoUrl(url: string) {
+  return /\.(mp4|mov|m4v|webm|ogv|ogg|avi|mkv)(?:$|[?#])/i.test(url);
+}
+
 export default function UploadPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -254,7 +258,10 @@ export default function UploadPage() {
 
         try {
           if (account.platform === "instagram" && account.token) {
-            const isReel = contentType === "REEL";
+            const isInstagramVideo =
+              selectedFile?.type.startsWith("video/") ||
+              isLikelyVideoUrl(finalMediaUrl);
+            const isReel = contentType === "REEL" || Boolean(isInstagramVideo);
             const creationId = await createMedia({
               igUserId: account.id,
               token: account.token,
@@ -359,6 +366,10 @@ export default function UploadPage() {
       setUploadedFileUrl("");
       setMediaUrl("");
       setFilePreview(URL.createObjectURL(file));
+
+      if (file.type.startsWith("video/") && contentType === "POST") {
+        setContentType("REEL");
+      }
     }
   };
 

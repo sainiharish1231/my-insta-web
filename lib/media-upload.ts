@@ -2,7 +2,8 @@ import { app } from "@/lib/firebase";
 import { getDownloadURL, getStorage, ref, uploadBytesResumable } from "firebase/storage";
 
 export const MAX_UPLOAD_FILE_SIZE_BYTES = 4 * 1024 * 1024 * 1024; // 4 GB
-const API_FALLBACK_MAX_SIZE_BYTES = 500 * 1024 * 1024; // 500 MB
+const SIMPLE_API_UPLOAD_MAX_SIZE_BYTES = 4 * 1024 * 1024; // 4 MB
+const API_CHUNK_UPLOAD_BYTES = 4 * 1024 * 1024; // 4 MB
 
 type UploadProgressCallback = (percent: number) => void;
 
@@ -87,12 +88,6 @@ async function uploadViaApi(
   file: File,
   onProgress?: UploadProgressCallback
 ): Promise<string> {
-  if (file.size > API_FALLBACK_MAX_SIZE_BYTES) {
-    throw new Error(
-      "Direct cloud upload is unavailable and fallback server upload supports only up to 500MB."
-    );
-  }
-
   const formData = new FormData();
   formData.append("file", file);
 
@@ -123,6 +118,67 @@ async function uploadViaApi(
   return data.url;
 }
 
+async function uploadViaChunkedApi(
+  file: File,
+  onProgress?: UploadProgressCallback
+): Promise<string> {
+  const totalChunks = Math.ceil(file.size / API_CHUNK_UPLOAD_BYTES);
+  let uploadId: string | null = null;
+
+  onProgress?.(0);
+
+  for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+    const start = chunkIndex * API_CHUNK_UPLOAD_BYTES;
+    const end = Math.min(start + API_CHUNK_UPLOAD_BYTES, file.size);
+    const chunk = file.slice(start, end);
+    const formData = new FormData();
+
+    formData.append("file", chunk, file.name);
+    formData.append("filename", file.name);
+    formData.append("contentType", file.type || "application/octet-stream");
+    formData.append("fileSize", String(file.size));
+    formData.append("chunkIndex", String(chunkIndex));
+    formData.append("totalChunks", String(totalChunks));
+    formData.append("chunkSize", String(API_CHUNK_UPLOAD_BYTES));
+
+    if (uploadId) {
+      formData.append("uploadId", uploadId);
+    }
+
+    const res = await fetch("/api/upload", {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!res.ok) {
+      const errorText = await res.text();
+      throw new Error(`Failed to upload file chunk: ${errorText}`);
+    }
+
+    const data = await res.json();
+    if (!data.uploadId) {
+      throw new Error("Chunk upload succeeded but no upload ID was returned");
+    }
+
+    uploadId = data.uploadId;
+    const uploadedBytes = Math.min(end, file.size);
+    const percent = Math.max(
+      1,
+      Math.min(100, Math.round((uploadedBytes / file.size) * 100))
+    );
+    onProgress?.(percent);
+
+    if (chunkIndex === totalChunks - 1) {
+      if (!data.url) {
+        throw new Error("Upload completed but no file URL was returned");
+      }
+      return data.url;
+    }
+  }
+
+  throw new Error("Chunked upload did not complete");
+}
+
 export async function uploadMediaToBlob(
   file: File,
   onProgress?: UploadProgressCallback
@@ -138,11 +194,9 @@ export async function uploadMediaToBlob(
     console.error("[v0] Direct Firebase upload failed:", firebaseError);
   }
 
-  if (file.size > API_FALLBACK_MAX_SIZE_BYTES) {
-    throw new Error(
-      "Large uploads require Firebase direct upload. Set NEXT_PUBLIC_FIREBASE_* variables and allow Firebase Storage uploads."
-    );
+  if (file.size <= SIMPLE_API_UPLOAD_MAX_SIZE_BYTES) {
+    return uploadViaApi(file, onProgress);
   }
 
-  return uploadViaApi(file, onProgress);
+  return uploadViaChunkedApi(file, onProgress);
 }
