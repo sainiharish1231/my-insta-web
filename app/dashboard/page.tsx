@@ -79,6 +79,7 @@ export default function Dashboard() {
   const [scheduledPosts, setScheduledPosts] = useState<any[]>([]);
   const [showScheduled, setShowScheduled] = useState(false);
   const [showVideoSplitter, setShowVideoSplitter] = useState(false); // added state for splitter
+  const [lastVideoViews, setLastVideoViews] = useState<Record<string, number>>({}); // Track views for each account
 
   const loadInstagramAccounts = useCallback(async (token: string) => {
     try {
@@ -213,8 +214,29 @@ export default function Dashboard() {
         let totalViews = 0;
         let totalReach = 0;
         let mediaWithInsights = 0;
+        let lastVideoViewCount = 0;
 
         const recentMedia = mediaList.slice(0, 10);
+
+        // Get the last video's views
+        if (recentMedia.length > 0) {
+          try {
+            const lastMediaInsights = await getMediaInsights(
+              recentMedia[0].id,
+              accountToken,
+              recentMedia[0].media_type
+            );
+            if (lastMediaInsights && lastMediaInsights.views !== "N/A") {
+              lastVideoViewCount = Number(lastMediaInsights.views) || 0;
+              setLastVideoViews((prev) => ({
+                ...prev,
+                [igUserId]: lastVideoViewCount,
+              }));
+            }
+          } catch (e) {
+            console.log("Could not get insights for last media:", recentMedia[0].id);
+          }
+        }
 
         for (const media of recentMedia) {
           try {
@@ -977,11 +999,23 @@ export default function Dashboard() {
                     <X className="w-4 h-4" />
                   </button>
                 </div>
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-white/40">Followers</span>
-                  <span className="font-semibold text-white">
-                    {account.followers_count?.toLocaleString() || 0}
-                  </span>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-white/40">Followers</span>
+                    <span className="font-semibold text-white">
+                      {account.followers_count?.toLocaleString() || 0}
+                    </span>
+                  </div>
+                  {lastVideoViews[account.id] !== undefined && (
+                    <div className="pt-2 border-t border-white/10">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-white/40">Last Video Views</span>
+                        <span className="font-semibold text-pink-400">
+                          {lastVideoViews[account.id].toLocaleString()}
+                        </span>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}

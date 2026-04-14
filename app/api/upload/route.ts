@@ -4,10 +4,10 @@ import { ObjectId } from "mongodb";
 import { getDb, getGridFSBucket } from "@/lib/mongodb";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+export const maxDuration = 900; // 15 minutes for large uploads
 
-const SIMPLE_UPLOAD_MAX_BYTES = 4 * 1024 * 1024; // 4MB
-const CHUNK_UPLOAD_MAX_BYTES = 4 * 1024 * 1024; // 4MB
+const SIMPLE_UPLOAD_MAX_BYTES = 500 * 1024 * 1024; // 500MB single upload
+const CHUNK_UPLOAD_MAX_BYTES = 2 * 1024 * 1024 * 1024; // 2GB per chunk
 
 function buildFileUrl(request: Request, fileId: string) {
   const origin =
