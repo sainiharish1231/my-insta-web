@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
-export const maxDuration = 3600;
+// Vercel Hobby serverless functions must stay within 1-300 seconds.
+export const maxDuration = 300;
 
 const YOUTUBE_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024; // 8MB
 
