@@ -3,7 +3,12 @@ import { useState, useEffect, useRef } from "react";
 import type React from "react";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { createMedia, publishMedia, uploadMediaToBlob } from "@/lib/meta";
+import { createMedia, publishMedia } from "@/lib/meta";
+import {
+  MAX_UPLOAD_FILE_SIZE_BYTES,
+  uploadMediaToBlob,
+  validateMediaFile,
+} from "@/lib/media-upload";
 import {
   ArrowLeft,
   Upload,
@@ -72,6 +77,14 @@ export default function UploadPage() {
   const [selectedHashtags, setSelectedHashtags] = useState<string[]>([]);
   const [showHashtagPicker, setShowHashtagPicker] = useState(false);
   const [location, setLocation] = useState("");
+
+  useEffect(() => {
+    return () => {
+      if (filePreview.startsWith("blob:")) {
+        URL.revokeObjectURL(filePreview);
+      }
+    };
+  }, [filePreview]);
 
   useEffect(() => {
     const igAccountsStored = JSON.parse(
@@ -167,8 +180,10 @@ export default function UploadPage() {
       let finalMediaUrl = mediaUrl;
 
       if (selectedFile && !uploadedFileUrl) {
-        setProgress("Uploading file...");
-        finalMediaUrl = await uploadMediaToBlob(selectedFile);
+        setProgress("Uploading file... 0%");
+        finalMediaUrl = await uploadMediaToBlob(selectedFile, (percent) => {
+          setProgress(`Uploading file... ${percent}%`);
+        });
         setUploadedFileUrl(finalMediaUrl);
 
         if (
@@ -326,18 +341,34 @@ export default function UploadPage() {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      const validationError = validateMediaFile(file);
+      if (validationError) {
+        setError(validationError);
+        if (fileInputRef.current) {
+          fileInputRef.current.value = "";
+        }
+        return;
+      }
+
+      if (filePreview.startsWith("blob:")) {
+        URL.revokeObjectURL(filePreview);
+      }
+
+      setError("");
       setSelectedFile(file);
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setFilePreview(reader.result as string);
-      };
-      reader.readAsDataURL(file);
+      setUploadedFileUrl("");
+      setMediaUrl("");
+      setFilePreview(URL.createObjectURL(file));
     }
   };
 
   const handleRemoveFile = () => {
+    if (filePreview.startsWith("blob:")) {
+      URL.revokeObjectURL(filePreview);
+    }
     setSelectedFile(null);
     setFilePreview("");
+    setUploadedFileUrl("");
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -470,7 +501,11 @@ export default function UploadPage() {
                       <p className="text-white font-medium mb-1">
                         Click to upload
                       </p>
-                      <p className="text-sm text-white/40">or drag and drop</p>
+                      <p className="text-sm text-white/40">
+                        or drag and drop (max {(MAX_UPLOAD_FILE_SIZE_BYTES /
+                          (1024 * 1024 * 1024)).toFixed(0)}
+                        GB)
+                      </p>
                     </div>
                   </div>
                 )}

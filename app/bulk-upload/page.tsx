@@ -17,6 +17,11 @@ import {
   Youtube,
 } from "lucide-react";
 import { toast } from "sonner";
+import {
+  MAX_UPLOAD_FILE_SIZE_BYTES,
+  uploadMediaToBlob,
+  validateMediaFile,
+} from "@/lib/media-upload";
 
 interface VideoFile {
   id: string;
@@ -62,12 +67,18 @@ function BulkUploadContent() {
   });
   const [isProcessing, setIsProcessing] = useState(false);
   const [currentVideoIndex, setCurrentVideoIndex] = useState(0);
+  const [activeUploadProgress, setActiveUploadProgress] = useState(0);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const videosRef = useRef<VideoFile[]>([]);
   const [loadingSegments, setLoadingSegments] = useState(false);
 
   const [allAccounts, setAllAccounts] = useState<Account[]>([]);
   const [selectedAccounts, setSelectedAccounts] = useState<Account[]>([]);
   const [showAccountSelector, setShowAccountSelector] = useState(false);
+
+  useEffect(() => {
+    videosRef.current = videos;
+  }, [videos]);
 
   useEffect(() => {
     const loadSegmentsFromSplitter = async () => {
@@ -148,15 +159,34 @@ function BulkUploadContent() {
     setSelectedAccounts(all); // Default: select all accounts
 
     return () => {
+      videosRef.current.forEach((video) => URL.revokeObjectURL(video.preview));
       if (intervalRef.current) {
-        clearInterval(intervalRef.current);
+        clearTimeout(intervalRef.current);
       }
     };
   }, [searchParams]);
 
   const handleFilesSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
-    const videoFiles = files.filter((file) => file.type.startsWith("video/"));
+    const videoFiles: File[] = [];
+
+    for (const file of files) {
+      if (!file.type.startsWith("video/")) {
+        continue;
+      }
+
+      const validationError = validateMediaFile(file);
+      if (validationError) {
+        toast.error(`${file.name}: ${validationError}`);
+        continue;
+      }
+
+      videoFiles.push(file);
+    }
+
+    if (videoFiles.length === 0) {
+      return;
+    }
 
     const newVideos: VideoFile[] = await Promise.all(
       videoFiles.map(async (file) => {
@@ -181,6 +211,13 @@ function BulkUploadContent() {
       }
       return prev.filter((v) => v.id !== id);
     });
+  };
+
+  const clearAllVideos = () => {
+    videos.forEach((video) => URL.revokeObjectURL(video.preview));
+    setVideos([]);
+    setCurrentVideoIndex(0);
+    setActiveUploadProgress(0);
   };
 
   const downloadVideo = (video: VideoFile) => {
@@ -269,6 +306,7 @@ function BulkUploadContent() {
       "Index:",
       videoIndex
     );
+    setCurrentVideoIndex(videoIndex + 1);
 
     setVideos((prev) =>
       prev.map((v) =>
@@ -278,21 +316,12 @@ function BulkUploadContent() {
 
     try {
       const videoTitle = nextVideo.originalTitle || settings.title;
+      setActiveUploadProgress(0);
 
-      const formData = new FormData();
-      formData.append("file", nextVideo.file);
-
-      console.log("[v0] Uploading to GridFS...");
-      const uploadRes = await fetch("/api/upload", {
-        method: "POST",
-        body: formData,
+      console.log("[v0] Uploading video to storage...");
+      const url = await uploadMediaToBlob(nextVideo.file, (percent) => {
+        setActiveUploadProgress(percent);
       });
-
-      if (!uploadRes.ok) {
-        throw new Error("Failed to upload video to server");
-      }
-
-      const { url } = await uploadRes.json();
       console.log("[v0] Video uploaded to:", url);
 
       const igAccounts = selectedAccounts.filter(
@@ -361,11 +390,11 @@ function BulkUploadContent() {
           console.log("[v0] Waiting for Instagram to process the video...");
           let mediaReady = false;
           let attempts = 0;
-          const maxAttempts = 30;
+          const maxAttempts = 240;
 
           while (!mediaReady && attempts < maxAttempts) {
             attempts++;
-            await new Promise((resolve) => setTimeout(resolve, 3000));
+            await new Promise((resolve) => setTimeout(resolve, 5000));
 
             try {
               const statusRes = await fetch(
@@ -396,7 +425,7 @@ function BulkUploadContent() {
           }
 
           if (!mediaReady) {
-            throw new Error("Media processing timed out after 90 seconds");
+            throw new Error("Media processing timed out after 20 minutes");
           }
 
           console.log("[v0] Publishing media to Instagram...");
@@ -518,6 +547,7 @@ function BulkUploadContent() {
             : v
         )
       );
+      setActiveUploadProgress(0);
 
       toast.success(`Uploaded: ${videoTitle}`);
 
@@ -545,6 +575,7 @@ function BulkUploadContent() {
       }
     } catch (error: any) {
       console.error("[v0] Upload error:", error);
+      setActiveUploadProgress(0);
 
       setVideos((prev) =>
         prev.map((v) =>
@@ -565,6 +596,8 @@ function BulkUploadContent() {
 
   const stopProcessing = () => {
     setIsProcessing(false);
+    setActiveUploadProgress(0);
+    setCurrentVideoIndex(0);
     if (intervalRef.current) {
       clearTimeout(intervalRef.current);
       intervalRef.current = null;
@@ -828,7 +861,7 @@ function BulkUploadContent() {
                 <h2 className="text-lg font-semibold text-white">Add Videos</h2>
                 {videos.length > 0 && (
                   <button
-                    onClick={() => setVideos([])}
+                    onClick={clearAllVideos}
                     className="text-xs px-3 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-lg transition-colors"
                   >
                     Clear All
@@ -844,7 +877,11 @@ function BulkUploadContent() {
                 <span className="text-sm font-medium text-white/70">
                   Click to select videos
                 </span>
-                <span className="text-xs text-white/40">or drag and drop</span>
+                <span className="text-xs text-white/40">
+                  or drag and drop (max {(MAX_UPLOAD_FILE_SIZE_BYTES /
+                    (1024 * 1024 * 1024)).toFixed(0)}
+                  GB each)
+                </span>
               </button>
 
               <input
@@ -902,6 +939,10 @@ function BulkUploadContent() {
                               <div className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
                               <span className="text-xs text-blue-400">
                                 Uploading...
+                                {currentVideoIndex > 0 &&
+                                video.id === videos[currentVideoIndex - 1]?.id
+                                  ? ` ${activeUploadProgress}%`
+                                  : ""}
                               </span>
                             </div>
                           )}

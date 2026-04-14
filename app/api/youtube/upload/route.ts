@@ -1,5 +1,116 @@
 import { NextResponse } from "next/server";
 
+export const runtime = "nodejs";
+export const maxDuration = 3600;
+
+const YOUTUBE_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024; // 8MB
+
+function parseTotalBytesFromContentRange(contentRange: string | null): number | null {
+  if (!contentRange) {
+    return null;
+  }
+
+  const match = contentRange.match(/bytes\s+\d+-\d+\/(\d+)/i);
+  if (!match) {
+    return null;
+  }
+
+  const total = Number.parseInt(match[1], 10);
+  return Number.isFinite(total) ? total : null;
+}
+
+function parseNextOffsetFromRange(rangeHeader: string | null): number | null {
+  if (!rangeHeader) {
+    return null;
+  }
+
+  const match = rangeHeader.match(/bytes=0-(\d+)/i);
+  if (!match) {
+    return null;
+  }
+
+  const lastUploadedByte = Number.parseInt(match[1], 10);
+  if (!Number.isFinite(lastUploadedByte)) {
+    return null;
+  }
+
+  return lastUploadedByte + 1;
+}
+
+async function getRemoteVideoInfo(videoUrl: string): Promise<{
+  size: number;
+  contentType: string;
+}> {
+  const headResponse = await fetch(videoUrl, { method: "HEAD" });
+
+  if (headResponse.ok) {
+    const headSize = Number.parseInt(
+      headResponse.headers.get("content-length") || "",
+      10
+    );
+    const contentType = headResponse.headers.get("content-type") || "video/mp4";
+
+    if (Number.isFinite(headSize) && headSize > 0) {
+      return { size: headSize, contentType };
+    }
+  }
+
+  const probeResponse = await fetch(videoUrl, {
+    headers: {
+      Range: "bytes=0-0",
+    },
+  });
+
+  if (!probeResponse.ok) {
+    throw new Error("Failed to inspect remote video file");
+  }
+
+  const contentType = probeResponse.headers.get("content-type") || "video/mp4";
+  const totalFromRange = parseTotalBytesFromContentRange(
+    probeResponse.headers.get("content-range")
+  );
+  const sizeFromLength = Number.parseInt(
+    probeResponse.headers.get("content-length") || "",
+    10
+  );
+  const size = totalFromRange || (Number.isFinite(sizeFromLength) ? sizeFromLength : 0);
+
+  if (!size || size <= 0) {
+    throw new Error("Could not determine remote video size");
+  }
+
+  return { size, contentType };
+}
+
+async function fetchVideoChunk(
+  videoUrl: string,
+  start: number,
+  end: number,
+  expectedLength: number
+): Promise<ArrayBuffer> {
+  const chunkResponse = await fetch(videoUrl, {
+    headers: {
+      Range: `bytes=${start}-${end}`,
+    },
+  });
+
+  if (!chunkResponse.ok) {
+    throw new Error(
+      `Failed to fetch source chunk ${start}-${end} (status ${chunkResponse.status})`
+    );
+  }
+
+  const chunkArrayBuffer = await chunkResponse.arrayBuffer();
+
+  if (chunkArrayBuffer.byteLength !== expectedLength) {
+    throw new Error(
+      "Source server did not return expected byte range. Use a storage URL that supports range requests."
+    );
+  }
+
+  return chunkArrayBuffer;
+}
+
 export async function POST(request: Request) {
   try {
     const {
@@ -27,15 +138,12 @@ export async function POST(request: Request) {
       keywords,
     });
 
-    const videoResponse = await fetch(videoUrl);
-    if (!videoResponse.ok) {
-      throw new Error("Failed to download video from URL");
-    }
-
-    const videoBlob = await videoResponse.blob();
-    const videoBuffer = await videoBlob.arrayBuffer();
-
-    console.log("[v0] Video downloaded, size:", videoBuffer.byteLength);
+    const { size: videoSize, contentType } = await getRemoteVideoInfo(videoUrl);
+    console.log("[v0] Source video info:", {
+      sizeBytes: videoSize,
+      sizeMB: (videoSize / (1024 * 1024)).toFixed(2),
+      contentType,
+    });
 
     const snippet: any = {
       title,
@@ -43,12 +151,10 @@ export async function POST(request: Request) {
       categoryId: "22", // People & Blogs
     };
 
-    // Add tags/keywords if provided
     if (keywords && keywords.length > 0) {
       snippet.tags = keywords;
     }
 
-    // For YouTube Shorts, add #Shorts to title and description
     if (isShort) {
       if (!snippet.title.includes("#Shorts")) {
         snippet.title = `${snippet.title} #Shorts`;
@@ -65,8 +171,8 @@ export async function POST(request: Request) {
         headers: {
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
-          "X-Upload-Content-Type": videoBlob.type || "video/mp4",
-          "X-Upload-Content-Length": videoBuffer.byteLength.toString(),
+          "X-Upload-Content-Type": contentType,
+          "X-Upload-Content-Length": videoSize.toString(),
         },
         body: JSON.stringify({
           snippet,
@@ -89,19 +195,55 @@ export async function POST(request: Request) {
       throw new Error("No upload URL received from YouTube");
     }
 
-    console.log("[v0] Upload initialized, uploading video...");
+    console.log("[v0] Upload initialized, starting chunked upload...");
 
-    const uploadResponse = await fetch(uploadUrl, {
-      method: "PUT",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": videoBlob.type || "video/mp4",
-        "Content-Length": videoBuffer.byteLength.toString(),
-      },
-      body: videoBuffer,
-    });
+    let uploadedBytes = 0;
+    let result: any = null;
 
-    if (!uploadResponse.ok) {
+    while (uploadedBytes < videoSize) {
+      const chunkEnd = Math.min(
+        uploadedBytes + YOUTUBE_UPLOAD_CHUNK_BYTES - 1,
+        videoSize - 1
+      );
+      const expectedLength = chunkEnd - uploadedBytes + 1;
+
+      const chunk = await fetchVideoChunk(
+        videoUrl,
+        uploadedBytes,
+        chunkEnd,
+        expectedLength
+      );
+
+      const uploadResponse = await fetch(uploadUrl, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": contentType,
+          "Content-Length": expectedLength.toString(),
+          "Content-Range": `bytes ${uploadedBytes}-${chunkEnd}/${videoSize}`,
+        },
+        body: chunk,
+      });
+
+      if (uploadResponse.status === 308) {
+        const resumeOffset =
+          parseNextOffsetFromRange(uploadResponse.headers.get("range")) ||
+          chunkEnd + 1;
+        uploadedBytes = resumeOffset;
+        const progress = Math.min(
+          100,
+          Math.round((uploadedBytes / videoSize) * 100)
+        );
+        console.log(`[v0] YouTube chunk uploaded: ${progress}%`);
+        continue;
+      }
+
+      if (uploadResponse.ok) {
+        result = await uploadResponse.json();
+        uploadedBytes = videoSize;
+        break;
+      }
+
       const errorText = await uploadResponse.text();
       console.error("[v0] YouTube upload error:", errorText);
 
@@ -109,16 +251,20 @@ export async function POST(request: Request) {
         throw new Error(
           "YouTube authentication expired. Please reconnect your account."
         );
-      } else if (uploadResponse.status === 403) {
+      }
+      if (uploadResponse.status === 403) {
         throw new Error(
           "YouTube upload permission denied. Check your account permissions."
         );
       }
 
-      throw new Error(`Failed to upload video: ${errorText}`);
+      throw new Error(`Failed to upload video chunk: ${errorText}`);
     }
 
-    const result = await uploadResponse.json();
+    if (!result?.id) {
+      throw new Error("YouTube upload completed but video ID was not returned");
+    }
+
     console.log("[v0] YouTube upload successful:", result.id);
 
     return NextResponse.json({

@@ -104,7 +104,7 @@ export async function checkMediaStatus(containerId: string, token: string): Prom
   return data.status_code || "UNKNOWN"
 }
 
-export async function waitForMediaReady(containerId: string, token: string, maxAttempts = 30): Promise<void> {
+export async function waitForMediaReady(containerId: string, token: string, maxAttempts = 240): Promise<void> {
   console.log("[v0] Waiting for media to be ready...")
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -124,8 +124,8 @@ export async function waitForMediaReady(containerId: string, token: string, maxA
       throw new Error("Media container has expired. Please try uploading again.")
     }
 
-    // Wait 2 seconds before next check
-    await new Promise((resolve) => setTimeout(resolve, 2000))
+    // Wait 5 seconds before next check (large videos can take longer to process)
+    await new Promise((resolve) => setTimeout(resolve, 5000))
   }
 
   throw new Error("Media processing timed out. Please try again later.")

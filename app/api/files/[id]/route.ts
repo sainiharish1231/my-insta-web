@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getGridFSBucket } from "@/lib/mongodb";
 import { ObjectId } from "mongodb";
+import { Readable } from "stream";
 
 export async function GET(
   request: Request,
@@ -19,21 +20,14 @@ export async function GET(
 
     const file = files[0];
 
-    // Create a download stream
+    // Stream file directly from GridFS
     const downloadStream = bucket.openDownloadStream(new ObjectId(id));
+    const webStream = Readable.toWeb(downloadStream as any) as ReadableStream;
 
-    // Convert stream to buffer
-    const chunks: Buffer[] = [];
-    for await (const chunk of downloadStream) {
-      chunks.push(chunk);
-    }
-    const buffer = Buffer.concat(chunks);
-
-    // Return the file with proper headers
-    return new NextResponse(buffer, {
+    return new NextResponse(webStream, {
       headers: {
         "Content-Type": file.contentType || "application/octet-stream",
-        "Content-Length": buffer.length.toString(),
+        "Content-Length": String(file.length || 0),
         "Cache-Control": "public, max-age=31536000, immutable",
       },
     });

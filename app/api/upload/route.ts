@@ -18,12 +18,8 @@ export async function POST(request: Request) {
     const timestamp = Date.now();
     const filename = `${timestamp}-${file.name}`;
 
-    // Convert File to Buffer
-    const arrayBuffer = await file.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-
-    // Create a readable stream from buffer
-    const readableStream = Readable.from(buffer);
+    // Stream file directly instead of buffering entire content in memory
+    const readableStream = Readable.fromWeb(file.stream() as any);
 
     // Upload to GridFS
     const uploadStream = bucket.openUploadStream(filename, {
@@ -44,7 +40,8 @@ export async function POST(request: Request) {
 
     // Generate URL for the uploaded file
     const fileId = uploadStream.id.toString();
-    const url = `${process.env.NEXT_PUBLIC_BASE_URL}/api/files/${fileId}`;
+    const origin = process.env.NEXT_PUBLIC_BASE_URL || new URL(request.url).origin;
+    const url = `${origin}/api/files/${fileId}`;
 
     return NextResponse.json({ url });
   } catch (error: any) {
