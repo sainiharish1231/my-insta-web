@@ -497,7 +497,9 @@ export default function UploadPage() {
               <CloudinaryUploadWidget
                 onUploadSuccess={(url) => {
                   setUploadedFileUrl(url);
-                  setProgress("File uploaded to Cloudinary!");
+                  setMediaUrl(url);
+                  setProgress("File uploaded to Cloudinary! Now select accounts and click Publish to post.");
+                  console.log("[v0] Cloudinary upload success:", url);
                 }}
                 onUploadError={(error) => {
                   setError(`Upload failed: ${error}`);

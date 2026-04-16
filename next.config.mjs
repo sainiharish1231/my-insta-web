@@ -4,8 +4,16 @@ const nextConfig = {
     ignoreBuildErrors: true,
   },
   experimental: {
-    // Avoid 413 in Next proxy during large local uploads.
-    proxyClientMaxBodySize: 5 * 1024 * 1024 * 1024, // 5GB
+    // Allow large file uploads for videos (up to 4GB)
+    proxyClientMaxBodySize: 4 * 1024 * 1024 * 1024, // 4GB
+  },
+  serverRuntimeConfig: {
+    // Node.js runtime config for large uploads
+    api: {
+      bodyParser: {
+        sizeLimit: '4gb',
+      },
+    },
   },
   images: {
     unoptimized: true,
