@@ -25,6 +25,25 @@ export async function generateHashtags(caption: string): Promise<string[]> {
   return [...new Set([...existingHashtags, ...suggestedHashtags, ...commonHashtags])].slice(0, 30)
 }
 
+export function generateSmartCaption({
+  title,
+  description,
+  keywords = [],
+}: {
+  title?: string
+  description?: string
+  keywords?: string[]
+}) {
+  const cleanTitle = title?.trim() || "Fresh upload"
+  const cleanDescription = description?.trim() || "Built for reach, retention, and clean engagement."
+  const tagLine =
+    keywords.length > 0
+      ? keywords.map((keyword) => `#${keyword.replace(/^#/, "").trim()}`).join(" ")
+      : "#trending #viral #explore"
+
+  return `${cleanTitle}\n\n${cleanDescription}\n\nSave this and share your take below.\n\n${tagLine}`
+}
+
 export async function createMedia({ igUserId, token, mediaUrl, caption, isReel, locationId, coverUrl }: any) {
   console.log("[v0] Creating media container with URL:", mediaUrl)
 
@@ -189,12 +208,19 @@ function getCloudinaryResourceType(file: File): "image" | "video" | "raw" {
   return "raw"
 }
 
-export async function uploadMediaToCloudinary(file: File): Promise<string> {
+export async function uploadMediaAssetToCloudinary(
+  file: File,
+  options?: { folder?: string },
+): Promise<{ secureUrl: string; publicId: string; resourceType: string }> {
   const { cloudName, uploadPreset } = getCloudinaryConfig()
   const resourceType = getCloudinaryResourceType(file)
   const formData = new FormData()
   formData.append("file", file)
   formData.append("upload_preset", uploadPreset)
+
+  if (options?.folder) {
+    formData.append("folder", options.folder)
+  }
 
   // Cloudinary can automatically split large uploads into smaller chunks.
   if (resourceType === "video" && file.size > 100 * 1024 * 1024) {
@@ -204,8 +230,8 @@ export async function uploadMediaToCloudinary(file: File): Promise<string> {
   const res = await fetch(
     `https://api.cloudinary.com/v1_1/${cloudName}/${resourceType}/upload`,
     {
-    method: "POST",
-    body: formData,
+      method: "POST",
+      body: formData,
     },
   )
 
@@ -216,11 +242,20 @@ export async function uploadMediaToCloudinary(file: File): Promise<string> {
 
   const data = await res.json()
 
-  if (!data.secure_url) {
-    throw new Error("Cloudinary upload succeeded but no secure URL returned")
+  if (!data.secure_url || !data.public_id) {
+    throw new Error("Cloudinary upload succeeded but response metadata was incomplete")
   }
 
-  return data.secure_url
+  return {
+    secureUrl: data.secure_url,
+    publicId: data.public_id,
+    resourceType: data.resource_type || resourceType,
+  }
+}
+
+export async function uploadMediaToCloudinary(file: File): Promise<string> {
+  const asset = await uploadMediaAssetToCloudinary(file)
+  return asset.secureUrl
 }
 
 export async function getMediaInsights(mediaId: string, token: string, mediaType: string) {

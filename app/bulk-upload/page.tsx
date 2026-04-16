@@ -1,26 +1,34 @@
 "use client";
-import { useState, useRef, useEffect } from "react";
+
+import { Suspense, useEffect, useRef, useState } from "react";
 import type React from "react";
-import { Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { uploadMediaToCloudinary, createMedia, publishMedia } from "@/lib/meta";
 import {
-  ArrowLeft,
-  FolderOpen,
-  Upload,
-  Check,
   AlertCircle,
-  Play,
-  Pause,
-  Trash2,
+  ArrowLeft,
+  CalendarClock,
+  Check,
+  Cloud,
   Download,
+  FolderOpen,
   Instagram,
+  Loader2,
+  Pause,
+  Play,
+  Sparkles,
+  Trash2,
+  Upload,
   Youtube,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
+  createMedia,
+  generateSmartCaption,
+  publishMedia,
+  uploadMediaAssetToCloudinary,
+} from "@/lib/meta";
+import {
   MAX_UPLOAD_FILE_SIZE_BYTES,
-  uploadMediaToBlob,
   validateMediaFile,
 } from "@/lib/media-upload";
 
@@ -28,7 +36,7 @@ interface VideoFile {
   id: string;
   file: File;
   preview: string;
-  status: "pending" | "processing" | "uploaded" | "error";
+  status: "pending" | "processing" | "uploaded" | "scheduled" | "error";
   uploadedUrl?: string;
   error?: string;
   processedAt?: string;
@@ -41,6 +49,11 @@ interface QueueSettings {
   keywords: string;
   intervalMinutes: number;
   startDelayMinutes?: number;
+  mode: "now" | "schedule";
+  scheduledDate: string;
+  scheduledTime: string;
+  cloudinaryFolder: string;
+  deleteAfterPublish: boolean;
 }
 
 interface Account {
@@ -55,10 +68,34 @@ interface Account {
   thumbnail?: string;
 }
 
+const folderInputProps = {
+  webkitdirectory: "true",
+  directory: "true",
+} as any;
+
+async function deleteCloudinaryAsset(publicId: string, resourceType: string) {
+  const response = await fetch("/api/cloudinary/delete", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      publicId,
+      resourceType,
+    }),
+  });
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || "Failed to delete Cloudinary asset");
+  }
+}
+
 function BulkUploadContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
   const [videos, setVideos] = useState<VideoFile[]>([]);
   const [settings, setSettings] = useState<QueueSettings>({
     title: "",
@@ -66,111 +103,92 @@ function BulkUploadContent() {
     keywords: "",
     intervalMinutes: 5,
     startDelayMinutes: 0,
+    mode: "now",
+    scheduledDate: "",
+    scheduledTime: "",
+    cloudinaryFolder: `bulk-uploads/${new Date().toISOString().slice(0, 10)}`,
+    deleteAfterPublish: true,
   });
   const [isProcessing, setIsProcessing] = useState(false);
   const [currentVideoIndex, setCurrentVideoIndex] = useState(0);
-  const [activeUploadProgress, setActiveUploadProgress] = useState(0);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
-  const videosRef = useRef<VideoFile[]>([]);
   const [loadingSegments, setLoadingSegments] = useState(false);
-
   const [allAccounts, setAllAccounts] = useState<Account[]>([]);
   const [selectedAccounts, setSelectedAccounts] = useState<Account[]>([]);
   const [showAccountSelector, setShowAccountSelector] = useState(false);
-
-  useEffect(() => {
-    videosRef.current = videos;
-  }, [videos]);
+  const [isGeneratingCaption, setIsGeneratingCaption] = useState(false);
 
   useEffect(() => {
     const loadSegmentsFromSplitter = async () => {
       const source = searchParams.get("source");
-      if (source === "splitter") {
-        setLoadingSegments(true);
-        const segmentsJson = sessionStorage.getItem("pending_video_segments");
-
-        if (segmentsJson) {
-          try {
-            const segmentsData = JSON.parse(segmentsJson);
-            console.log("[v0] Loading segments from splitter:", segmentsData);
-
-            const loadedVideos: VideoFile[] = await Promise.all(
-              segmentsData.map(async (segment: any) => {
-                try {
-                  const response = await fetch(segment.blobUrl);
-                  const blob = await response.blob();
-
-                  const file = new File([blob], segment.fileName, {
-                    type: "video/mp4",
-                  });
-
-                  return {
-                    id: segment.id,
-                    file,
-                    preview: segment.blobUrl,
-                    status: "pending" as const,
-                    originalTitle: segment.title,
-                  };
-                } catch (err) {
-                  console.error("[v0] Failed to load segment:", err);
-                  return null;
-                }
-              }),
-            );
-
-            const validVideos = loadedVideos.filter(
-              (v) => v !== null,
-            ) as VideoFile[];
-            setVideos(validVideos);
-
-            sessionStorage.removeItem("pending_video_segments");
-
-            if (validVideos.length > 0) {
-              toast.success(
-                `Loaded ${validVideos.length} video segments from splitter!`,
-              );
-            }
-          } catch (err) {
-            console.error("[v0] Failed to parse segments:", err);
-            toast.error("Failed to load video segments");
-          }
-        }
-        setLoadingSegments(false);
+      if (source !== "splitter") {
+        return;
       }
+
+      setLoadingSegments(true);
+      const segmentsJson = sessionStorage.getItem("pending_video_segments");
+
+      if (segmentsJson) {
+        try {
+          const segmentsData = JSON.parse(segmentsJson);
+          const loadedVideos = await Promise.all(
+            segmentsData.map(async (segment: any) => {
+              const response = await fetch(segment.blobUrl);
+              const blob = await response.blob();
+
+              return {
+                id: segment.id,
+                file: new File([blob], segment.fileName, { type: "video/mp4" }),
+                preview: segment.blobUrl,
+                status: "pending" as const,
+                originalTitle: segment.title,
+              };
+            }),
+          );
+
+          setVideos(loadedVideos);
+          sessionStorage.removeItem("pending_video_segments");
+          toast.success(`Loaded ${loadedVideos.length} video segments from splitter`);
+        } catch (error) {
+          console.error("[v0] Failed to load splitter segments:", error);
+          toast.error("Failed to load video segments");
+        }
+      }
+
+      setLoadingSegments(false);
     };
 
     loadSegmentsFromSplitter();
 
     const igAccounts = JSON.parse(localStorage.getItem("ig_accounts") || "[]");
-    const ytAccounts = JSON.parse(
-      localStorage.getItem("youtube_accounts") || "[]",
-    );
+    const ytAccounts = JSON.parse(localStorage.getItem("youtube_accounts") || "[]");
 
-    const all: Account[] = [
-      ...igAccounts.map((acc: any) => ({
-        ...acc,
+    const accounts: Account[] = [
+      ...igAccounts.map((account: any) => ({
+        ...account,
+        username: account.username,
         platform: "instagram" as const,
       })),
-      ...ytAccounts.map((acc: any) => ({
-        ...acc,
+      ...ytAccounts.map((account: any) => ({
+        ...account,
+        username: account.username || account.name,
         platform: "youtube" as const,
       })),
     ];
 
-    setAllAccounts(all);
-    setSelectedAccounts(all); // Default: select all accounts
+    setAllAccounts(accounts);
+    setSelectedAccounts(accounts);
 
     return () => {
-      videosRef.current.forEach((video) => URL.revokeObjectURL(video.preview));
+      videos.forEach((video) => URL.revokeObjectURL(video.preview));
       if (intervalRef.current) {
         clearTimeout(intervalRef.current);
       }
     };
   }, [searchParams]);
 
-  const handleFilesSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    const videoFiles: File[] = [];
+  const addFilesToQueue = async (files: File[]) => {
+    const validFiles: File[] = [];
 
     for (const file of files) {
       if (!file.type.startsWith("video/")) {
@@ -183,35 +201,37 @@ function BulkUploadContent() {
         continue;
       }
 
-      videoFiles.push(file);
+      validFiles.push(file);
     }
 
-    if (videoFiles.length === 0) {
-      return;
-    }
+    const nextVideos = validFiles.map((file) => ({
+      id: `${Date.now()}-${Math.random()}`,
+      file,
+      preview: URL.createObjectURL(file),
+      status: "pending" as const,
+      originalTitle: file.name.replace(/\.[^.]+$/, ""),
+    }));
 
-    const newVideos: VideoFile[] = await Promise.all(
-      videoFiles.map(async (file) => {
-        const preview = URL.createObjectURL(file);
-        return {
-          id: `${Date.now()}-${Math.random()}`,
-          file,
-          preview,
-          status: "pending" as const,
-        };
-      }),
-    );
+    setVideos((prev) => [...prev, ...nextVideos]);
+  };
 
-    setVideos((prev) => [...prev, ...newVideos]);
+  const handleFilesSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    await addFilesToQueue(Array.from(event.target.files || []));
+  };
+
+  const handleFolderSelect = async (
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) => {
+    await addFilesToQueue(Array.from(event.target.files || []));
   };
 
   const removeVideo = (id: string) => {
     setVideos((prev) => {
-      const video = prev.find((v) => v.id === id);
-      if (video) {
-        URL.revokeObjectURL(video.preview);
+      const target = prev.find((video) => video.id === id);
+      if (target) {
+        URL.revokeObjectURL(target.preview);
       }
-      return prev.filter((v) => v.id !== id);
+      return prev.filter((video) => video.id !== id);
     });
   };
 
@@ -219,34 +239,121 @@ function BulkUploadContent() {
     videos.forEach((video) => URL.revokeObjectURL(video.preview));
     setVideos([]);
     setCurrentVideoIndex(0);
-    setActiveUploadProgress(0);
   };
 
   const downloadVideo = (video: VideoFile) => {
     const url = URL.createObjectURL(video.file);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = video.originalTitle
-      ? `${video.originalTitle.replace(/[^a-zA-Z0-9]/g, "_")}.mp4`
-      : `${video.file.name.split(".")[0]}.mp4`;
-    a.click();
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = video.file.name;
+    anchor.click();
     URL.revokeObjectURL(url);
-    toast.success("Download started");
   };
 
   const toggleAccount = (account: Account) => {
     setSelectedAccounts((prev) => {
-      const isSelected = prev.some(
-        (a) => a.id === account.id && a.platform === account.platform,
+      const exists = prev.some(
+        (item) => item.id === account.id && item.platform === account.platform,
       );
-      if (isSelected) {
+
+      if (exists) {
         return prev.filter(
-          (a) => !(a.id === account.id && a.platform === account.platform),
+          (item) => !(item.id === account.id && item.platform === account.platform),
         );
-      } else {
-        return [...prev, account];
       }
+
+      return [...prev, account];
     });
+  };
+
+  const generateCaptionDraft = async () => {
+    setIsGeneratingCaption(true);
+    try {
+      const keywords = settings.keywords
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+
+      setSettings((prev) => ({
+        ...prev,
+        description: generateSmartCaption({
+          title: prev.title || "Bulk upload campaign",
+          description: prev.description,
+          keywords,
+        }),
+      }));
+    } finally {
+      setIsGeneratingCaption(false);
+    }
+  };
+
+  const scheduleQueue = async () => {
+    if (!settings.scheduledDate || !settings.scheduledTime) {
+      toast.error("Pick schedule date and time");
+      return;
+    }
+
+    const baseTime = new Date(`${settings.scheduledDate}T${settings.scheduledTime}`);
+    if (baseTime <= new Date()) {
+      toast.error("Schedule time must be in the future");
+      return;
+    }
+
+    for (let index = 0; index < videos.length; index++) {
+      const video = videos[index];
+      const asset = await uploadMediaAssetToCloudinary(video.file, {
+        folder: settings.cloudinaryFolder,
+      });
+      const caption = generateSmartCaption({
+        title: video.originalTitle || settings.title,
+        description: settings.description,
+        keywords: settings.keywords
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean),
+      });
+      const scheduledFor = new Date(
+        baseTime.getTime() + index * settings.intervalMinutes * 60 * 1000,
+      );
+
+      const scheduledPosts = JSON.parse(
+        localStorage.getItem("scheduled_posts") || "[]",
+      );
+      scheduledPosts.push({
+        id: `${Date.now()}-${index}`,
+        mediaUrl: asset.secureUrl,
+        cloudinaryPublicId: asset.publicId,
+        cloudinaryResourceType: asset.resourceType,
+        caption,
+        title: video.originalTitle || settings.title,
+        keywords: settings.keywords,
+        contentType: "REEL",
+        accounts: selectedAccounts.map((account) => ({
+          id: account.id,
+          username: account.username,
+          platform: account.platform,
+          token: account.token || account.accessToken,
+        })),
+        scheduledFor: scheduledFor.toISOString(),
+        status: "scheduled",
+      });
+      localStorage.setItem("scheduled_posts", JSON.stringify(scheduledPosts));
+
+      setVideos((prev) =>
+        prev.map((item) =>
+          item.id === video.id
+            ? {
+                ...item,
+                status: "scheduled",
+                uploadedUrl: asset.secureUrl,
+              }
+            : item,
+        ),
+      );
+    }
+
+    toast.success("Bulk schedule created. Check dashboard scheduled posts.");
+    setIsProcessing(false);
   };
 
   const startBulkUpload = async () => {
@@ -256,277 +363,161 @@ function BulkUploadContent() {
     }
 
     if (selectedAccounts.length === 0) {
-      toast.error("Please select at least one account");
-      return;
-    }
-
-    if (!settings.title && videos.every((v) => !v.originalTitle)) {
-      toast.error("Please fill in a base title or ensure segments have titles");
-      return;
-    }
-
-    if (!settings.description) {
-      toast.error("Please fill in a description");
+      toast.error("Please keep at least one account selected");
       return;
     }
 
     setIsProcessing(true);
 
-    if (settings.startDelayMinutes && settings.startDelayMinutes > 0) {
-      console.log(
-        `[v0] Delaying start by ${settings.startDelayMinutes} minutes`,
-      );
-      toast.info(`Upload will start in ${settings.startDelayMinutes} minutes`);
-      intervalRef.current = setTimeout(
-        () => {
-          processNextVideo();
-        },
-        settings.startDelayMinutes * 60 * 1000,
-      );
-    } else {
-      processNextVideo();
-    }
-  };
-
-  const processNextVideo = async () => {
-    const pendingVideos = videos.filter((v) => v.status === "pending");
-
-    console.log(
-      "[v0] Processing queue - pending videos:",
-      pendingVideos.length,
-    );
-
-    if (pendingVideos.length === 0) {
-      stopProcessing();
-      toast.success("All videos uploaded successfully!");
+    if (settings.mode === "schedule") {
+      await scheduleQueue();
       return;
     }
 
-    const nextVideo = pendingVideos[0];
-    const videoIndex = videos.findIndex((v) => v.id === nextVideo.id);
+    if (settings.startDelayMinutes && settings.startDelayMinutes > 0) {
+      toast.info(`Queue will start in ${settings.startDelayMinutes} minutes`);
+      intervalRef.current = setTimeout(
+        () => void processNextVideo(),
+        settings.startDelayMinutes * 60 * 1000,
+      );
+      return;
+    }
 
-    console.log(
-      "[v0] Processing video:",
-      nextVideo.originalTitle || nextVideo.file.name,
-      "Index:",
-      videoIndex,
-    );
-    setCurrentVideoIndex(videoIndex + 1);
+    await processNextVideo();
+  };
 
+  const processNextVideo = async () => {
+    const pendingVideo = videos.find((video) => video.status === "pending");
+
+    if (!pendingVideo) {
+      setIsProcessing(false);
+      toast.success("All videos processed");
+      return;
+    }
+
+    setCurrentVideoIndex(videos.findIndex((video) => video.id === pendingVideo.id) + 1);
     setVideos((prev) =>
-      prev.map((v) =>
-        v.id === nextVideo.id ? { ...v, status: "processing" } : v,
+      prev.map((video) =>
+        video.id === pendingVideo.id ? { ...video, status: "processing" } : video,
       ),
     );
 
     try {
-      const videoTitle = nextVideo.originalTitle || settings.title;
+      const asset = await uploadMediaAssetToCloudinary(pendingVideo.file, {
+        folder: settings.cloudinaryFolder,
+      });
+      const keywords = settings.keywords
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const caption = generateSmartCaption({
+        title: pendingVideo.originalTitle || settings.title,
+        description: settings.description,
+        keywords,
+      });
 
-      console.log("[v0] Uploading to Cloudinary...");
-      const url = await uploadMediaToCloudinary(nextVideo.file);
-      console.log("[v0] Video uploaded to:", url);
+      let successCount = 0;
 
-      const igAccounts = selectedAccounts.filter(
-        (a) => a.platform === "instagram",
-      );
-      const ytAccounts = selectedAccounts.filter(
-        (a) => a.platform === "youtube",
-      );
-
-      console.log(
-        "[v0] Uploading to accounts - Instagram:",
-        igAccounts.length,
-        "YouTube:",
-        ytAccounts.length,
-      );
-
-      for (const account of igAccounts) {
+      for (const account of selectedAccounts) {
         try {
-          console.log("[v0] Uploading to Instagram account:", account.username);
+          if (account.platform === "instagram") {
+            const containerId = await createMedia({
+              igUserId: account.id,
+              token: account.token,
+              mediaUrl: asset.secureUrl,
+              caption,
+              isReel: true,
+            });
 
-          const caption = `${videoTitle}\n\n${
-            settings.description
-          }\n\n${settings.keywords
-            .split(",")
-            .map((k) => `#${k.trim()}`)
-            .filter(Boolean)
-            .join(" ")}`;
+            await publishMedia({
+              igUserId: account.id,
+              token: account.token,
+              creationId: containerId,
+            });
+          } else {
+            const response = await fetch("/api/youtube/upload", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                accessToken: account.accessToken || account.token,
+                refreshToken: account.refreshToken,
+                videoUrl: asset.secureUrl,
+                title:
+                  pendingVideo.originalTitle ||
+                  settings.title ||
+                  "Bulk Upload Video",
+                description: caption,
+                keywords,
+                privacy: "public",
+                isShort: true,
+              }),
+            });
 
-          console.log("[v0] Instagram caption:", caption);
-          console.log("[v0] Video URL for Instagram:", url);
+            const data = await response.json();
+            if (!response.ok) {
+              throw new Error(data.error || "YouTube upload failed");
+            }
+          }
 
-          const containerId = await createMedia({
-            igUserId: account.id,
-            token: account.token,
-            mediaUrl: url,
-            caption,
-            isReel: true,
-          });
-          console.log("[v0] Instagram media container created:", containerId);
-          const publishData = await publishMedia({
-            igUserId: account.id,
-            token: account.token,
-            creationId: containerId,
-          });
-
-          console.log(
-            "[v0] Successfully published to Instagram! Media ID:",
-            publishData.id,
-          );
-          toast.success(`Published to Instagram: ${account.username}`);
-        } catch (err) {
-          const errorMessage = err instanceof Error ? err.message : String(err);
-          console.error(
-            `[v0] Failed to upload to Instagram account ${account.username}:`,
-            errorMessage,
-          );
-          console.error("[v0] Full error object:", err);
+          successCount += 1;
+        } catch (accountError: any) {
           toast.error(
-            `Instagram upload failed for ${account.username}: ${errorMessage}`,
+            `${account.username}: ${accountError.message || "Publish failed"}`,
           );
         }
       }
 
-      for (const account of ytAccounts) {
-        try {
-          console.log(
-            "[v0] Uploading to YouTube account:",
-            account.name || account.username,
-          );
-
-          const uploadResponse = await fetch("/api/youtube/upload", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              accessToken: account.accessToken || account.token,
-              refreshToken: account.refreshToken,
-              videoUrl: url,
-              title: videoTitle,
-              description: settings.description,
-              keywords: settings.keywords
-                .split(",")
-                .map((k) => k.trim())
-                .filter(Boolean),
-              privacy: "public",
-              isShort: true,
-            }),
-          });
-
-          const uploadData = await uploadResponse.json();
-          console.log("[v0] YouTube upload response:", uploadData);
-
-          if (
-            uploadData.accessToken &&
-            uploadData.accessToken !== account.accessToken
-          ) {
-            const storedAccounts = JSON.parse(
-              localStorage.getItem("youtube_accounts") || "[]",
-            );
-            const updatedAccounts = storedAccounts.map((a: any) =>
-              a.id === account.id
-                ? { ...a, accessToken: uploadData.accessToken }
-                : a,
-            );
-            localStorage.setItem(
-              "youtube_accounts",
-              JSON.stringify(updatedAccounts),
-            );
-          }
-
-          if (!uploadResponse.ok) {
-            console.error(
-              `[v0] YouTube upload failed for ${account.name}:`,
-              uploadData.error,
-            );
-            toast.error(
-              `YouTube upload failed for ${account.name || account.username}: ${
-                uploadData.error || "Unknown error"
-              }`,
-            );
-          } else {
-            console.log(
-              "[v0] Successfully uploaded to YouTube:",
-              uploadData.videoId,
-            );
-            toast.success(
-              `Published to YouTube: ${account.name || account.username}`,
-            );
-          }
-        } catch (err) {
-          console.error(
-            `[v0] Failed to upload to YouTube account ${account.name}:`,
-            err,
-          );
-          toast.error(
-            `YouTube upload failed for ${account.name || account.username}: ${
-              err instanceof Error ? err.message : "Unknown error"
-            }`,
-          );
-        }
+      if (
+        settings.deleteAfterPublish &&
+        successCount === selectedAccounts.length &&
+        asset.publicId
+      ) {
+        await deleteCloudinaryAsset(asset.publicId, asset.resourceType);
       }
 
       setVideos((prev) =>
-        prev.map((v) =>
-          v.id === nextVideo.id
+        prev.map((video) =>
+          video.id === pendingVideo.id
             ? {
-                ...v,
+                ...video,
                 status: "uploaded",
-                uploadedUrl: url,
+                uploadedUrl: asset.secureUrl,
                 processedAt: new Date().toISOString(),
               }
-            : v,
+            : video,
         ),
       );
-      setActiveUploadProgress(0);
-
-      toast.success(`Uploaded: ${videoTitle}`);
 
       const remainingPending = videos.filter(
-        (v) => v.status === "pending" && v.id !== nextVideo.id,
+        (video) => video.status === "pending" && video.id !== pendingVideo.id,
       );
-      console.log("[v0] Remaining pending videos:", remainingPending.length);
 
       if (remainingPending.length > 0) {
-        const delayMinutes = settings.intervalMinutes;
-        const delayMs = delayMinutes * 60 * 1000;
-
-        toast.info(
-          `Next upload in ${delayMinutes} minutes. ${remainingPending.length} videos remaining.`,
+        intervalRef.current = setTimeout(
+          () => void processNextVideo(),
+          settings.intervalMinutes * 60 * 1000,
         );
-        console.log("[v0] Scheduling next upload in", delayMinutes, "minutes");
-
-        intervalRef.current = setTimeout(() => {
-          processNextVideo();
-        }, delayMs);
       } else {
-        console.log("[v0] No more videos to process");
-        stopProcessing();
-        toast.success("All videos uploaded successfully!");
+        setIsProcessing(false);
+        toast.success("Bulk publish completed");
       }
     } catch (error: any) {
-      console.error("[v0] Upload error:", error);
-      setActiveUploadProgress(0);
-
       setVideos((prev) =>
-        prev.map((v) =>
-          v.id === nextVideo.id
-            ? {
-                ...v,
-                status: "error",
-                error: error.message,
-              }
-            : v,
+        prev.map((video) =>
+          video.id === pendingVideo.id
+            ? { ...video, status: "error", error: error.message }
+            : video,
         ),
       );
-
-      toast.error(`Failed to upload: ${error.message}`);
-      stopProcessing();
+      setIsProcessing(false);
+      toast.error(error.message || "Bulk upload failed");
     }
   };
 
   const stopProcessing = () => {
     setIsProcessing(false);
-    setActiveUploadProgress(0);
     setCurrentVideoIndex(0);
     if (intervalRef.current) {
       clearTimeout(intervalRef.current);
@@ -536,388 +527,463 @@ function BulkUploadContent() {
 
   const stats = {
     total: videos.length,
-    pending: videos.filter((v) => v.status === "pending").length,
-    processing: videos.filter((v) => v.status === "processing").length,
-    uploaded: videos.filter((v) => v.status === "uploaded").length,
-    error: videos.filter((v) => v.status === "error").length,
+    pending: videos.filter((video) => video.status === "pending").length,
+    processing: videos.filter((video) => video.status === "processing").length,
+    uploaded: videos.filter((video) => video.status === "uploaded").length,
+    scheduled: videos.filter((video) => video.status === "scheduled").length,
+    error: videos.filter((video) => video.status === "error").length,
   };
 
-  return (
-    <div className="min-h-screen bg-slate-950">
-      <header className="bg-slate-900/80 backdrop-blur-xl border-b border-white/10 sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <button
-                onClick={() => router.push("/dashboard")}
-                className="p-2 hover:bg-white/10 rounded-lg transition-colors"
-              >
-                <ArrowLeft className="w-5 h-5 text-white/60" />
-              </button>
-              <div className="flex items-center gap-2">
-                <FolderOpen className="w-5 h-5 text-pink-400" />
-                <h1 className="text-xl font-semibold text-white">
-                  Bulk Upload Automation
-                </h1>
-              </div>
-            </div>
+  const allSelected = selectedAccounts.length === allAccounts.length;
 
-            <div className="flex items-center gap-3">
-              {isProcessing ? (
-                <button
-                  onClick={stopProcessing}
-                  className="flex items-center gap-2 px-4 py-2 bg-red-500 hover:bg-red-600 rounded-xl text-white font-medium transition-colors"
-                >
-                  <Pause className="w-4 h-4" />
-                  Stop Queue
-                </button>
-              ) : (
-                <button
-                  onClick={startBulkUpload}
-                  disabled={videos.length === 0 || loadingSegments}
-                  className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-pink-500 to-red-500 hover:from-pink-600 hover:to-red-600 rounded-xl text-white font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <Play className="w-4 h-4" />
-                  Start Upload Queue
-                </button>
-              )}
+  return (
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top,#1e293b_0%,#020617_45%,#000_100%)]">
+      <header className="sticky top-0 z-50 border-b border-white/10 bg-slate-950/80 backdrop-blur-xl">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4">
+          <div className="flex items-center gap-4">
+            <button
+              onClick={() => router.push("/dashboard")}
+              className="rounded-xl p-2 transition-colors hover:bg-white/10"
+            >
+              <ArrowLeft className="h-5 w-5 text-white/70" />
+            </button>
+            <div>
+              <p className="text-xs uppercase tracking-[0.25em] text-cyan-300/70">
+                Pro Queue
+              </p>
+              <h1 className="text-2xl font-semibold text-white">Bulk Upload Studio</h1>
             </div>
           </div>
+
+          {isProcessing ? (
+            <button
+              onClick={stopProcessing}
+              className="inline-flex items-center gap-2 rounded-2xl bg-red-500 px-4 py-2 font-medium text-white transition-colors hover:bg-red-600"
+            >
+              <Pause className="h-4 w-4" />
+              Stop Queue
+            </button>
+          ) : (
+            <button
+              onClick={startBulkUpload}
+              disabled={videos.length === 0 || loadingSegments}
+              className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-fuchsia-500 to-cyan-500 px-5 py-3 font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {settings.mode === "schedule" ? (
+                <CalendarClock className="h-4 w-4" />
+              ) : (
+                <Play className="h-4 w-4" />
+              )}
+              {settings.mode === "schedule" ? "Create Schedule" : "Post Now"}
+            </button>
+          )}
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 py-8">
+      <main className="mx-auto max-w-7xl px-4 py-8">
         {loadingSegments && (
-          <div className="mb-8 bg-blue-500/10 border border-blue-500/30 rounded-xl p-4 flex items-center gap-3">
-            <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-            <p className="text-blue-400 font-medium">
-              Loading video segments from splitter...
-            </p>
+          <div className="mb-6 flex items-center gap-3 rounded-2xl border border-blue-500/30 bg-blue-500/10 p-4 text-blue-200">
+            <Loader2 className="h-5 w-5 animate-spin" />
+            Loading segments from splitter...
           </div>
         )}
 
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
-          <div className="bg-slate-900/50 backdrop-blur-sm rounded-xl p-4 border border-white/10">
+        <div className="mb-8 grid grid-cols-2 gap-4 md:grid-cols-6">
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
             <div className="text-2xl font-bold text-white">{stats.total}</div>
-            <div className="text-sm text-white/60">Total Videos</div>
+            <div className="text-sm text-white/60">Total</div>
           </div>
-          <div className="bg-slate-900/50 backdrop-blur-sm rounded-xl p-4 border border-yellow-500/30">
-            <div className="text-2xl font-bold text-yellow-400">
-              {stats.pending}
-            </div>
+          <div className="rounded-2xl border border-yellow-500/20 bg-yellow-500/10 p-4">
+            <div className="text-2xl font-bold text-yellow-300">{stats.pending}</div>
             <div className="text-sm text-white/60">Pending</div>
           </div>
-          <div className="bg-slate-900/50 backdrop-blur-sm rounded-xl p-4 border border-blue-500/30">
-            <div className="text-2xl font-bold text-blue-400">
-              {stats.processing}
-            </div>
+          <div className="rounded-2xl border border-blue-500/20 bg-blue-500/10 p-4">
+            <div className="text-2xl font-bold text-blue-300">{stats.processing}</div>
             <div className="text-sm text-white/60">Processing</div>
           </div>
-          <div className="bg-slate-900/50 backdrop-blur-sm rounded-xl p-4 border border-green-500/30">
-            <div className="text-2xl font-bold text-green-400">
-              {stats.uploaded}
-            </div>
-            <div className="text-sm text-white/60">Uploaded</div>
+          <div className="rounded-2xl border border-green-500/20 bg-green-500/10 p-4">
+            <div className="text-2xl font-bold text-green-300">{stats.uploaded}</div>
+            <div className="text-sm text-white/60">Posted</div>
           </div>
-          <div className="bg-slate-900/50 backdrop-blur-sm rounded-xl p-4 border border-red-500/30">
-            <div className="text-2xl font-bold text-red-400">{stats.error}</div>
+          <div className="rounded-2xl border border-cyan-500/20 bg-cyan-500/10 p-4">
+            <div className="text-2xl font-bold text-cyan-300">{stats.scheduled}</div>
+            <div className="text-sm text-white/60">Scheduled</div>
+          </div>
+          <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-4">
+            <div className="text-2xl font-bold text-red-300">{stats.error}</div>
             <div className="text-sm text-white/60">Failed</div>
           </div>
         </div>
 
-        <div className="grid lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-1 space-y-6">
-            <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
-              <h2 className="text-lg font-semibold text-white mb-4">
-                Upload Settings
-              </h2>
+        <div className="grid gap-6 lg:grid-cols-[1fr_1.35fr]">
+          <div className="space-y-6">
+            <div className="rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur-xl">
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.25em] text-cyan-300/70">
+                    Campaign Setup
+                  </p>
+                  <h2 className="mt-2 text-xl font-semibold text-white">
+                    Smart defaults on
+                  </h2>
+                </div>
+                <button
+                  onClick={generateCaptionDraft}
+                  disabled={isGeneratingCaption}
+                  className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-fuchsia-500 to-cyan-500 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                >
+                  {isGeneratingCaption ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-4 w-4" />
+                  )}
+                  AI Caption
+                </button>
+              </div>
 
               <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-white/70 mb-2">
-                    Title (for YouTube)
-                  </label>
-                  <input
-                    type="text"
-                    value={settings.title}
-                    onChange={(e) =>
-                      setSettings({ ...settings, title: e.target.value })
-                    }
-                    placeholder="Enter video title..."
-                    className="w-full px-4 py-2 bg-white/5 border border-white/10 rounded-xl text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-pink-500"
-                  />
-                  <p className="text-xs text-white/40 mt-1">
-                    {videos.some((v) => v.originalTitle)
-                      ? "Optional - segments have individual titles"
-                      : "Required"}
-                  </p>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-white/70 mb-2">
-                    Description
-                  </label>
-                  <textarea
-                    value={settings.description}
-                    onChange={(e) =>
-                      setSettings({ ...settings, description: e.target.value })
-                    }
-                    placeholder="Enter video description..."
-                    rows={3}
-                    className="w-full px-4 py-2 bg-white/5 border border-white/10 rounded-xl text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-pink-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-white/70 mb-2">
-                    Keywords (comma-separated)
-                  </label>
-                  <input
-                    type="text"
-                    value={settings.keywords}
-                    onChange={(e) =>
-                      setSettings({ ...settings, keywords: e.target.value })
-                    }
-                    placeholder="keyword1, keyword2, keyword3..."
-                    className="w-full px-4 py-2 bg-white/5 border border-white/10 rounded-xl text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-pink-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-white/70 mb-2">
-                    Interval Between Uploads
-                  </label>
-                  <input
-                    type="number"
-                    value={settings.intervalMinutes}
-                    onChange={(e) =>
-                      setSettings({
-                        ...settings,
-                        intervalMinutes: Number.parseInt(e.target.value) || 5,
-                      })
-                    }
-                    min="1"
-                    className="w-full px-4 py-2 bg-white/5 border border-white/10 rounded-xl text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-pink-500"
-                  />
-                  <p className="text-xs text-white/40 mt-1">
-                    Minutes between each upload
-                  </p>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-white/70 mb-2">
-                    Start Delay
-                  </label>
-                  <input
-                    type="number"
-                    value={settings.startDelayMinutes || 0}
-                    onChange={(e) =>
-                      setSettings({
-                        ...settings,
-                        startDelayMinutes: Number.parseInt(e.target.value) || 0,
-                      })
-                    }
-                    min="0"
-                    className="w-full px-4 py-2 bg-white/5 border border-white/10 rounded-xl text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-pink-500"
-                  />
-                  <p className="text-xs text-white/40 mt-1">
-                    Wait before uploading first video (minutes)
-                  </p>
-                </div>
-
-                <div className="pt-4 border-t border-white/10">
+                <div className="grid grid-cols-2 gap-3 rounded-2xl border border-white/10 bg-slate-950/40 p-2">
                   <button
-                    onClick={() => setShowAccountSelector(!showAccountSelector)}
-                    className="w-full px-4 py-2 bg-white/10 hover:bg-white/20 rounded-xl text-white font-medium transition-colors flex items-center justify-between"
+                    onClick={() =>
+                      setSettings((prev) => ({ ...prev, mode: "now" }))
+                    }
+                    className={`rounded-xl px-4 py-3 text-sm font-medium transition-colors ${
+                      settings.mode === "now"
+                        ? "bg-gradient-to-r from-fuchsia-500 to-cyan-500 text-white"
+                        : "text-white/65 hover:bg-white/5"
+                    }`}
                   >
-                    <span>
-                      Select Accounts ({selectedAccounts.length}/
-                      {allAccounts.length})
-                    </span>
-                    <span className="text-xs">
-                      {showAccountSelector ? "▼" : "▶"}
-                    </span>
+                    Post Now
                   </button>
-
-                  {showAccountSelector && (
-                    <div className="mt-3 space-y-2 max-h-64 overflow-y-auto">
-                      {allAccounts.length === 0 ? (
-                        <p className="text-sm text-white/50 text-center py-4">
-                          No accounts connected
-                        </p>
-                      ) : (
-                        allAccounts.map((account) => (
-                          <div
-                            key={`${account.id}-${account.platform}`}
-                            className="flex items-center gap-3 p-3 bg-white/5 rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
-                            onClick={() => toggleAccount(account)}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={selectedAccounts.some(
-                                (a) =>
-                                  a.id === account.id &&
-                                  a.platform === account.platform,
-                              )}
-                              onChange={() => toggleAccount(account)}
-                              className="w-4 h-4 rounded cursor-pointer"
-                            />
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2">
-                                {account.platform === "instagram" ? (
-                                  <Instagram className="w-4 h-4 text-pink-500 flex-shrink-0" />
-                                ) : (
-                                  <Youtube className="w-4 h-4 text-red-500 flex-shrink-0" />
-                                )}
-                                <p className="text-sm font-medium text-white truncate">
-                                  {account.username || account.name}
-                                </p>
-                              </div>
-                              <p className="text-xs text-white/40 capitalize">
-                                {account.platform}
-                              </p>
-                            </div>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  )}
+                  <button
+                    onClick={() =>
+                      setSettings((prev) => ({ ...prev, mode: "schedule" }))
+                    }
+                    className={`rounded-xl px-4 py-3 text-sm font-medium transition-colors ${
+                      settings.mode === "schedule"
+                        ? "bg-gradient-to-r from-fuchsia-500 to-cyan-500 text-white"
+                        : "text-white/65 hover:bg-white/5"
+                    }`}
+                  >
+                    Schedule
+                  </button>
                 </div>
+
+                <input
+                  type="text"
+                  value={settings.title}
+                  onChange={(event) =>
+                    setSettings((prev) => ({ ...prev, title: event.target.value }))
+                  }
+                  placeholder="Campaign title or title prefix"
+                  className="w-full rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3 text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-cyan-400"
+                />
+
+                <textarea
+                  value={settings.description}
+                  onChange={(event) =>
+                    setSettings((prev) => ({
+                      ...prev,
+                      description: event.target.value,
+                    }))
+                  }
+                  rows={5}
+                  placeholder="Description / caption base"
+                  className="w-full rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3 text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-cyan-400"
+                />
+
+                <input
+                  type="text"
+                  value={settings.keywords}
+                  onChange={(event) =>
+                    setSettings((prev) => ({ ...prev, keywords: event.target.value }))
+                  }
+                  placeholder="Keywords, comma, separated"
+                  className="w-full rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3 text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-cyan-400"
+                />
+
+                <input
+                  type="text"
+                  value={settings.cloudinaryFolder}
+                  onChange={(event) =>
+                    setSettings((prev) => ({
+                      ...prev,
+                      cloudinaryFolder: event.target.value,
+                    }))
+                  }
+                  placeholder="Cloudinary folder"
+                  className="w-full rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3 text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-cyan-400"
+                />
+
+                {settings.mode === "schedule" ? (
+                  <div className="grid grid-cols-2 gap-3">
+                    <input
+                      type="date"
+                      value={settings.scheduledDate}
+                      onChange={(event) =>
+                        setSettings((prev) => ({
+                          ...prev,
+                          scheduledDate: event.target.value,
+                        }))
+                      }
+                      className="w-full rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-cyan-400"
+                    />
+                    <input
+                      type="time"
+                      value={settings.scheduledTime}
+                      onChange={(event) =>
+                        setSettings((prev) => ({
+                          ...prev,
+                          scheduledTime: event.target.value,
+                        }))
+                      }
+                      className="w-full rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-cyan-400"
+                    />
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-3">
+                    <input
+                      type="number"
+                      min="1"
+                      value={settings.intervalMinutes}
+                      onChange={(event) =>
+                        setSettings((prev) => ({
+                          ...prev,
+                          intervalMinutes: Number.parseInt(event.target.value) || 5,
+                        }))
+                      }
+                      className="w-full rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-cyan-400"
+                    />
+                    <input
+                      type="number"
+                      min="0"
+                      value={settings.startDelayMinutes || 0}
+                      onChange={(event) =>
+                        setSettings((prev) => ({
+                          ...prev,
+                          startDelayMinutes: Number.parseInt(event.target.value) || 0,
+                        }))
+                      }
+                      className="w-full rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-cyan-400"
+                    />
+                  </div>
+                )}
+
+                <label className="flex items-center gap-3 rounded-2xl border border-white/10 bg-slate-950/40 p-4 text-sm text-white/70">
+                  <input
+                    type="checkbox"
+                    checked={settings.deleteAfterPublish}
+                    onChange={(event) =>
+                      setSettings((prev) => ({
+                        ...prev,
+                        deleteAfterPublish: event.target.checked,
+                      }))
+                    }
+                    className="h-4 w-4 rounded"
+                  />
+                  Delete Cloudinary file after successful post on all selected accounts
+                </label>
               </div>
             </div>
 
-            <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
-              <div className="flex items-center justify-between mb-4">
+            <div className="rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur-xl">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-lg font-semibold text-white">Connected Accounts</h2>
+                <button
+                  onClick={() => setShowAccountSelector((prev) => !prev)}
+                  className="text-sm text-cyan-300"
+                >
+                  {showAccountSelector ? "Hide" : "Manage"}
+                </button>
+              </div>
+
+              <div className="mb-4 rounded-2xl border border-emerald-400/15 bg-emerald-500/10 p-4 text-sm text-emerald-200">
+                Default me saare connected accounts selected hain.
+              </div>
+
+              <button
+                onClick={() =>
+                  setSelectedAccounts(allSelected ? [] : allAccounts)
+                }
+                className="mb-4 rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm text-white/70"
+              >
+                {allSelected ? "Clear all" : "Select all"}
+              </button>
+
+              {showAccountSelector && (
+                <div className="space-y-2">
+                  {allAccounts.map((account) => (
+                    <button
+                      key={`${account.id}-${account.platform}`}
+                      onClick={() => toggleAccount(account)}
+                      className={`flex w-full items-center gap-3 rounded-2xl border p-3 text-left ${
+                        selectedAccounts.some(
+                          (item) =>
+                            item.id === account.id &&
+                            item.platform === account.platform,
+                        )
+                          ? "border-cyan-400/30 bg-cyan-400/10"
+                          : "border-white/10 bg-slate-950/40"
+                      }`}
+                    >
+                      {account.platform === "instagram" ? (
+                        <Instagram className="h-5 w-5 text-pink-400" />
+                      ) : (
+                        <Youtube className="h-5 w-5 text-red-400" />
+                      )}
+                      <div className="flex-1">
+                        <p className="font-medium text-white">{account.username}</p>
+                        <p className="text-xs capitalize text-white/45">
+                          {account.platform}
+                        </p>
+                      </div>
+                      {selectedAccounts.some(
+                        (item) =>
+                          item.id === account.id && item.platform === account.platform,
+                      ) && <Check className="h-4 w-4 text-cyan-300" />}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur-xl">
+              <div className="mb-4 flex items-center justify-between">
                 <h2 className="text-lg font-semibold text-white">Add Videos</h2>
                 {videos.length > 0 && (
                   <button
                     onClick={clearAllVideos}
-                    className="text-xs px-3 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-lg transition-colors"
+                    className="rounded-xl bg-red-500/20 px-3 py-1 text-xs text-red-300"
                   >
                     Clear All
                   </button>
                 )}
               </div>
 
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                className="w-full py-8 border-2 border-dashed border-white/20 hover:border-white/40 rounded-xl transition-colors flex flex-col items-center justify-center gap-2 cursor-pointer"
-              >
-                <Upload className="w-5 h-5 text-white/60" />
-                <span className="text-sm font-medium text-white/70">
-                  Click to select videos
-                </span>
-                <span className="text-xs text-white/40">
-                  or drag and drop (max{" "}
-                  {(MAX_UPLOAD_FILE_SIZE_BYTES / (1024 * 1024 * 1024)).toFixed(
-                    0,
-                  )}
-                  GB each)
-                </span>
-              </button>
+              <div className="grid gap-3 md:grid-cols-2">
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="rounded-3xl border-2 border-dashed border-white/15 bg-slate-950/40 px-4 py-10 text-center transition-colors hover:border-cyan-400/40"
+                >
+                  <Upload className="mx-auto h-6 w-6 text-cyan-300" />
+                  <p className="mt-3 font-medium text-white">Select videos</p>
+                  <p className="mt-1 text-xs text-white/45">
+                    Max {(MAX_UPLOAD_FILE_SIZE_BYTES / (1024 * 1024 * 1024)).toFixed(0)}GB each
+                  </p>
+                </button>
+
+                <button
+                  onClick={() => folderInputRef.current?.click()}
+                  className="rounded-3xl border-2 border-dashed border-white/15 bg-slate-950/40 px-4 py-10 text-center transition-colors hover:border-cyan-400/40"
+                >
+                  <FolderOpen className="mx-auto h-6 w-6 text-emerald-300" />
+                  <p className="mt-3 font-medium text-white">Select folder</p>
+                  <p className="mt-1 text-xs text-white/45">
+                    Entire folder queue me add ho jayega
+                  </p>
+                </button>
+              </div>
 
               <input
                 ref={fileInputRef}
                 type="file"
-                multiple
                 accept="video/*"
+                multiple
                 onChange={handleFilesSelect}
+                className="hidden"
+              />
+              <input
+                {...folderInputProps}
+                ref={folderInputRef}
+                type="file"
+                accept="video/*"
+                multiple
+                onChange={handleFolderSelect}
                 className="hidden"
               />
             </div>
           </div>
 
-          <div className="lg:col-span-2">
-            <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
-              <h2 className="text-lg font-semibold text-white mb-4">
-                Video Queue ({videos.length})
-              </h2>
+          <div className="rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur-xl">
+            <div className="mb-5 flex items-center justify-between">
+              <div>
+                <p className="text-xs uppercase tracking-[0.25em] text-cyan-300/70">
+                  Live Queue
+                </p>
+                <h2 className="mt-2 text-xl font-semibold text-white">
+                  Video Queue ({videos.length})
+                </h2>
+              </div>
+              {currentVideoIndex > 0 && (
+                <div className="rounded-full border border-blue-500/20 bg-blue-500/10 px-4 py-1 text-sm text-blue-200">
+                  Processing #{currentVideoIndex}
+                </div>
+              )}
+            </div>
 
-              <div className="space-y-2 max-h-[600px] overflow-y-auto">
-                {videos.length === 0 ? (
-                  <div className="text-center py-12">
-                    <p className="text-white/50">No videos added yet</p>
-                  </div>
-                ) : (
-                  videos.map((video, index) => (
-                    <div
-                      key={video.id}
-                      className={`p-4 rounded-lg border transition-all ${
-                        video.status === "pending"
-                          ? "bg-white/5 border-white/10 hover:border-white/20"
+            <div className="space-y-3">
+              {videos.length === 0 ? (
+                <div className="rounded-3xl border border-white/10 bg-slate-950/40 p-12 text-center text-white/45">
+                  Queue empty. Add videos or a full folder to begin.
+                </div>
+              ) : (
+                videos.map((video) => (
+                  <div
+                    key={video.id}
+                    className={`rounded-3xl border p-4 ${
+                      video.status === "uploaded"
+                        ? "border-green-500/25 bg-green-500/10"
+                        : video.status === "scheduled"
+                          ? "border-cyan-500/25 bg-cyan-500/10"
                           : video.status === "processing"
-                            ? "bg-blue-500/10 border-blue-500/30"
-                            : video.status === "uploaded"
-                              ? "bg-green-500/10 border-green-500/30"
-                              : "bg-red-500/10 border-red-500/30"
-                      }`}
-                    >
-                      <div className="flex items-start gap-4">
-                        <video
-                          src={video.preview}
-                          className="w-16 h-16 rounded-lg object-cover bg-black flex-shrink-0"
-                        />
-
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium text-white truncate">
-                            {video.originalTitle || video.file.name}
-                          </p>
-                          <p className="text-xs text-white/40">
-                            {(video.file.size / (1024 * 1024)).toFixed(2)} MB
-                          </p>
-
-                          {video.status === "processing" && (
-                            <div className="mt-2 flex items-center gap-2">
-                              <div className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-                              <span className="text-xs text-blue-400">
-                                Uploading...
-                                {currentVideoIndex > 0 &&
-                                video.id === videos[currentVideoIndex - 1]?.id
-                                  ? ` ${activeUploadProgress}%`
-                                  : ""}
-                              </span>
-                            </div>
-                          )}
-
-                          {video.status === "uploaded" && (
-                            <div className="mt-2 flex items-center gap-2">
-                              <Check className="w-4 h-4 text-green-400" />
-                              <span className="text-xs text-green-400">
-                                Uploaded
-                              </span>
-                            </div>
-                          )}
-
-                          {video.status === "error" && (
-                            <div className="mt-2 flex items-center gap-2">
-                              <AlertCircle className="w-4 h-4 text-red-400" />
-                              <span className="text-xs text-red-400">
-                                {video.error}
-                              </span>
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="flex items-center gap-2 flex-shrink-0">
-                          <button
-                            onClick={() => downloadVideo(video)}
-                            className="p-2 hover:bg-white/10 rounded-lg transition-colors"
-                            title="Download video"
-                          >
-                            <Download className="w-4 h-4 text-white/60 hover:text-white" />
-                          </button>
-                          <button
-                            onClick={() => removeVideo(video.id)}
-                            className="p-2 hover:bg-red-500/20 rounded-lg transition-colors"
-                          >
-                            <Trash2 className="w-4 h-4 text-red-400" />
-                          </button>
-                        </div>
+                            ? "border-blue-500/25 bg-blue-500/10"
+                            : video.status === "error"
+                              ? "border-red-500/25 bg-red-500/10"
+                              : "border-white/10 bg-slate-950/40"
+                    }`}
+                  >
+                    <div className="flex gap-4">
+                      <video
+                        src={video.preview}
+                        className="h-20 w-20 rounded-2xl bg-black object-cover"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-medium text-white">
+                          {video.originalTitle || video.file.name}
+                        </p>
+                        <p className="mt-1 text-xs text-white/45">
+                          {(video.file.size / (1024 * 1024)).toFixed(2)} MB
+                        </p>
+                        <p className="mt-2 text-xs text-white/70">
+                          {video.status === "uploaded"
+                            ? "Published"
+                            : video.status === "scheduled"
+                              ? "Scheduled"
+                              : video.status === "processing"
+                                ? "Processing now..."
+                                : video.status === "error"
+                                  ? video.error
+                                  : "Waiting in queue"}
+                        </p>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => downloadVideo(video)}
+                          className="rounded-xl p-2 transition-colors hover:bg-white/10"
+                        >
+                          <Download className="h-4 w-4 text-white/60" />
+                        </button>
+                        <button
+                          onClick={() => removeVideo(video.id)}
+                          className="rounded-xl p-2 transition-colors hover:bg-red-500/20"
+                        >
+                          <Trash2 className="h-4 w-4 text-red-300" />
+                        </button>
                       </div>
                     </div>
-                  ))
-                )}
-              </div>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         </div>

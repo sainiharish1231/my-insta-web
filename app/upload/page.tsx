@@ -1,22 +1,24 @@
 "use client";
-import { useState, useRef } from "react";
-import type React from "react";
 
-import { useRouter, useSearchParams } from "next/navigation";
-import { createMedia, publishMedia } from "@/lib/meta";
+import { useEffect, useRef, useState } from "react";
+import type React from "react";
+import { useRouter } from "next/navigation";
 import {
-  Upload,
-  Youtube,
-  CheckCircle,
-  XCircle,
-  Loader2,
-  Instagram,
-  ArrowLeft,
-  Cloud,
-  Send,
   AlertCircle,
+  ArrowLeft,
+  CheckCircle,
+  Cloud,
+  Instagram,
+  Loader2,
+  Send,
+  Sparkles,
+  Trash2,
+  Upload,
+  XCircle,
+  Youtube,
 } from "lucide-react";
 import { HashtagPicker } from "@/components/hashtag-picker";
+import { createMedia, publishMedia } from "@/lib/meta";
 
 interface SelectedAccount {
   id: string;
@@ -34,16 +36,36 @@ interface AvailableAccount {
   token?: string;
 }
 
+interface CloudinaryAsset {
+  secureUrl: string;
+  publicId: string;
+  resourceType: string;
+}
+
+function createSmartCaption(base: string, hashtags: string[]) {
+  const cleaned = base.trim();
+  const opener = cleaned || "Fresh post, sharp edit, and ready to go live.";
+  const lines = [
+    opener,
+    "Built to stop the scroll and keep the watch time high.",
+    "Drop your thoughts below and save this for later.",
+  ];
+
+  if (hashtags.length > 0) {
+    lines.push(hashtags.join(" "));
+  }
+
+  return lines.join("\n\n");
+}
+
 export default function UploadPage() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // Upload states
-  const [cloudinaryUrl, setCloudinaryUrl] = useState<string>("");
+  const [cloudinaryAsset, setCloudinaryAsset] = useState<CloudinaryAsset | null>(
+    null,
+  );
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isUploading, setIsUploading] = useState(false);
-
-  // Publish states
   const [caption, setCaption] = useState("");
   const [selectedAccounts, setSelectedAccounts] = useState<SelectedAccount[]>(
     [],
@@ -52,47 +74,51 @@ export default function UploadPage() {
     AvailableAccount[]
   >([]);
   const [isPublishing, setIsPublishing] = useState(false);
-
-  // UI states
-  const [error, setError] = useState<string>("");
+  const [error, setError] = useState("");
   const [hashtags, setHashtags] = useState<string[]>([]);
   const [step, setStep] = useState<"upload" | "publish">("upload");
+  const [deleteAfterPublish, setDeleteAfterPublish] = useState(true);
+  const [isGeneratingCaption, setIsGeneratingCaption] = useState(false);
 
-  // Load available accounts
-  const loadAccounts = async () => {
+  useEffect(() => {
+    loadAccounts();
+  }, []);
+
+  const loadAccounts = () => {
     try {
-      const igAccounts = localStorage.getItem("ig_accounts");
-      const ytAccounts = localStorage.getItem("youtube_accounts");
+      const igAccounts = JSON.parse(localStorage.getItem("ig_accounts") || "[]");
+      const ytAccounts = JSON.parse(
+        localStorage.getItem("youtube_accounts") || "[]",
+      );
 
-      const accounts: AvailableAccount[] = [];
-
-      if (igAccounts) {
-        const igData = JSON.parse(igAccounts);
-        igData.forEach((account: any) => {
-          accounts.push({
-            id: account.id,
-            username: account.username,
-            platform: "instagram",
-            token: account.token,
-          });
-        });
-      }
-
-      if (ytAccounts) {
-        const ytData = JSON.parse(ytAccounts);
-        ytData.forEach((account: any) => {
-          accounts.push({
-            id: account.id,
-            username: account.username,
-            platform: "youtube",
-            token: account.token,
-          });
-        });
-      }
+      const accounts: AvailableAccount[] = [
+        ...igAccounts.map((account: any) => ({
+          id: account.id,
+          username: account.username,
+          platform: "instagram" as const,
+          token: account.token,
+        })),
+        ...ytAccounts.map((account: any) => ({
+          id: account.id,
+          username: account.username || account.name,
+          platform: "youtube" as const,
+          token: account.accessToken || account.token,
+        })),
+      ];
 
       setAvailableAccounts(accounts);
-    } catch (err) {
-      console.log("[v0] No accounts found");
+      setSelectedAccounts((prev) => {
+        if (prev.length > 0) {
+          return prev;
+        }
+
+        return accounts.map((account) => ({
+          ...account,
+          status: "pending" as const,
+        }));
+      });
+    } catch (loadError) {
+      console.error("[v0] Failed to load accounts:", loadError);
     }
   };
 
@@ -103,43 +129,57 @@ export default function UploadPage() {
 
     try {
       const formData = new FormData();
-      formData.append("file", file);
-
       const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME || "";
       const uploadPreset =
         process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET || "";
 
       if (!cloudName || !uploadPreset) {
         throw new Error(
-          "Cloudinary not configured. Add environment variables.",
+          "Cloudinary not configured. Add NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME and NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET.",
         );
       }
 
+      formData.append("file", file);
+      formData.append("upload_preset", uploadPreset);
+      formData.append(
+        "folder",
+        `instant-posts/${new Date().toISOString().slice(0, 10)}`,
+      );
+      formData.append(
+        "resource_type",
+        file.type.startsWith("video/") ? "video" : "auto",
+      );
+
       const xhr = new XMLHttpRequest();
 
-      xhr.upload.addEventListener("progress", (e) => {
-        if (e.lengthComputable) {
-          const progress = (e.loaded / e.total) * 100;
+      xhr.upload.addEventListener("progress", (event) => {
+        if (event.lengthComputable) {
+          const progress = (event.loaded / event.total) * 100;
           setUploadProgress(Math.round(progress));
         }
       });
 
       xhr.addEventListener("load", () => {
-        if (xhr.status === 200) {
-          try {
-            const response = JSON.parse(xhr.responseText);
-            setCloudinaryUrl(response.secure_url);
-            setStep("publish");
-            setUploadProgress(100);
-            setTimeout(() => loadAccounts(), 500);
-          } catch (e) {
-            setError("Failed to parse upload response");
-          }
-        } else {
+        try {
           const response = JSON.parse(xhr.responseText);
-          setError(response.error?.message || "Upload failed");
+
+          if (xhr.status !== 200) {
+            throw new Error(response.error?.message || "Upload failed");
+          }
+
+          setCloudinaryAsset({
+            secureUrl: response.secure_url,
+            publicId: response.public_id,
+            resourceType: response.resource_type || "video",
+          });
+          setStep("publish");
+          setUploadProgress(100);
+          loadAccounts();
+        } catch (uploadError: any) {
+          setError(uploadError.message || "Failed to parse upload response");
+        } finally {
+          setIsUploading(false);
         }
-        setIsUploading(false);
       });
 
       xhr.addEventListener("error", () => {
@@ -147,14 +187,10 @@ export default function UploadPage() {
         setIsUploading(false);
       });
 
-      xhr.open(
-        "POST",
-        `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`,
-      );
-      formData.append("upload_preset", uploadPreset);
+      xhr.open("POST", `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`);
       xhr.send(formData);
-    } catch (err: any) {
-      setError(err.message || "Upload failed");
+    } catch (uploadError: any) {
+      setError(uploadError.message || "Upload failed");
       setIsUploading(false);
     }
   };
@@ -163,8 +199,7 @@ export default function UploadPage() {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    // Validate file
-    const maxSize = 5 * 1024 * 1024 * 1024; // 5GB
+    const maxSize = 5 * 1024 * 1024 * 1024;
     if (file.size > maxSize) {
       setError("File is too large (max 5GB)");
       return;
@@ -175,27 +210,56 @@ export default function UploadPage() {
 
   const toggleAccount = (account: AvailableAccount) => {
     setSelectedAccounts((prev) => {
-      const exists = prev.find((a) => a.id === account.id);
+      const exists = prev.find((item) => item.id === account.id);
       if (exists) {
-        return prev.filter((a) => a.id !== account.id);
-      } else {
-        return [
-          ...prev,
-          {
-            id: account.id,
-            username: account.username,
-            platform: account.platform,
-            token: account.token,
-            status: "pending",
-          },
-        ];
+        return prev.filter((item) => item.id !== account.id);
       }
+
+      return [
+        ...prev,
+        {
+          ...account,
+          status: "pending",
+        },
+      ];
     });
   };
 
+  const generateAICaption = async () => {
+    setIsGeneratingCaption(true);
+    try {
+      const smartCaption = createSmartCaption(caption, hashtags);
+      setCaption(smartCaption);
+    } finally {
+      setIsGeneratingCaption(false);
+    }
+  };
+
+  const deleteCloudinaryAsset = async () => {
+    if (!cloudinaryAsset?.publicId) {
+      return;
+    }
+
+    const response = await fetch("/api/cloudinary/delete", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        publicId: cloudinaryAsset.publicId,
+        resourceType: cloudinaryAsset.resourceType,
+      }),
+    });
+
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || "Failed to clean up Cloudinary media");
+    }
+  };
+
   const publishToAccounts = async () => {
-    if (!cloudinaryUrl || selectedAccounts.length === 0) {
-      setError("Select at least one account");
+    if (!cloudinaryAsset?.secureUrl || selectedAccounts.length === 0) {
+      setError("At least one account should stay selected");
       return;
     }
 
@@ -206,28 +270,22 @@ export default function UploadPage() {
       const ytAccountsStored = JSON.parse(
         localStorage.getItem("youtube_accounts") || "[]",
       );
-
-      // Use the uploaded Cloudinary URL as the final media URL
-      const finalMediaUrl = cloudinaryUrl;
-
-      // Append selected hashtags (from the picker) to the caption if present
+      const finalMediaUrl = cloudinaryAsset.secureUrl;
       const finalCaption =
         hashtags.length > 0 ? `${caption}\n\n${hashtags.join(" ")}` : caption;
 
-      // Publish to each selected account one-by-one
-      for (let i = 0; i < selectedAccounts.length; i++) {
-        const account = selectedAccounts[i];
+      let successCount = 0;
 
+      for (const account of selectedAccounts) {
         setSelectedAccounts((prev) =>
-          prev.map((a) =>
-            a.id === account.id ? { ...a, status: "uploading" } : a,
+          prev.map((item) =>
+            item.id === account.id ? { ...item, status: "uploading" } : item,
           ),
         );
 
         try {
           if (account.platform === "instagram") {
-            // Post to Instagram Reel (expects createMedia + publishMedia helpers)
-            const mediaContainer = await createMedia({
+            const creationId = await createMedia({
               igUserId: account.id,
               token: account.token,
               mediaUrl: finalMediaUrl,
@@ -235,20 +293,16 @@ export default function UploadPage() {
               isReel: true,
             });
 
-            if (mediaContainer?.id) {
-              // publishMedia helper should accept these params; adjust if your helper differs
-              await publishMedia({
-                mediaContainerId: mediaContainer.id,
-                token: account.token,
-              });
-            } else {
-              throw new Error("Failed to create Instagram media container");
-            }
-          } else if (account.platform === "youtube") {
-            // Upload to YouTube via your server-side endpoint
+            await publishMedia({
+              igUserId: account.id,
+              token: account.token,
+              creationId,
+            });
+          } else {
             const ytAccount = ytAccountsStored.find(
-              (a: any) => a.id === account.id,
+              (storedAccount: any) => storedAccount.id === account.id,
             );
+
             if (!ytAccount?.accessToken) {
               throw new Error(
                 "YouTube access token not found. Please reconnect your YouTube account.",
@@ -262,283 +316,403 @@ export default function UploadPage() {
               },
               body: JSON.stringify({
                 accessToken: ytAccount.accessToken,
+                refreshToken: ytAccount.refreshToken,
                 videoUrl: finalMediaUrl,
                 title: finalCaption.substring(0, 100) || "Untitled Video",
                 description: finalCaption,
-                keywords: [],
+                keywords: hashtags.map((item) => item.replace("#", "")),
                 privacy: "public",
                 isShort: false,
               }),
             });
 
-            if (!uploadResponse.ok) {
-              const errorData = await uploadResponse.json();
-              throw new Error(errorData.error || "YouTube upload failed");
-            }
-
             const result = await uploadResponse.json();
-            console.log("[v0] YouTube video uploaded:", result.url);
+            if (!uploadResponse.ok) {
+              throw new Error(result.error || "YouTube upload failed");
+            }
           }
 
+          successCount += 1;
           setSelectedAccounts((prev) =>
-            prev.map((a) =>
-              a.id === account.id ? { ...a, status: "success" } : a,
+            prev.map((item) =>
+              item.id === account.id ? { ...item, status: "success" } : item,
             ),
           );
-        } catch (err: any) {
+        } catch (publishError: any) {
           setSelectedAccounts((prev) =>
-            prev.map((a) =>
-              a.id === account.id
-                ? { ...a, status: "error", error: err.message }
-                : a,
+            prev.map((item) =>
+              item.id === account.id
+                ? { ...item, status: "error", error: publishError.message }
+                : item,
             ),
           );
         }
       }
-    } catch (err: any) {
-      setError(err.message || "Publishing failed");
+
+      if (
+        deleteAfterPublish &&
+        successCount === selectedAccounts.length &&
+        cloudinaryAsset.publicId
+      ) {
+        await deleteCloudinaryAsset();
+      }
+    } catch (publishError: any) {
+      setError(publishError.message || "Publishing failed");
     } finally {
       setIsPublishing(false);
     }
   };
 
   const resetUpload = () => {
-    setCloudinaryUrl("");
+    setCloudinaryAsset(null);
     setCaption("");
-    setSelectedAccounts([]);
+    setSelectedAccounts(
+      availableAccounts.map((account) => ({
+        ...account,
+        status: "pending",
+      })),
+    );
     setUploadProgress(0);
     setHashtags([]);
     setStep("upload");
     setError("");
   };
 
+  const allSelected = selectedAccounts.length === availableAccounts.length;
+
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-950 to-slate-900 text-white">
-      <header className="sticky top-0 z-40 border-b border-white/10 bg-slate-950/50 backdrop-blur">
-        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center">
-          <button
-            onClick={() => router.back()}
-            className="p-2 hover:bg-white/10 rounded-lg transition-colors"
-          >
-            <ArrowLeft className="w-5 h-5" />
-          </button>
-          <h1 className="ml-4 text-xl font-bold">Upload & Publish</h1>
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top,#1e293b_0%,#0f172a_35%,#020617_100%)] text-white">
+      <header className="sticky top-0 z-40 border-b border-white/10 bg-slate-950/70 backdrop-blur-xl">
+        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => router.back()}
+              className="rounded-xl p-2 transition-colors hover:bg-white/10"
+            >
+              <ArrowLeft className="h-5 w-5" />
+            </button>
+            <div>
+              <p className="text-xs uppercase tracking-[0.25em] text-cyan-300/70">
+                Direct Flow
+              </p>
+              <h1 className="text-xl font-bold">Upload & Publish Studio</h1>
+            </div>
+          </div>
+          <div className="rounded-full border border-emerald-400/20 bg-emerald-500/10 px-4 py-1.5 text-sm text-emerald-300">
+            {allSelected ? "All accounts auto-selected" : "Custom selection"}
+          </div>
         </div>
       </header>
 
-      <main className="max-w-4xl mx-auto px-4 py-8">
+      <main className="mx-auto max-w-6xl px-4 py-8">
         {error && (
-          <div className="mb-6 p-4 bg-red-500/10 border border-red-500/30 rounded-lg flex gap-3 text-red-200">
-            <AlertCircle className="w-5 h-5 flex-shrink-0" />
+          <div className="mb-6 flex gap-3 rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-red-200">
+            <AlertCircle className="h-5 w-5 flex-shrink-0" />
             <span>{error}</span>
           </div>
         )}
 
-        {/* STEP 1: UPLOAD TO CLOUDINARY */}
-        {step === "upload" && !cloudinaryUrl && (
-          <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-8 border border-white/10">
-            <h2 className="text-2xl font-bold mb-6 flex items-center gap-2">
-              <Cloud className="w-6 h-6" />
-              Upload to Cloudinary
-            </h2>
+        {step === "upload" && !cloudinaryAsset && (
+          <div className="grid gap-6 lg:grid-cols-[1.3fr_0.7fr]">
+            <div className="rounded-3xl border border-white/10 bg-white/5 p-8 shadow-2xl shadow-slate-950/40 backdrop-blur-xl">
+              <div className="mb-8 flex items-center justify-between">
+                <div>
+                  <p className="text-sm uppercase tracking-[0.25em] text-cyan-300/70">
+                    Step 1
+                  </p>
+                  <h2 className="mt-2 flex items-center gap-3 text-3xl font-bold">
+                    <Cloud className="h-8 w-8 text-cyan-300" />
+                    Push to Cloudinary
+                  </h2>
+                  <p className="mt-2 text-white/60">
+                    Upload once. Publish everywhere. Clean up automatically after success.
+                  </p>
+                </div>
+              </div>
 
-            <div
-              onClick={() => fileInputRef.current?.click()}
-              className={`border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-all ${
-                isUploading
-                  ? "border-blue-500/30 bg-blue-500/5"
-                  : "border-white/20 hover:border-pink-500/50 hover:bg-pink-500/5"
-              }`}
-            >
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="video/*,image/*"
-                onChange={handleFileSelect}
-                disabled={isUploading}
-                className="hidden"
-              />
+              <div
+                onClick={() => fileInputRef.current?.click()}
+                className={`cursor-pointer rounded-3xl border-2 border-dashed p-14 text-center transition-all ${
+                  isUploading
+                    ? "border-cyan-400/40 bg-cyan-400/10"
+                    : "border-white/15 bg-slate-950/40 hover:border-cyan-400/50 hover:bg-cyan-400/5"
+                }`}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="video/*,image/*"
+                  onChange={handleFileSelect}
+                  disabled={isUploading}
+                  className="hidden"
+                />
 
-              {isUploading ? (
-                <div className="flex flex-col items-center gap-3">
-                  <Loader2 className="w-12 h-12 animate-spin text-blue-400" />
-                  <div>
-                    <p className="font-semibold mb-2">
+                {isUploading ? (
+                  <div className="mx-auto max-w-md">
+                    <Loader2 className="mx-auto h-14 w-14 animate-spin text-cyan-300" />
+                    <p className="mt-4 text-xl font-semibold">
                       Uploading... {uploadProgress}%
                     </p>
-                    <div className="w-full bg-white/10 rounded-full h-2">
+                    <div className="mt-4 h-3 overflow-hidden rounded-full bg-white/10">
                       <div
-                        className="bg-blue-500 h-2 rounded-full transition-all"
+                        className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-emerald-400 transition-all"
                         style={{ width: `${uploadProgress}%` }}
                       />
                     </div>
                   </div>
-                </div>
-              ) : (
-                <div className="flex flex-col items-center gap-3">
-                  <Upload className="w-12 h-12 text-white/40" />
-                  <div>
-                    <p className="font-semibold">
-                      Click to upload video or image
-                    </p>
-                    <p className="text-sm text-white/40 mt-1">
-                      Max 5GB • MP4, MOV, AVI, WebM, etc.
-                    </p>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-3xl bg-gradient-to-br from-cyan-400/20 to-emerald-400/20">
+                      <Upload className="h-10 w-10 text-cyan-200" />
+                    </div>
+                    <div>
+                      <p className="text-2xl font-semibold">
+                        Tap to upload video or image
+                      </p>
+                      <p className="mt-2 text-white/50">
+                        Max 5GB. Best for MP4 / H.264. One upload drives all connected accounts.
+                      </p>
+                    </div>
                   </div>
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-6">
+              <div className="rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur-xl">
+                <p className="text-sm uppercase tracking-[0.25em] text-fuchsia-300/70">
+                  Accounts
+                </p>
+                <h3 className="mt-2 text-xl font-semibold">
+                  Ready by default
+                </h3>
+                <p className="mt-2 text-sm text-white/60">
+                  Jitne bhi accounts login hain, sab default selected rahenge. Manual selection optional hai.
+                </p>
+                <div className="mt-5 space-y-3">
+                  {availableAccounts.length === 0 ? (
+                    <p className="rounded-2xl border border-blue-500/20 bg-blue-500/10 p-4 text-sm text-blue-200">
+                      Connect Instagram or YouTube accounts first.
+                    </p>
+                  ) : (
+                    availableAccounts.map((account) => (
+                      <div
+                        key={`${account.platform}-${account.id}`}
+                        className="flex items-center gap-3 rounded-2xl border border-white/10 bg-slate-950/40 p-3"
+                      >
+                        {account.platform === "instagram" ? (
+                          <Instagram className="h-5 w-5 text-pink-400" />
+                        ) : (
+                          <Youtube className="h-5 w-5 text-red-400" />
+                        )}
+                        <div>
+                          <p className="font-medium">{account.username}</p>
+                          <p className="text-xs capitalize text-white/45">
+                            {account.platform}
+                          </p>
+                        </div>
+                      </div>
+                    ))
+                  )}
                 </div>
-              )}
+              </div>
+
+              <div className="rounded-3xl border border-emerald-400/15 bg-emerald-500/10 p-6 text-sm text-emerald-200">
+                Publish ke baad agar sab selected accounts success ho gaye, to Cloudinary asset auto-delete ho jayega.
+              </div>
             </div>
           </div>
         )}
 
-        {/* STEP 2: PUBLISH TO INSTAGRAM & YOUTUBE */}
-        {step === "publish" && cloudinaryUrl && (
-          <div className="space-y-6">
-            {/* Video Preview */}
-            <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
-              <h2 className="text-lg font-bold mb-4">Preview</h2>
-              <div className="aspect-video bg-black rounded-lg overflow-hidden">
-                <video src={cloudinaryUrl} controls className="w-full h-full" />
-              </div>
-            </div>
-
-            {/* Caption & Hashtags */}
-            <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
-              <h2 className="text-lg font-bold mb-4">Caption</h2>
-              <textarea
-                value={caption}
-                onChange={(e) => setCaption(e.target.value)}
-                placeholder="Write caption..."
-                className="w-full bg-white/5 border border-white/10 rounded-lg p-3 text-white placeholder:text-white/40 resize-none h-24"
-              />
-
-              {/* Hashtag Picker */}
-              <div className="mt-4">
-                <HashtagPicker
-                  selectedHashtags={hashtags}
-                  onHashtagsChange={setHashtags}
-                  caption={""}
-                />
-              </div>
-
-              {/* Add hashtags to caption */}
-              {hashtags.length > 0 && (
-                <button
-                  onClick={() => {
-                    setCaption(
-                      (prev) =>
-                        prev + (prev ? "\n\n" : "") + hashtags.join(" "),
-                    );
-                    setHashtags([]);
-                  }}
-                  className="mt-3 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-semibold transition-colors"
-                >
-                  Add {hashtags.length} Hashtags
-                </button>
-              )}
-            </div>
-
-            {/* Select Accounts */}
-            <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
-              <h2 className="text-lg font-bold mb-4">Publish to</h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {availableAccounts.map((account) => (
+        {step === "publish" && cloudinaryAsset && (
+          <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
+            <div className="space-y-6">
+              <div className="rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur-xl">
+                <div className="mb-4 flex items-center justify-between">
+                  <div>
+                    <p className="text-sm uppercase tracking-[0.25em] text-cyan-300/70">
+                      Step 2
+                    </p>
+                    <h2 className="mt-2 text-2xl font-bold">Finalize the post</h2>
+                  </div>
                   <button
-                    key={account.id}
-                    onClick={() => toggleAccount(account)}
-                    className={`p-4 rounded-lg border-2 transition-all text-left ${
-                      selectedAccounts.find((a) => a.id === account.id)
-                        ? "border-pink-500 bg-pink-500/10"
-                        : "border-white/20 hover:border-white/40"
-                    }`}
+                    onClick={resetUpload}
+                    className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm transition-colors hover:bg-white/10"
                   >
-                    <div className="flex items-center gap-3">
-                      {account.platform === "instagram" ? (
-                        <Instagram className="w-5 h-5" />
+                    Upload Another
+                  </button>
+                </div>
+
+                <div className="overflow-hidden rounded-3xl border border-white/10 bg-black">
+                  <video
+                    src={cloudinaryAsset.secureUrl}
+                    controls
+                    className="aspect-video w-full"
+                  />
+                </div>
+
+                <div className="mt-4 rounded-2xl border border-white/10 bg-slate-950/40 p-4 text-sm text-white/60">
+                  Cloud URL ready. Publish ke baad cleanup toggle on hai.
+                </div>
+              </div>
+
+              <div className="rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur-xl">
+                <div className="mb-4 flex items-center justify-between">
+                  <h3 className="text-xl font-semibold">Caption Studio</h3>
+                  <button
+                    onClick={generateAICaption}
+                    disabled={isGeneratingCaption}
+                    className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-fuchsia-500 to-cyan-500 px-4 py-2 text-sm font-semibold transition-opacity hover:opacity-90 disabled:opacity-60"
+                  >
+                    {isGeneratingCaption ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Sparkles className="h-4 w-4" />
+                    )}
+                    AI Caption
+                  </button>
+                </div>
+
+                <textarea
+                  value={caption}
+                  onChange={(event) => setCaption(event.target.value)}
+                  placeholder="Write caption..."
+                  className="h-32 w-full resize-none rounded-2xl border border-white/10 bg-slate-950/50 p-4 text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-cyan-400"
+                />
+
+                <div className="mt-4">
+                  <HashtagPicker
+                    selectedHashtags={hashtags}
+                    onHashtagsChange={setHashtags}
+                    caption={caption}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-6">
+              <div className="rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur-xl">
+                <div className="mb-4 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-xl font-semibold">Accounts</h3>
+                    <p className="mt-1 text-sm text-white/55">
+                      Default me sab selected hain.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() =>
+                      setSelectedAccounts(
+                        allSelected
+                          ? []
+                          : availableAccounts.map((account) => ({
+                              ...account,
+                              status: "pending",
+                            })),
+                      )
+                    }
+                    className="text-sm text-cyan-300 transition-colors hover:text-cyan-200"
+                  >
+                    {allSelected ? "Clear all" : "Select all"}
+                  </button>
+                </div>
+
+                <div className="space-y-3">
+                  {availableAccounts.map((account) => {
+                    const active = selectedAccounts.some(
+                      (item) => item.id === account.id,
+                    );
+
+                    return (
+                      <button
+                        key={`${account.platform}-${account.id}`}
+                        onClick={() => toggleAccount(account)}
+                        className={`flex w-full items-center gap-3 rounded-2xl border p-4 text-left transition-all ${
+                          active
+                            ? "border-cyan-400/40 bg-cyan-400/10"
+                            : "border-white/10 bg-slate-950/30 hover:border-white/25"
+                        }`}
+                      >
+                        {account.platform === "instagram" ? (
+                          <Instagram className="h-5 w-5 text-pink-400" />
+                        ) : (
+                          <Youtube className="h-5 w-5 text-red-400" />
+                        )}
+                        <div className="flex-1">
+                          <p className="font-medium">{account.username}</p>
+                          <p className="text-xs capitalize text-white/45">
+                            {account.platform}
+                          </p>
+                        </div>
+                        {active && <CheckCircle className="h-5 w-5 text-cyan-300" />}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <label className="mt-5 flex items-center gap-3 rounded-2xl border border-white/10 bg-slate-950/40 p-4 text-sm text-white/70">
+                  <input
+                    type="checkbox"
+                    checked={deleteAfterPublish}
+                    onChange={(event) => setDeleteAfterPublish(event.target.checked)}
+                    className="h-4 w-4 rounded"
+                  />
+                  Delete from Cloudinary after successful publish on all selected accounts
+                </label>
+              </div>
+
+              <div className="rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur-xl">
+                <button
+                  onClick={publishToAccounts}
+                  disabled={isPublishing || selectedAccounts.length === 0}
+                  className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-fuchsia-600 to-cyan-500 px-6 py-4 font-semibold transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {isPublishing ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Publishing...
+                    </>
+                  ) : (
+                    <>
+                      <Send className="h-4 w-4" />
+                      Publish to All Selected
+                    </>
+                  )}
+                </button>
+
+                <div className="mt-4 space-y-2">
+                  {selectedAccounts.map((account) => (
+                    <div
+                      key={`${account.platform}-${account.id}`}
+                      className={`flex items-center gap-3 rounded-2xl border p-3 ${
+                        account.status === "success"
+                          ? "border-green-500/30 bg-green-500/10 text-green-200"
+                          : account.status === "error"
+                            ? "border-red-500/30 bg-red-500/10 text-red-200"
+                            : account.status === "uploading"
+                              ? "border-blue-500/30 bg-blue-500/10 text-blue-200"
+                              : "border-white/10 bg-slate-950/30 text-white/70"
+                      }`}
+                    >
+                      {account.status === "success" ? (
+                        <CheckCircle className="h-5 w-5" />
+                      ) : account.status === "error" ? (
+                        <XCircle className="h-5 w-5" />
+                      ) : account.status === "uploading" ? (
+                        <Loader2 className="h-5 w-5 animate-spin" />
                       ) : (
-                        <Youtube className="w-5 h-5" />
+                        <Trash2 className="h-5 w-5 opacity-0" />
                       )}
                       <div>
-                        <p className="font-semibold">{account.username}</p>
-                        <p className="text-xs text-white/40 capitalize">
-                          {account.platform}
-                        </p>
+                        <p className="font-medium">{account.username}</p>
+                        {account.error && (
+                          <p className="text-xs opacity-90">{account.error}</p>
+                        )}
                       </div>
-                      {selectedAccounts.find((a) => a.id === account.id) && (
-                        <CheckCircle className="w-5 h-5 ml-auto text-pink-400" />
-                      )}
                     </div>
-                  </button>
-                ))}
-              </div>
-
-              {availableAccounts.length === 0 && (
-                <div className="p-4 bg-blue-500/10 border border-blue-500/30 rounded-lg text-blue-200 text-sm">
-                  Connect Instagram or YouTube accounts first
+                  ))}
                 </div>
-              )}
-            </div>
-
-            {/* Publish Button */}
-            <div className="flex gap-3">
-              <button
-                onClick={resetUpload}
-                className="flex-1 px-6 py-3 bg-white/10 hover:bg-white/20 rounded-lg font-semibold transition-colors"
-              >
-                Upload Another
-              </button>
-              <button
-                onClick={publishToAccounts}
-                disabled={isPublishing || selectedAccounts.length === 0}
-                className="flex-1 px-6 py-3 bg-gradient-to-r from-pink-600 to-pink-700 hover:from-pink-700 hover:to-pink-800 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg font-semibold transition-colors flex items-center justify-center gap-2"
-              >
-                {isPublishing ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    Publishing...
-                  </>
-                ) : (
-                  <>
-                    <Send className="w-4 h-4" />
-                    Publish Now
-                  </>
-                )}
-              </button>
-            </div>
-
-            {/* Status Messages */}
-            {selectedAccounts.length > 0 && (
-              <div className="space-y-2">
-                {selectedAccounts.map((account) => (
-                  <div
-                    key={account.id}
-                    className={`p-3 rounded-lg flex items-center gap-3 ${
-                      account.status === "success"
-                        ? "bg-green-500/10 text-green-200 border border-green-500/30"
-                        : account.status === "error"
-                          ? "bg-red-500/10 text-red-200 border border-red-500/30"
-                          : account.status === "uploading"
-                            ? "bg-blue-500/10 text-blue-200 border border-blue-500/30"
-                            : ""
-                    }`}
-                  >
-                    {account.status === "success" ? (
-                      <CheckCircle className="w-5 h-5" />
-                    ) : account.status === "error" ? (
-                      <XCircle className="w-5 h-5" />
-                    ) : account.status === "uploading" ? (
-                      <Loader2 className="w-5 h-5 animate-spin" />
-                    ) : null}
-                    <div>
-                      <p className="font-semibold">{account.username}</p>
-                      {account.error && (
-                        <p className="text-xs">{account.error}</p>
-                      )}
-                    </div>
-                  </div>
-                ))}
               </div>
-            )}
+            </div>
           </div>
         )}
       </main>
