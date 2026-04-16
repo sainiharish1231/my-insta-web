@@ -539,26 +539,28 @@ function BulkUploadContent() {
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,#1e293b_0%,#020617_45%,#000_100%)]">
       <header className="sticky top-0 z-50 border-b border-white/10 bg-slate-950/80 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4">
-          <div className="flex items-center gap-4">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-4">
+          <div className="flex min-w-0 items-center gap-4">
             <button
               onClick={() => router.push("/dashboard")}
               className="rounded-xl p-2 transition-colors hover:bg-white/10"
             >
               <ArrowLeft className="h-5 w-5 text-white/70" />
             </button>
-            <div>
+            <div className="min-w-0">
               <p className="text-xs uppercase tracking-[0.25em] text-cyan-300/70">
                 Pro Queue
               </p>
-              <h1 className="text-2xl font-semibold text-white">Bulk Upload Studio</h1>
+              <h1 className="truncate text-xl font-semibold text-white sm:text-2xl">
+                Bulk Upload Studio
+              </h1>
             </div>
           </div>
 
           {isProcessing ? (
             <button
               onClick={stopProcessing}
-              className="inline-flex items-center gap-2 rounded-2xl bg-red-500 px-4 py-2 font-medium text-white transition-colors hover:bg-red-600"
+              className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-red-500 px-4 py-2 font-medium text-white transition-colors hover:bg-red-600 sm:w-auto"
             >
               <Pause className="h-4 w-4" />
               Stop Queue
@@ -567,7 +569,7 @@ function BulkUploadContent() {
             <button
               onClick={startBulkUpload}
               disabled={videos.length === 0 || loadingSegments}
-              className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-fuchsia-500 to-cyan-500 px-5 py-3 font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-fuchsia-500 to-cyan-500 px-5 py-3 font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
             >
               {settings.mode === "schedule" ? (
                 <CalendarClock className="h-4 w-4" />
@@ -580,7 +582,7 @@ function BulkUploadContent() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-7xl px-4 py-8">
+      <main className="mx-auto max-w-7xl px-4 py-6 sm:py-8">
         {loadingSegments && (
           <div className="mb-6 flex items-center gap-3 rounded-2xl border border-blue-500/30 bg-blue-500/10 p-4 text-blue-200">
             <Loader2 className="h-5 w-5 animate-spin" />
@@ -588,38 +590,38 @@ function BulkUploadContent() {
           </div>
         )}
 
-        <div className="mb-8 grid grid-cols-2 gap-4 md:grid-cols-6">
+        <div className="mb-8 grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-3 xl:grid-cols-6">
           <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-            <div className="text-2xl font-bold text-white">{stats.total}</div>
-            <div className="text-sm text-white/60">Total</div>
+            <div className="text-xl font-bold text-white sm:text-2xl">{stats.total}</div>
+            <div className="text-xs text-white/60 sm:text-sm">Total</div>
           </div>
           <div className="rounded-2xl border border-yellow-500/20 bg-yellow-500/10 p-4">
-            <div className="text-2xl font-bold text-yellow-300">{stats.pending}</div>
-            <div className="text-sm text-white/60">Pending</div>
+            <div className="text-xl font-bold text-yellow-300 sm:text-2xl">{stats.pending}</div>
+            <div className="text-xs text-white/60 sm:text-sm">Pending</div>
           </div>
           <div className="rounded-2xl border border-blue-500/20 bg-blue-500/10 p-4">
-            <div className="text-2xl font-bold text-blue-300">{stats.processing}</div>
-            <div className="text-sm text-white/60">Processing</div>
+            <div className="text-xl font-bold text-blue-300 sm:text-2xl">{stats.processing}</div>
+            <div className="text-xs text-white/60 sm:text-sm">Processing</div>
           </div>
           <div className="rounded-2xl border border-green-500/20 bg-green-500/10 p-4">
-            <div className="text-2xl font-bold text-green-300">{stats.uploaded}</div>
-            <div className="text-sm text-white/60">Posted</div>
+            <div className="text-xl font-bold text-green-300 sm:text-2xl">{stats.uploaded}</div>
+            <div className="text-xs text-white/60 sm:text-sm">Posted</div>
           </div>
           <div className="rounded-2xl border border-cyan-500/20 bg-cyan-500/10 p-4">
-            <div className="text-2xl font-bold text-cyan-300">{stats.scheduled}</div>
-            <div className="text-sm text-white/60">Scheduled</div>
+            <div className="text-xl font-bold text-cyan-300 sm:text-2xl">{stats.scheduled}</div>
+            <div className="text-xs text-white/60 sm:text-sm">Scheduled</div>
           </div>
           <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-4">
-            <div className="text-2xl font-bold text-red-300">{stats.error}</div>
-            <div className="text-sm text-white/60">Failed</div>
+            <div className="text-xl font-bold text-red-300 sm:text-2xl">{stats.error}</div>
+            <div className="text-xs text-white/60 sm:text-sm">Failed</div>
           </div>
         </div>
 
         <div className="grid gap-6 lg:grid-cols-[1fr_1.35fr]">
           <div className="space-y-6">
-            <div className="rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur-xl">
-              <div className="mb-4 flex items-center justify-between">
-                <div>
+            <div className="rounded-3xl border border-white/10 bg-white/5 p-5 backdrop-blur-xl sm:p-6">
+              <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
                   <p className="text-xs uppercase tracking-[0.25em] text-cyan-300/70">
                     Campaign Setup
                   </p>
@@ -630,7 +632,7 @@ function BulkUploadContent() {
                 <button
                   onClick={generateCaptionDraft}
                   disabled={isGeneratingCaption}
-                  className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-fuchsia-500 to-cyan-500 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-fuchsia-500 to-cyan-500 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60 sm:w-auto"
                 >
                   {isGeneratingCaption ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -716,7 +718,7 @@ function BulkUploadContent() {
                 />
 
                 {settings.mode === "schedule" ? (
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <input
                       type="date"
                       value={settings.scheduledDate}
@@ -741,7 +743,7 @@ function BulkUploadContent() {
                     />
                   </div>
                 ) : (
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <input
                       type="number"
                       min="1"
@@ -769,7 +771,7 @@ function BulkUploadContent() {
                   </div>
                 )}
 
-                <label className="flex items-center gap-3 rounded-2xl border border-white/10 bg-slate-950/40 p-4 text-sm text-white/70">
+                <label className="flex items-start gap-3 rounded-2xl border border-white/10 bg-slate-950/40 p-4 text-sm text-white/70">
                   <input
                     type="checkbox"
                     checked={settings.deleteAfterPublish}
@@ -786,12 +788,12 @@ function BulkUploadContent() {
               </div>
             </div>
 
-            <div className="rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur-xl">
-              <div className="mb-4 flex items-center justify-between">
+            <div className="rounded-3xl border border-white/10 bg-white/5 p-5 backdrop-blur-xl sm:p-6">
+              <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <h2 className="text-lg font-semibold text-white">Connected Accounts</h2>
                 <button
                   onClick={() => setShowAccountSelector((prev) => !prev)}
-                  className="text-sm text-cyan-300"
+                  className="text-left text-sm text-cyan-300"
                 >
                   {showAccountSelector ? "Hide" : "Manage"}
                 </button>
@@ -805,7 +807,7 @@ function BulkUploadContent() {
                 onClick={() =>
                   setSelectedAccounts(allSelected ? [] : allAccounts)
                 }
-                className="mb-4 rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm text-white/70"
+                className="mb-4 w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm text-white/70 sm:w-auto"
               >
                 {allSelected ? "Clear all" : "Select all"}
               </button>
@@ -847,13 +849,13 @@ function BulkUploadContent() {
               )}
             </div>
 
-            <div className="rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur-xl">
-              <div className="mb-4 flex items-center justify-between">
+            <div className="rounded-3xl border border-white/10 bg-white/5 p-5 backdrop-blur-xl sm:p-6">
+              <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <h2 className="text-lg font-semibold text-white">Add Videos</h2>
                 {videos.length > 0 && (
                   <button
                     onClick={clearAllVideos}
-                    className="rounded-xl bg-red-500/20 px-3 py-1 text-xs text-red-300"
+                    className="w-full rounded-xl bg-red-500/20 px-3 py-1 text-xs text-red-300 sm:w-auto"
                   >
                     Clear All
                   </button>
@@ -904,9 +906,9 @@ function BulkUploadContent() {
             </div>
           </div>
 
-          <div className="rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur-xl">
-            <div className="mb-5 flex items-center justify-between">
-              <div>
+          <div className="rounded-3xl border border-white/10 bg-white/5 p-5 backdrop-blur-xl sm:p-6">
+            <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
                 <p className="text-xs uppercase tracking-[0.25em] text-cyan-300/70">
                   Live Queue
                 </p>
@@ -915,7 +917,7 @@ function BulkUploadContent() {
                 </h2>
               </div>
               {currentVideoIndex > 0 && (
-                <div className="rounded-full border border-blue-500/20 bg-blue-500/10 px-4 py-1 text-sm text-blue-200">
+                <div className="rounded-full border border-blue-500/20 bg-blue-500/10 px-4 py-1 text-center text-sm text-blue-200">
                   Processing #{currentVideoIndex}
                 </div>
               )}
@@ -942,10 +944,10 @@ function BulkUploadContent() {
                               : "border-white/10 bg-slate-950/40"
                     }`}
                   >
-                    <div className="flex gap-4">
+                    <div className="flex flex-col gap-4 sm:flex-row">
                       <video
                         src={video.preview}
-                        className="h-20 w-20 rounded-2xl bg-black object-cover"
+                        className="h-40 w-full rounded-2xl bg-black object-cover sm:h-20 sm:w-20"
                       />
                       <div className="min-w-0 flex-1">
                         <p className="truncate font-medium text-white">
@@ -966,7 +968,7 @@ function BulkUploadContent() {
                                   : "Waiting in queue"}
                         </p>
                       </div>
-                      <div className="flex gap-2">
+                      <div className="flex gap-2 self-end sm:self-start">
                         <button
                           onClick={() => downloadVideo(video)}
                           className="rounded-xl p-2 transition-colors hover:bg-white/10"

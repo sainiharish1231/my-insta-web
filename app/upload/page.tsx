@@ -383,28 +383,30 @@ export default function UploadPage() {
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,#1e293b_0%,#0f172a_35%,#020617_100%)] text-white">
       <header className="sticky top-0 z-40 border-b border-white/10 bg-slate-950/70 backdrop-blur-xl">
-        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4">
-          <div className="flex items-center gap-3">
+        <div className="mx-auto flex min-h-16 max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:h-16 sm:flex-nowrap sm:py-0">
+          <div className="flex min-w-0 items-center gap-3">
             <button
               onClick={() => router.back()}
               className="rounded-xl p-2 transition-colors hover:bg-white/10"
             >
               <ArrowLeft className="h-5 w-5" />
             </button>
-            <div>
+            <div className="min-w-0">
               <p className="text-xs uppercase tracking-[0.25em] text-cyan-300/70">
                 Direct Flow
               </p>
-              <h1 className="text-xl font-bold">Upload & Publish Studio</h1>
+              <h1 className="truncate text-lg font-bold sm:text-xl">
+                Upload & Publish Studio
+              </h1>
             </div>
           </div>
-          <div className="rounded-full border border-emerald-400/20 bg-emerald-500/10 px-4 py-1.5 text-sm text-emerald-300">
+          <div className="w-full rounded-full border border-emerald-400/20 bg-emerald-500/10 px-4 py-1.5 text-center text-xs text-emerald-300 sm:w-auto sm:text-sm">
             {allSelected ? "All accounts auto-selected" : "Custom selection"}
           </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl px-4 py-8">
+      <main className="mx-auto max-w-6xl px-4 py-6 sm:py-8">
         {error && (
           <div className="mb-6 flex gap-3 rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-red-200">
             <AlertCircle className="h-5 w-5 flex-shrink-0" />
@@ -414,13 +416,13 @@ export default function UploadPage() {
 
         {step === "upload" && !cloudinaryAsset && (
           <div className="grid gap-6 lg:grid-cols-[1.3fr_0.7fr]">
-            <div className="rounded-3xl border border-white/10 bg-white/5 p-8 shadow-2xl shadow-slate-950/40 backdrop-blur-xl">
-              <div className="mb-8 flex items-center justify-between">
+            <div className="rounded-3xl border border-white/10 bg-white/5 p-5 shadow-2xl shadow-slate-950/40 backdrop-blur-xl sm:p-8">
+              <div className="mb-6 flex items-center justify-between sm:mb-8">
                 <div>
                   <p className="text-sm uppercase tracking-[0.25em] text-cyan-300/70">
                     Step 1
                   </p>
-                  <h2 className="mt-2 flex items-center gap-3 text-3xl font-bold">
+                  <h2 className="mt-2 flex items-center gap-3 text-2xl font-bold sm:text-3xl">
                     <Cloud className="h-8 w-8 text-cyan-300" />
                     Push to Cloudinary
                   </h2>
@@ -432,7 +434,7 @@ export default function UploadPage() {
 
               <div
                 onClick={() => fileInputRef.current?.click()}
-                className={`cursor-pointer rounded-3xl border-2 border-dashed p-14 text-center transition-all ${
+                className={`cursor-pointer rounded-3xl border-2 border-dashed p-8 text-center transition-all sm:p-14 ${
                   isUploading
                     ? "border-cyan-400/40 bg-cyan-400/10"
                     : "border-white/15 bg-slate-950/40 hover:border-cyan-400/50 hover:bg-cyan-400/5"
@@ -462,11 +464,11 @@ export default function UploadPage() {
                   </div>
                 ) : (
                   <div className="space-y-4">
-                    <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-3xl bg-gradient-to-br from-cyan-400/20 to-emerald-400/20">
-                      <Upload className="h-10 w-10 text-cyan-200" />
+                    <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-3xl bg-gradient-to-br from-cyan-400/20 to-emerald-400/20 sm:h-20 sm:w-20">
+                      <Upload className="h-8 w-8 text-cyan-200 sm:h-10 sm:w-10" />
                     </div>
                     <div>
-                      <p className="text-2xl font-semibold">
+                      <p className="text-xl font-semibold sm:text-2xl">
                         Tap to upload video or image
                       </p>
                       <p className="mt-2 text-white/50">
@@ -479,7 +481,7 @@ export default function UploadPage() {
             </div>
 
             <div className="space-y-6">
-              <div className="rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur-xl">
+              <div className="rounded-3xl border border-white/10 bg-white/5 p-5 backdrop-blur-xl sm:p-6">
                 <p className="text-sm uppercase tracking-[0.25em] text-fuchsia-300/70">
                   Accounts
                 </p>
@@ -517,7 +519,7 @@ export default function UploadPage() {
                 </div>
               </div>
 
-              <div className="rounded-3xl border border-emerald-400/15 bg-emerald-500/10 p-6 text-sm text-emerald-200">
+              <div className="rounded-3xl border border-emerald-400/15 bg-emerald-500/10 p-5 text-sm text-emerald-200 sm:p-6">
                 Publish ke baad agar sab selected accounts success ho gaye, to Cloudinary asset auto-delete ho jayega.
               </div>
             </div>
@@ -527,17 +529,17 @@ export default function UploadPage() {
         {step === "publish" && cloudinaryAsset && (
           <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
             <div className="space-y-6">
-              <div className="rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur-xl">
-                <div className="mb-4 flex items-center justify-between">
-                  <div>
+              <div className="rounded-3xl border border-white/10 bg-white/5 p-5 backdrop-blur-xl sm:p-6">
+                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
                     <p className="text-sm uppercase tracking-[0.25em] text-cyan-300/70">
                       Step 2
                     </p>
-                    <h2 className="mt-2 text-2xl font-bold">Finalize the post</h2>
+                    <h2 className="mt-2 text-xl font-bold sm:text-2xl">Finalize the post</h2>
                   </div>
                   <button
                     onClick={resetUpload}
-                    className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm transition-colors hover:bg-white/10"
+                    className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm transition-colors hover:bg-white/10 sm:w-auto"
                   >
                     Upload Another
                   </button>
@@ -556,13 +558,13 @@ export default function UploadPage() {
                 </div>
               </div>
 
-              <div className="rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur-xl">
-                <div className="mb-4 flex items-center justify-between">
+              <div className="rounded-3xl border border-white/10 bg-white/5 p-5 backdrop-blur-xl sm:p-6">
+                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <h3 className="text-xl font-semibold">Caption Studio</h3>
                   <button
                     onClick={generateAICaption}
                     disabled={isGeneratingCaption}
-                    className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-fuchsia-500 to-cyan-500 px-4 py-2 text-sm font-semibold transition-opacity hover:opacity-90 disabled:opacity-60"
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-fuchsia-500 to-cyan-500 px-4 py-2 text-sm font-semibold transition-opacity hover:opacity-90 disabled:opacity-60 sm:w-auto"
                   >
                     {isGeneratingCaption ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
@@ -591,9 +593,9 @@ export default function UploadPage() {
             </div>
 
             <div className="space-y-6">
-              <div className="rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur-xl">
-                <div className="mb-4 flex items-center justify-between">
-                  <div>
+              <div className="rounded-3xl border border-white/10 bg-white/5 p-5 backdrop-blur-xl sm:p-6">
+                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
                     <h3 className="text-xl font-semibold">Accounts</h3>
                     <p className="mt-1 text-sm text-white/55">
                       Default me sab selected hain.
@@ -610,7 +612,7 @@ export default function UploadPage() {
                             })),
                       )
                     }
-                    className="text-sm text-cyan-300 transition-colors hover:text-cyan-200"
+                    className="text-left text-sm text-cyan-300 transition-colors hover:text-cyan-200"
                   >
                     {allSelected ? "Clear all" : "Select all"}
                   </button>
@@ -649,7 +651,7 @@ export default function UploadPage() {
                   })}
                 </div>
 
-                <label className="mt-5 flex items-center gap-3 rounded-2xl border border-white/10 bg-slate-950/40 p-4 text-sm text-white/70">
+                <label className="mt-5 flex items-start gap-3 rounded-2xl border border-white/10 bg-slate-950/40 p-4 text-sm text-white/70">
                   <input
                     type="checkbox"
                     checked={deleteAfterPublish}
@@ -660,7 +662,7 @@ export default function UploadPage() {
                 </label>
               </div>
 
-              <div className="rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur-xl">
+              <div className="rounded-3xl border border-white/10 bg-white/5 p-5 backdrop-blur-xl sm:p-6">
                 <button
                   onClick={publishToAccounts}
                   disabled={isPublishing || selectedAccounts.length === 0}
@@ -683,7 +685,7 @@ export default function UploadPage() {
                   {selectedAccounts.map((account) => (
                     <div
                       key={`${account.platform}-${account.id}`}
-                      className={`flex items-center gap-3 rounded-2xl border p-3 ${
+                      className={`flex items-start gap-3 rounded-2xl border p-3 ${
                         account.status === "success"
                           ? "border-green-500/30 bg-green-500/10 text-green-200"
                           : account.status === "error"
@@ -702,10 +704,10 @@ export default function UploadPage() {
                       ) : (
                         <Trash2 className="h-5 w-5 opacity-0" />
                       )}
-                      <div>
-                        <p className="font-medium">{account.username}</p>
+                      <div className="min-w-0">
+                        <p className="truncate font-medium">{account.username}</p>
                         {account.error && (
-                          <p className="text-xs opacity-90">{account.error}</p>
+                          <p className="break-words text-xs opacity-90">{account.error}</p>
                         )}
                       </div>
                     </div>
