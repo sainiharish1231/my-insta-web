@@ -30,6 +30,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { HashtagPicker } from "@/components/hashtag-picker";
+import { CloudinaryUploadWidget } from "@/components/cloudinary-upload";
 
 interface SelectedAccount {
   id: string;
@@ -491,6 +492,21 @@ export default function UploadPage() {
               <h2 className="text-lg font-semibold text-white mb-4">
                 Media Upload
               </h2>
+
+              {/* Cloudinary Upload Widget */}
+              <CloudinaryUploadWidget
+                onUploadSuccess={(url) => {
+                  setUploadedFileUrl(url);
+                  setProgress("File uploaded to Cloudinary!");
+                }}
+                onUploadError={(error) => {
+                  setError(`Upload failed: ${error}`);
+                }}
+              />
+
+              <div className="my-6 text-center">
+                <p className="text-white/40 text-sm">Or use traditional upload</p>
+              </div>
 
               <div
                 onClick={() => fileInputRef.current?.click()}

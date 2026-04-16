@@ -5,6 +5,10 @@ export const MAX_UPLOAD_FILE_SIZE_BYTES = 4 * 1024 * 1024 * 1024; // 4 GB
 const SIMPLE_API_UPLOAD_MAX_SIZE_BYTES = 4 * 1024 * 1024; // 4 MB
 const API_CHUNK_UPLOAD_BYTES = 4 * 1024 * 1024; // 4 MB
 
+// Cloudinary config - presigned uploads (direct, no Vercel timeout!)
+const CLOUDINARY_CLOUD_NAME = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
+const CLOUDINARY_UPLOAD_PRESET = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET;
+
 type UploadProgressCallback = (percent: number) => void;
 
 function sanitizeFilename(name: string): string {
@@ -179,6 +183,60 @@ async function uploadViaChunkedApi(
   throw new Error("Chunked upload did not complete");
 }
 
+async function uploadToCloudinary(
+  file: File,
+  onProgress?: UploadProgressCallback
+): Promise<string> {
+  // Use Cloudinary presigned URL for direct upload - NO Vercel timeout!
+  if (!CLOUDINARY_CLOUD_NAME || !CLOUDINARY_UPLOAD_PRESET) {
+    throw new Error(
+      "Cloudinary not configured. Set NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME and NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET."
+    );
+  }
+
+  const uploadUrl = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/video/upload`;
+  const formData = new FormData();
+
+  formData.append("file", file);
+  formData.append("upload_preset", CLOUDINARY_UPLOAD_PRESET);
+  formData.append("folder", `instagram-uploads/${new Date().toISOString().slice(0, 10)}`);
+  formData.append("resource_type", "video");
+
+  onProgress?.(10); // Show immediate progress
+
+  const xhr = new XMLHttpRequest();
+
+  return new Promise((resolve, reject) => {
+    xhr.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable) {
+        const percentComplete = Math.round((event.loaded / event.total) * 100);
+        onProgress?.(Math.min(95, percentComplete)); // Cap at 95% until finalized
+      }
+    });
+
+    xhr.addEventListener("load", () => {
+      if (xhr.status === 200) {
+        const response = JSON.parse(xhr.responseText);
+        onProgress?.(100);
+        resolve(response.secure_url || response.url);
+      } else {
+        reject(new Error(`Cloudinary upload failed: ${xhr.statusText}`));
+      }
+    });
+
+    xhr.addEventListener("error", () => {
+      reject(new Error("Cloudinary upload failed - network error"));
+    });
+
+    xhr.addEventListener("abort", () => {
+      reject(new Error("Cloudinary upload was cancelled"));
+    });
+
+    xhr.open("POST", uploadUrl);
+    xhr.send(formData);
+  });
+}
+
 export async function uploadMediaToBlob(
   file: File,
   onProgress?: UploadProgressCallback
@@ -188,12 +246,25 @@ export async function uploadMediaToBlob(
     throw new Error(validationError);
   }
 
+  // Try Cloudinary first (no Vercel timeout for large files!)
+  if (CLOUDINARY_CLOUD_NAME && CLOUDINARY_UPLOAD_PRESET) {
+    try {
+      console.log("[v0] Attempting Cloudinary upload for large videos...");
+      return await uploadToCloudinary(file, onProgress);
+    } catch (cloudinaryError: any) {
+      console.error("[v0] Cloudinary upload failed:", cloudinaryError);
+      // Fall back to other methods
+    }
+  }
+
+  // Try Firebase direct upload
   try {
     return await uploadToFirebase(file, onProgress);
   } catch (firebaseError: any) {
     console.error("[v0] Direct Firebase upload failed:", firebaseError);
   }
 
+  // Fall back to API uploads
   if (file.size <= SIMPLE_API_UPLOAD_MAX_SIZE_BYTES) {
     return uploadViaApi(file, onProgress);
   }

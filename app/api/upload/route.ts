@@ -4,10 +4,14 @@ import { ObjectId } from "mongodb";
 import { getDb, getGridFSBucket } from "@/lib/mongodb";
 
 export const runtime = "nodejs";
-export const maxDuration = 900; // 15 minutes for large uploads
+export const maxDuration = 60; // Upload bypasses this via presigned URLs
 
 const SIMPLE_UPLOAD_MAX_BYTES = 500 * 1024 * 1024; // 500MB single upload
 const CHUNK_UPLOAD_MAX_BYTES = 2 * 1024 * 1024 * 1024; // 2GB per chunk
+
+// Cloudinary config for presigned uploads (large videos)
+const CLOUDINARY_CLOUD_NAME = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
+const CLOUDINARY_UPLOAD_PRESET = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET;
 
 function buildFileUrl(request: Request, fileId: string) {
   const origin =
@@ -185,6 +189,36 @@ async function handleChunkedUpload(request: Request, formData: FormData, file: F
     uploadId,
     url: buildFileUrl(request, uploadId),
   });
+}
+
+// GET: Get presigned URL for direct Cloudinary upload (no Vercel timeout)
+export async function GET() {
+  try {
+    if (!CLOUDINARY_CLOUD_NAME || !CLOUDINARY_UPLOAD_PRESET) {
+      return NextResponse.json(
+        { error: "Cloudinary not configured. Set NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME and NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET" },
+        { status: 500 }
+      );
+    }
+
+    // Return Cloudinary upload endpoint - client uploads directly to Cloudinary
+    // This bypasses Vercel completely, so no timeout issues!
+    const uploadUrl = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/video/upload`;
+
+    return NextResponse.json({
+      uploadUrl,
+      uploadPreset: CLOUDINARY_UPLOAD_PRESET,
+      cloudName: CLOUDINARY_CLOUD_NAME,
+      maxFileSize: "4gb", // Cloudinary supports up to 4GB
+      supportedFormats: ["mp4", "mov", "avi", "mkv", "flv", "webm"],
+    });
+  } catch (error) {
+    console.error("[v0] Error getting upload URL:", error);
+    return NextResponse.json(
+      { error: "Failed to get upload URL" },
+      { status: 500 }
+    );
+  }
 }
 
 export async function POST(request: Request) {
