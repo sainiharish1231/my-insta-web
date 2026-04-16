@@ -1,7 +1,7 @@
-'use client';
+"use client";
 
-import { CldUploadWidget } from 'next-cloudinary';
-import { Dispatch, SetStateAction } from 'react';
+import { CldUploadWidget } from "next-cloudinary";
+import { Dispatch, SetStateAction } from "react";
 
 interface CloudinaryUploadProps {
   onUploadSuccess: (url: string) => void;
@@ -33,25 +33,25 @@ export function CloudinaryUploadWidget({
         onProgressChange?.(100);
       }}
       options={{
-        sources: ['local', 'url', 'camera'],
+        sources: ["local", "url", "camera"],
         multiple: false,
         maxDisplaySize: 40,
         clientAllowedFormats: [
-          'mp4',
-          'mov',
-          'avi',
-          'mkv',
-          'webm',
-          'flv',
-          'jpg',
-          'jpeg',
-          'png',
-          'gif',
-          'webp',
+          "mp4",
+          "mov",
+          "avi",
+          "mkv",
+          "webm",
+          "flv",
+          "jpg",
+          "jpeg",
+          "png",
+          "gif",
+          "webp",
         ],
         showAdvancedOptions: true,
         showPoweredBy: false,
-        folder: 'instaweb-uploads',
+        folder: "instaweb-uploads",
       }}
     >
       {({ open }) => (
