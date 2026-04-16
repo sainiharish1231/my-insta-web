@@ -6,7 +6,9 @@ export const maxDuration = 300;
 
 const YOUTUBE_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024; // 8MB
 
-function parseTotalBytesFromContentRange(contentRange: string | null): number | null {
+function parseTotalBytesFromContentRange(
+  contentRange: string | null,
+): number | null {
   if (!contentRange) {
     return null;
   }
@@ -47,7 +49,7 @@ async function getRemoteVideoInfo(videoUrl: string): Promise<{
   if (headResponse.ok) {
     const headSize = Number.parseInt(
       headResponse.headers.get("content-length") || "",
-      10
+      10,
     );
     const contentType = headResponse.headers.get("content-type") || "video/mp4";
 
@@ -68,13 +70,14 @@ async function getRemoteVideoInfo(videoUrl: string): Promise<{
 
   const contentType = probeResponse.headers.get("content-type") || "video/mp4";
   const totalFromRange = parseTotalBytesFromContentRange(
-    probeResponse.headers.get("content-range")
+    probeResponse.headers.get("content-range"),
   );
   const sizeFromLength = Number.parseInt(
     probeResponse.headers.get("content-length") || "",
-    10
+    10,
   );
-  const size = totalFromRange || (Number.isFinite(sizeFromLength) ? sizeFromLength : 0);
+  const size =
+    totalFromRange || (Number.isFinite(sizeFromLength) ? sizeFromLength : 0);
 
   if (!size || size <= 0) {
     throw new Error("Could not determine remote video size");
@@ -87,7 +90,7 @@ async function fetchVideoChunk(
   videoUrl: string,
   start: number,
   end: number,
-  expectedLength: number
+  expectedLength: number,
 ): Promise<ArrayBuffer> {
   const chunkResponse = await fetch(videoUrl, {
     headers: {
@@ -97,7 +100,7 @@ async function fetchVideoChunk(
 
   if (!chunkResponse.ok) {
     throw new Error(
-      `Failed to fetch source chunk ${start}-${end} (status ${chunkResponse.status})`
+      `Failed to fetch source chunk ${start}-${end} (status ${chunkResponse.status})`,
     );
   }
 
@@ -105,7 +108,7 @@ async function fetchVideoChunk(
 
   if (chunkArrayBuffer.byteLength !== expectedLength) {
     throw new Error(
-      "Source server did not return expected byte range. Use a storage URL that supports range requests."
+      "Source server did not return expected byte range. Use a storage URL that supports range requests.",
     );
   }
 
@@ -127,7 +130,7 @@ export async function POST(request: Request) {
     if (!accessToken || !videoUrl || !title) {
       return NextResponse.json(
         { error: "Missing required fields" },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
@@ -182,7 +185,7 @@ export async function POST(request: Request) {
             selfDeclaredMadeForKids: false,
           },
         }),
-      }
+      },
     );
 
     if (!initResponse.ok) {
@@ -196,15 +199,13 @@ export async function POST(request: Request) {
       throw new Error("No upload URL received from YouTube");
     }
 
-    console.log("[v0] Upload initialized, starting chunked upload...");
-
     let uploadedBytes = 0;
     let result: any = null;
 
     while (uploadedBytes < videoSize) {
       const chunkEnd = Math.min(
         uploadedBytes + YOUTUBE_UPLOAD_CHUNK_BYTES - 1,
-        videoSize - 1
+        videoSize - 1,
       );
       const expectedLength = chunkEnd - uploadedBytes + 1;
 
@@ -212,7 +213,7 @@ export async function POST(request: Request) {
         videoUrl,
         uploadedBytes,
         chunkEnd,
-        expectedLength
+        expectedLength,
       );
 
       const uploadResponse = await fetch(uploadUrl, {
@@ -233,7 +234,7 @@ export async function POST(request: Request) {
         uploadedBytes = resumeOffset;
         const progress = Math.min(
           100,
-          Math.round((uploadedBytes / videoSize) * 100)
+          Math.round((uploadedBytes / videoSize) * 100),
         );
         console.log(`[v0] YouTube chunk uploaded: ${progress}%`);
         continue;
@@ -250,12 +251,12 @@ export async function POST(request: Request) {
 
       if (uploadResponse.status === 401) {
         throw new Error(
-          "YouTube authentication expired. Please reconnect your account."
+          "YouTube authentication expired. Please reconnect your account.",
         );
       }
       if (uploadResponse.status === 403) {
         throw new Error(
-          "YouTube upload permission denied. Check your account permissions."
+          "YouTube upload permission denied. Check your account permissions.",
         );
       }
 
@@ -279,7 +280,7 @@ export async function POST(request: Request) {
     console.error("[v0] YouTube upload error:", error);
     return NextResponse.json(
       { error: error.message || "YouTube upload failed" },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
