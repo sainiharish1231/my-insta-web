@@ -3,7 +3,7 @@ import { useState, useRef } from "react";
 import type React from "react";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { createMedia, publishMedia, uploadMediaToBlob } from "@/lib/meta";
+import { createMedia, publishMedia } from "@/lib/meta";
 import {
   Upload,
   Youtube,
@@ -46,11 +46,11 @@ export default function UploadPage() {
   // Publish states
   const [caption, setCaption] = useState("");
   const [selectedAccounts, setSelectedAccounts] = useState<SelectedAccount[]>(
-    []
+    [],
   );
-  const [availableAccounts, setAvailableAccounts] = useState<AvailableAccount[]>(
-    []
-  );
+  const [availableAccounts, setAvailableAccounts] = useState<
+    AvailableAccount[]
+  >([]);
   const [isPublishing, setIsPublishing] = useState(false);
 
   // UI states
@@ -105,14 +105,13 @@ export default function UploadPage() {
       const formData = new FormData();
       formData.append("file", file);
 
-      const cloudName =
-        process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME || "";
+      const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME || "";
       const uploadPreset =
         process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET || "";
 
       if (!cloudName || !uploadPreset) {
         throw new Error(
-          "Cloudinary not configured. Add environment variables."
+          "Cloudinary not configured. Add environment variables.",
         );
       }
 
@@ -138,10 +137,7 @@ export default function UploadPage() {
           }
         } else {
           const response = JSON.parse(xhr.responseText);
-          setError(
-            response.error?.message ||
-              "Upload failed"
-          );
+          setError(response.error?.message || "Upload failed");
         }
         setIsUploading(false);
       });
@@ -153,7 +149,7 @@ export default function UploadPage() {
 
       xhr.open(
         "POST",
-        `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`
+        `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`,
       );
       formData.append("upload_preset", uploadPreset);
       xhr.send(formData);
@@ -208,99 +204,54 @@ export default function UploadPage() {
 
     try {
       const ytAccountsStored = JSON.parse(
-        localStorage.getItem("youtube_accounts") || "[]"
+        localStorage.getItem("youtube_accounts") || "[]",
       );
 
-      let finalMediaUrl = mediaUrl;
+      // Use the uploaded Cloudinary URL as the final media URL
+      const finalMediaUrl = cloudinaryUrl;
 
-      if (selectedFile && !uploadedFileUrl) {
-        setProgress("Uploading file...");
-        finalMediaUrl = await uploadMediaToBlob(selectedFile);
-        setUploadedFileUrl(finalMediaUrl);
-
-        if (
-          finalMediaUrl.includes("localhost") ||
-          finalMediaUrl.includes("127.0.0.1")
-        ) {
-          throw new Error(
-            "Local URLs won't work! Please deploy your app first."
-          );
-        }
-      } else if (uploadedFileUrl) {
-        finalMediaUrl = uploadedFileUrl;
-      } else if (!mediaUrl) {
-        throw new Error("Please provide a media URL or select a file");
-      }
-
+      // Append selected hashtags (from the picker) to the caption if present
       const finalCaption =
-        selectedHashtags.length > 0
-          ? `${caption}\n\n${selectedHashtags.join(" ")}`
-          : caption;
+        hashtags.length > 0 ? `${caption}\n\n${hashtags.join(" ")}` : caption;
 
-      if (scheduleType === "schedule") {
-        const scheduledDateTime = new Date(`${scheduleDate}T${scheduleTime}`);
-
-        const scheduledPosts = JSON.parse(
-          localStorage.getItem("scheduled_posts") || "[]"
-        );
-        scheduledPosts.push({
-          id: Date.now().toString(),
-          mediaUrl: finalMediaUrl,
-          caption: finalCaption,
-          title,
-          keywords,
-          contentType,
-          location,
-          accounts: selectedAccounts.map((acc) => ({
-            id: acc.id,
-            username: acc.username,
-            platform: acc.platform,
-            token: acc.token,
-          })),
-          scheduledFor: scheduledDateTime.toISOString(),
-          status: "scheduled",
-        });
-        localStorage.setItem("scheduled_posts", JSON.stringify(scheduledPosts));
-
-        setProgress("Post scheduled successfully!");
-        setTimeout(() => {
-          router.push("/dashboard");
-        }, 2000);
-        return;
-      }
-
+      // Publish to each selected account one-by-one
       for (let i = 0; i < selectedAccounts.length; i++) {
         const account = selectedAccounts[i];
 
         setSelectedAccounts((prev) =>
           prev.map((a) =>
-            a.id === account.id ? { ...a, status: "uploading" } : a
-          )
+            a.id === account.id ? { ...a, status: "uploading" } : a,
+          ),
         );
 
-        if (account.platform === "instagram") {
-          // Post to Instagram Reel
-          const mediaContainer = await createMedia({
-            igUserId: account.id,
-            token: account.token,
-            mediaUrl: cloudinaryUrl,
-            caption: caption,
-            isReel: true,
-          });
-
-          if (mediaContainer?.id) {
-            await publishMedia({
-              mediaContainerId: mediaContainer.id,
+        try {
+          if (account.platform === "instagram") {
+            // Post to Instagram Reel (expects createMedia + publishMedia helpers)
+            const mediaContainer = await createMedia({
+              igUserId: account.id,
               token: account.token,
-              creationId,
+              mediaUrl: finalMediaUrl,
+              caption: finalCaption,
+              isReel: true,
             });
+
+            if (mediaContainer?.id) {
+              // publishMedia helper should accept these params; adjust if your helper differs
+              await publishMedia({
+                mediaContainerId: mediaContainer.id,
+                token: account.token,
+              });
+            } else {
+              throw new Error("Failed to create Instagram media container");
+            }
           } else if (account.platform === "youtube") {
+            // Upload to YouTube via your server-side endpoint
             const ytAccount = ytAccountsStored.find(
-              (a: any) => a.id === account.id
+              (a: any) => a.id === account.id,
             );
             if (!ytAccount?.accessToken) {
               throw new Error(
-                "YouTube access token not found. Please reconnect your YouTube account."
+                "YouTube access token not found. Please reconnect your YouTube account.",
               );
             }
 
@@ -312,14 +263,11 @@ export default function UploadPage() {
               body: JSON.stringify({
                 accessToken: ytAccount.accessToken,
                 videoUrl: finalMediaUrl,
-                title: title || caption.substring(0, 100) || "Untitled Video",
-                description: caption,
-                keywords: keywords
-                  .split(",")
-                  .map((k) => k.trim())
-                  .filter(Boolean),
+                title: finalCaption.substring(0, 100) || "Untitled Video",
+                description: finalCaption,
+                keywords: [],
                 privacy: "public",
-                isShort: contentType === "SHORT",
+                isShort: false,
               }),
             });
 
@@ -334,21 +282,24 @@ export default function UploadPage() {
 
           setSelectedAccounts((prev) =>
             prev.map((a) =>
-              a.id === account.id ? { ...a, status: "success" } : a
-            )
+              a.id === account.id ? { ...a, status: "success" } : a,
+            ),
           );
         } catch (err: any) {
           setSelectedAccounts((prev) =>
             prev.map((a) =>
               a.id === account.id
                 ? { ...a, status: "error", error: err.message }
-                : a
-            )
+                : a,
+            ),
           );
         }
       }
-
-    setIsPublishing(false);
+    } catch (err: any) {
+      setError(err.message || "Publishing failed");
+    } finally {
+      setIsPublishing(false);
+    }
   };
 
   const resetUpload = () => {
@@ -412,7 +363,9 @@ export default function UploadPage() {
                 <div className="flex flex-col items-center gap-3">
                   <Loader2 className="w-12 h-12 animate-spin text-blue-400" />
                   <div>
-                    <p className="font-semibold mb-2">Uploading... {uploadProgress}%</p>
+                    <p className="font-semibold mb-2">
+                      Uploading... {uploadProgress}%
+                    </p>
                     <div className="w-full bg-white/10 rounded-full h-2">
                       <div
                         className="bg-blue-500 h-2 rounded-full transition-all"
@@ -425,7 +378,9 @@ export default function UploadPage() {
                 <div className="flex flex-col items-center gap-3">
                   <Upload className="w-12 h-12 text-white/40" />
                   <div>
-                    <p className="font-semibold">Click to upload video or image</p>
+                    <p className="font-semibold">
+                      Click to upload video or image
+                    </p>
                     <p className="text-sm text-white/40 mt-1">
                       Max 5GB • MP4, MOV, AVI, WebM, etc.
                     </p>
@@ -443,11 +398,7 @@ export default function UploadPage() {
             <div className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
               <h2 className="text-lg font-bold mb-4">Preview</h2>
               <div className="aspect-video bg-black rounded-lg overflow-hidden">
-                <video
-                  src={cloudinaryUrl}
-                  controls
-                  className="w-full h-full"
-                />
+                <video src={cloudinaryUrl} controls className="w-full h-full" />
               </div>
             </div>
 
@@ -466,6 +417,7 @@ export default function UploadPage() {
                 <HashtagPicker
                   selectedHashtags={hashtags}
                   onHashtagsChange={setHashtags}
+                  caption={""}
                 />
               </div>
 
@@ -475,7 +427,7 @@ export default function UploadPage() {
                   onClick={() => {
                     setCaption(
                       (prev) =>
-                        prev + (prev ? "\n\n" : "") + hashtags.join(" ")
+                        prev + (prev ? "\n\n" : "") + hashtags.join(" "),
                     );
                     setHashtags([]);
                   }}
