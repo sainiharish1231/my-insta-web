@@ -164,27 +164,63 @@ export async function getMediaList(igUserId: string, token: string) {
   return data.data || []
 }
 
-export async function uploadMediaToBlob(file: File): Promise<string> {
+function getCloudinaryConfig() {
+  const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME
+  const uploadPreset = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET
+
+  if (!cloudName || !uploadPreset) {
+    throw new Error(
+      "Cloudinary is not configured. Add NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME and NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET to continue.",
+    )
+  }
+
+  return { cloudName, uploadPreset }
+}
+
+function getCloudinaryResourceType(file: File): "image" | "video" | "raw" {
+  if (file.type.startsWith("video/")) {
+    return "video"
+  }
+
+  if (file.type.startsWith("image/")) {
+    return "image"
+  }
+
+  return "raw"
+}
+
+export async function uploadMediaToCloudinary(file: File): Promise<string> {
+  const { cloudName, uploadPreset } = getCloudinaryConfig()
+  const resourceType = getCloudinaryResourceType(file)
   const formData = new FormData()
   formData.append("file", file)
+  formData.append("upload_preset", uploadPreset)
 
-  const res = await fetch("/api/upload", {
+  // Cloudinary can automatically split large uploads into smaller chunks.
+  if (resourceType === "video" && file.size > 100 * 1024 * 1024) {
+    formData.append("chunk_size", "6000000")
+  }
+
+  const res = await fetch(
+    `https://api.cloudinary.com/v1_1/${cloudName}/${resourceType}/upload`,
+    {
     method: "POST",
     body: formData,
-  })
+    },
+  )
 
   if (!res.ok) {
     const errorText = await res.text()
-    throw new Error(`Failed to upload file: ${errorText}`)
+    throw new Error(`Cloudinary upload failed: ${errorText}`)
   }
 
   const data = await res.json()
 
-  if (!data.url) {
-    throw new Error("Upload succeeded but no URL returned")
+  if (!data.secure_url) {
+    throw new Error("Cloudinary upload succeeded but no secure URL returned")
   }
 
-  return data.url
+  return data.secure_url
 }
 
 export async function getMediaInsights(mediaId: string, token: string, mediaType: string) {

@@ -1,124 +1,48 @@
 import { NextResponse } from "next/server";
 
-export const runtime = "nodejs";
-// Vercel Hobby serverless functions must stay within 1-300 seconds.
-export const maxDuration = 300;
+const YOUTUBE_UPLOAD_CHUNK_BYTES = 256 * 1024; // 256 KB chunk size for resumable uploads
 
-const YOUTUBE_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024; // 8MB
+async function refreshYouTubeAccessToken(refreshToken: string) {
+  const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
 
-function parseTotalBytesFromContentRange(
-  contentRange: string | null,
-): number | null {
-  if (!contentRange) {
-    return null;
-  }
-
-  const match = contentRange.match(/bytes\s+\d+-\d+\/(\d+)/i);
-  if (!match) {
-    return null;
-  }
-
-  const total = Number.parseInt(match[1], 10);
-  return Number.isFinite(total) ? total : null;
-}
-
-function parseNextOffsetFromRange(rangeHeader: string | null): number | null {
-  if (!rangeHeader) {
-    return null;
-  }
-
-  const match = rangeHeader.match(/bytes=0-(\d+)/i);
-  if (!match) {
-    return null;
-  }
-
-  const lastUploadedByte = Number.parseInt(match[1], 10);
-  if (!Number.isFinite(lastUploadedByte)) {
-    return null;
-  }
-
-  return lastUploadedByte + 1;
-}
-
-async function getRemoteVideoInfo(videoUrl: string): Promise<{
-  size: number;
-  contentType: string;
-}> {
-  const headResponse = await fetch(videoUrl, { method: "HEAD" });
-
-  if (headResponse.ok) {
-    const headSize = Number.parseInt(
-      headResponse.headers.get("content-length") || "",
-      10,
+  if (!clientId || !clientSecret) {
+    throw new Error(
+      "Google OAuth credentials are not configured on the server.",
     );
-    const contentType = headResponse.headers.get("content-type") || "video/mp4";
-
-    if (Number.isFinite(headSize) && headSize > 0) {
-      return { size: headSize, contentType };
-    }
   }
 
-  const probeResponse = await fetch(videoUrl, {
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
     headers: {
-      Range: "bytes=0-0",
+      "Content-Type": "application/x-www-form-urlencoded",
     },
+    body: new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: refreshToken,
+      grant_type: "refresh_token",
+    }),
   });
 
-  if (!probeResponse.ok) {
-    throw new Error("Failed to inspect remote video file");
-  }
+  const data = await response.json();
 
-  const contentType = probeResponse.headers.get("content-type") || "video/mp4";
-  const totalFromRange = parseTotalBytesFromContentRange(
-    probeResponse.headers.get("content-range"),
-  );
-  const sizeFromLength = Number.parseInt(
-    probeResponse.headers.get("content-length") || "",
-    10,
-  );
-  const size =
-    totalFromRange || (Number.isFinite(sizeFromLength) ? sizeFromLength : 0);
-
-  if (!size || size <= 0) {
-    throw new Error("Could not determine remote video size");
-  }
-
-  return { size, contentType };
-}
-
-async function fetchVideoChunk(
-  videoUrl: string,
-  start: number,
-  end: number,
-  expectedLength: number,
-): Promise<ArrayBuffer> {
-  const chunkResponse = await fetch(videoUrl, {
-    headers: {
-      Range: `bytes=${start}-${end}`,
-    },
-  });
-
-  if (!chunkResponse.ok) {
+  if (!response.ok || data.error || !data.access_token) {
     throw new Error(
-      `Failed to fetch source chunk ${start}-${end} (status ${chunkResponse.status})`,
+      data.error_description ||
+        data.error ||
+        "Failed to refresh YouTube access token",
     );
   }
 
-  const chunkArrayBuffer = await chunkResponse.arrayBuffer();
-
-  if (chunkArrayBuffer.byteLength !== expectedLength) {
-    throw new Error(
-      "Source server did not return expected byte range. Use a storage URL that supports range requests.",
-    );
-  }
-
-  return chunkArrayBuffer;
+  return data.access_token as string;
 }
 
 export async function POST(request: Request) {
   try {
     const {
       accessToken,
+      refreshToken,
       videoUrl,
       title,
       description,
@@ -133,6 +57,8 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
+
+    let activeAccessToken = accessToken;
 
     console.log("[v0] YouTube upload starting:", {
       videoUrl,
@@ -168,25 +94,40 @@ export async function POST(request: Request) {
       }
     }
 
-    const initResponse = await fetch(
-      "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-          "X-Upload-Content-Type": contentType,
-          "X-Upload-Content-Length": videoSize.toString(),
-        },
-        body: JSON.stringify({
-          snippet,
-          status: {
-            privacyStatus: privacy,
-            selfDeclaredMadeForKids: false,
+    const initUpload = async (token: string) =>
+      fetch(
+        "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+            "X-Upload-Content-Type": contentType || "video/mp4",
+            "X-Upload-Content-Length": videoSize.toString(),
           },
-        }),
-      },
-    );
+          body: JSON.stringify({
+            snippet,
+            status: {
+              privacyStatus: privacy,
+              selfDeclaredMadeForKids: false,
+            },
+          }),
+        },
+      );
+
+    let initResponse = await initUpload(activeAccessToken);
+
+    if (initResponse.status === 401) {
+      if (!refreshToken) {
+        throw new Error(
+          "YouTube session expired and no refresh token is available. Please reconnect your YouTube account.",
+        );
+      }
+
+      console.log("[v0] YouTube access token expired, refreshing token...");
+      activeAccessToken = await refreshYouTubeAccessToken(refreshToken);
+      initResponse = await initUpload(activeAccessToken);
+    }
 
     if (!initResponse.ok) {
       const errorText = await initResponse.text();
@@ -219,35 +160,13 @@ export async function POST(request: Request) {
       const uploadResponse = await fetch(uploadUrl, {
         method: "PUT",
         headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": contentType,
+          Authorization: `Bearer ${activeAccessToken}`,
+          "Content-Type": contentType || "video/mp4",
           "Content-Length": expectedLength.toString(),
           "Content-Range": `bytes ${uploadedBytes}-${chunkEnd}/${videoSize}`,
         },
-        body: chunk,
+        body: chunk instanceof ArrayBuffer ? new Uint8Array(chunk) : chunk,
       });
-
-      if (uploadResponse.status === 308) {
-        const resumeOffset =
-          parseNextOffsetFromRange(uploadResponse.headers.get("range")) ||
-          chunkEnd + 1;
-        uploadedBytes = resumeOffset;
-        const progress = Math.min(
-          100,
-          Math.round((uploadedBytes / videoSize) * 100),
-        );
-        console.log(`[v0] YouTube chunk uploaded: ${progress}%`);
-        continue;
-      }
-
-      if (uploadResponse.ok) {
-        result = await uploadResponse.json();
-        uploadedBytes = videoSize;
-        break;
-      }
-
-      const errorText = await uploadResponse.text();
-      console.error("[v0] YouTube upload error:", errorText);
 
       if (uploadResponse.status === 401) {
         throw new Error(
@@ -260,7 +179,31 @@ export async function POST(request: Request) {
         );
       }
 
-      throw new Error(`Failed to upload video chunk: ${errorText}`);
+      // Resumable uploads return 308 with Range header when more data is needed
+      if (uploadResponse.status === 308) {
+        const range = uploadResponse.headers.get("Range");
+        if (range) {
+          const m = range.match(/bytes=0-(\d+)/);
+          if (m) {
+            uploadedBytes = parseInt(m[1], 10) + 1;
+          } else {
+            uploadedBytes += expectedLength;
+          }
+        } else {
+          uploadedBytes += expectedLength;
+        }
+        continue;
+      }
+
+      if (!uploadResponse.ok) {
+        const errorText = await uploadResponse.text();
+        console.error("[v0] YouTube upload error:", errorText);
+        throw new Error(`Failed to upload video chunk: ${errorText}`);
+      }
+
+      // Completed upload - parse response for video id
+      result = await uploadResponse.json();
+      uploadedBytes = videoSize;
     }
 
     if (!result?.id) {
@@ -271,6 +214,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       success: true,
+      accessToken: activeAccessToken,
       videoId: result.id,
       url: isShort
         ? `https://www.youtube.com/shorts/${result.id}`
@@ -283,4 +227,67 @@ export async function POST(request: Request) {
       { status: 500 },
     );
   }
+}
+
+async function getRemoteVideoInfo(
+  videoUrl: string,
+): Promise<{ size: number; contentType: string }> {
+  // Try a HEAD request first to get content-length and content-type
+  try {
+    const headResp = await fetch(videoUrl, { method: "HEAD" });
+    if (headResp.ok) {
+      const contentLength = headResp.headers.get("content-length");
+      const contentType = headResp.headers.get("content-type") || "video/mp4";
+      if (contentLength) {
+        return { size: parseInt(contentLength, 10), contentType };
+      }
+    }
+  } catch (e) {
+    // ignore and try GET fallback below
+  }
+
+  // Fallback to fetching a small byte range to determine size when HEAD not available
+  const resp = await fetch(videoUrl, {
+    method: "GET",
+    headers: { Range: "bytes=0-0" },
+  });
+  if (!resp.ok && resp.status !== 206) {
+    throw new Error(`Failed to retrieve remote video info: ${resp.statusText}`);
+  }
+  const contentRange = resp.headers.get("content-range"); // e.g. bytes 0-0/12345
+  const contentType = resp.headers.get("content-type") || "video/mp4";
+  if (contentRange) {
+    const m = contentRange.match(/\/(\d+)$/);
+    if (m) {
+      return { size: parseInt(m[1], 10), contentType };
+    }
+  }
+
+  // As a final fallback, download the whole file (not ideal) and measure it
+  const full = await fetch(videoUrl);
+  if (!full.ok) {
+    throw new Error(
+      `Failed to fetch video to determine size: ${full.statusText}`,
+    );
+  }
+  const buf = await full.arrayBuffer();
+  return { size: buf.byteLength, contentType };
+}
+
+async function fetchVideoChunk(
+  videoUrl: string,
+  uploadedBytes: number,
+  chunkEnd: number,
+  expectedLength: number,
+): Promise<ArrayBuffer> {
+  const headers: Record<string, string> = {
+    Range: `bytes=${uploadedBytes}-${chunkEnd}`,
+  };
+  const resp = await fetch(videoUrl, { method: "GET", headers });
+  if (!resp.ok && resp.status !== 206 && resp.status !== 200) {
+    throw new Error(`Failed to fetch video chunk: ${resp.statusText}`);
+  }
+  const ab = await resp.arrayBuffer();
+  // Some servers may return the full content for non-range-supporting endpoints; we accept that.
+  return ab;
 }

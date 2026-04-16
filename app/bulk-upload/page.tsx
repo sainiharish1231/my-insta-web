@@ -3,6 +3,7 @@ import { useState, useRef, useEffect } from "react";
 import type React from "react";
 import { Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { uploadMediaToCloudinary, createMedia, publishMedia } from "@/lib/meta";
 import {
   ArrowLeft,
   FolderOpen,
@@ -49,6 +50,7 @@ interface Account {
   platform: "instagram" | "youtube";
   token?: string;
   accessToken?: string;
+  refreshToken?: string;
   name?: string;
   thumbnail?: string;
 }
@@ -113,11 +115,11 @@ function BulkUploadContent() {
                   console.error("[v0] Failed to load segment:", err);
                   return null;
                 }
-              })
+              }),
             );
 
             const validVideos = loadedVideos.filter(
-              (v) => v !== null
+              (v) => v !== null,
             ) as VideoFile[];
             setVideos(validVideos);
 
@@ -125,7 +127,7 @@ function BulkUploadContent() {
 
             if (validVideos.length > 0) {
               toast.success(
-                `Loaded ${validVideos.length} video segments from splitter!`
+                `Loaded ${validVideos.length} video segments from splitter!`,
               );
             }
           } catch (err) {
@@ -141,7 +143,7 @@ function BulkUploadContent() {
 
     const igAccounts = JSON.parse(localStorage.getItem("ig_accounts") || "[]");
     const ytAccounts = JSON.parse(
-      localStorage.getItem("youtube_accounts") || "[]"
+      localStorage.getItem("youtube_accounts") || "[]",
     );
 
     const all: Account[] = [
@@ -197,7 +199,7 @@ function BulkUploadContent() {
           preview,
           status: "pending" as const,
         };
-      })
+      }),
     );
 
     setVideos((prev) => [...prev, ...newVideos]);
@@ -235,11 +237,11 @@ function BulkUploadContent() {
   const toggleAccount = (account: Account) => {
     setSelectedAccounts((prev) => {
       const isSelected = prev.some(
-        (a) => a.id === account.id && a.platform === account.platform
+        (a) => a.id === account.id && a.platform === account.platform,
       );
       if (isSelected) {
         return prev.filter(
-          (a) => !(a.id === account.id && a.platform === account.platform)
+          (a) => !(a.id === account.id && a.platform === account.platform),
         );
       } else {
         return [...prev, account];
@@ -272,12 +274,15 @@ function BulkUploadContent() {
 
     if (settings.startDelayMinutes && settings.startDelayMinutes > 0) {
       console.log(
-        `[v0] Delaying start by ${settings.startDelayMinutes} minutes`
+        `[v0] Delaying start by ${settings.startDelayMinutes} minutes`,
       );
       toast.info(`Upload will start in ${settings.startDelayMinutes} minutes`);
-      intervalRef.current = setTimeout(() => {
-        processNextVideo();
-      }, settings.startDelayMinutes * 60 * 1000);
+      intervalRef.current = setTimeout(
+        () => {
+          processNextVideo();
+        },
+        settings.startDelayMinutes * 60 * 1000,
+      );
     } else {
       processNextVideo();
     }
@@ -288,7 +293,7 @@ function BulkUploadContent() {
 
     console.log(
       "[v0] Processing queue - pending videos:",
-      pendingVideos.length
+      pendingVideos.length,
     );
 
     if (pendingVideos.length === 0) {
@@ -304,38 +309,35 @@ function BulkUploadContent() {
       "[v0] Processing video:",
       nextVideo.originalTitle || nextVideo.file.name,
       "Index:",
-      videoIndex
+      videoIndex,
     );
     setCurrentVideoIndex(videoIndex + 1);
 
     setVideos((prev) =>
       prev.map((v) =>
-        v.id === nextVideo.id ? { ...v, status: "processing" } : v
-      )
+        v.id === nextVideo.id ? { ...v, status: "processing" } : v,
+      ),
     );
 
     try {
       const videoTitle = nextVideo.originalTitle || settings.title;
-      setActiveUploadProgress(0);
 
-      console.log("[v0] Uploading video to storage...");
-      const url = await uploadMediaToBlob(nextVideo.file, (percent) => {
-        setActiveUploadProgress(percent);
-      });
+      console.log("[v0] Uploading to Cloudinary...");
+      const url = await uploadMediaToCloudinary(nextVideo.file);
       console.log("[v0] Video uploaded to:", url);
 
       const igAccounts = selectedAccounts.filter(
-        (a) => a.platform === "instagram"
+        (a) => a.platform === "instagram",
       );
       const ytAccounts = selectedAccounts.filter(
-        (a) => a.platform === "youtube"
+        (a) => a.platform === "youtube",
       );
 
       console.log(
         "[v0] Uploading to accounts - Instagram:",
         igAccounts.length,
         "YouTube:",
-        ytAccounts.length
+        ytAccounts.length,
       );
 
       for (const account of igAccounts) {
@@ -353,125 +355,34 @@ function BulkUploadContent() {
           console.log("[v0] Instagram caption:", caption);
           console.log("[v0] Video URL for Instagram:", url);
 
-          const createRes = await fetch(
-            `https://graph.facebook.com/v21.0/${account.id}/media`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                video_url: url,
-                caption,
-                media_type: "REELS",
-                access_token: account.token,
-              }),
-            }
-          );
-
-          const createData = await createRes.json();
-          console.log("[v0] Instagram create response:", createData);
-
-          if (createData.error) {
-            console.error(
-              "[v0] Instagram create error details:",
-              JSON.stringify(createData.error, null, 2)
-            );
-            throw new Error(
-              createData.error.message || "Instagram media creation failed"
-            );
-          }
-
-          if (!createData.id) {
-            throw new Error("Instagram did not return a media container ID");
-          }
-
-          const containerId = createData.id;
+          const containerId = await createMedia({
+            igUserId: account.id,
+            token: account.token,
+            mediaUrl: url,
+            caption,
+            isReel: true,
+          });
           console.log("[v0] Instagram media container created:", containerId);
-
-          console.log("[v0] Waiting for Instagram to process the video...");
-          let mediaReady = false;
-          let attempts = 0;
-          const maxAttempts = 240;
-
-          while (!mediaReady && attempts < maxAttempts) {
-            attempts++;
-            await new Promise((resolve) => setTimeout(resolve, 5000));
-
-            try {
-              const statusRes = await fetch(
-                `https://graph.facebook.com/v21.0/${containerId}?fields=status_code&access_token=${account.token}`
-              );
-              const statusData = await statusRes.json();
-              console.log(
-                `[v0] Media status check ${attempts}/${maxAttempts}:`,
-                statusData
-              );
-
-              if (statusData.status_code === "FINISHED") {
-                mediaReady = true;
-                console.log("[v0] Media is ready!");
-              } else if (statusData.status_code === "ERROR") {
-                throw new Error(
-                  "Instagram reported an error processing the video"
-                );
-              } else if (statusData.status_code === "EXPIRED") {
-                throw new Error("Media container expired");
-              }
-            } catch (statusErr) {
-              console.error("[v0] Status check error:", statusErr);
-              if (attempts >= maxAttempts) {
-                throw new Error("Failed to check media status");
-              }
-            }
-          }
-
-          if (!mediaReady) {
-            throw new Error("Media processing timed out after 20 minutes");
-          }
-
-          console.log("[v0] Publishing media to Instagram...");
-          const publishRes = await fetch(
-            `https://graph.facebook.com/v21.0/${account.id}/media_publish`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                creation_id: containerId,
-                access_token: account.token,
-              }),
-            }
-          );
-
-          const publishData = await publishRes.json();
-          console.log("[v0] Instagram publish response:", publishData);
-
-          if (publishData.error) {
-            console.error(
-              "[v0] Instagram publish error details:",
-              JSON.stringify(publishData.error, null, 2)
-            );
-            throw new Error(
-              publishData.error.message || "Instagram publishing failed"
-            );
-          }
-
-          if (!publishData.id) {
-            throw new Error("Instagram did not return a published media ID");
-          }
+          const publishData = await publishMedia({
+            igUserId: account.id,
+            token: account.token,
+            creationId: containerId,
+          });
 
           console.log(
             "[v0] Successfully published to Instagram! Media ID:",
-            publishData.id
+            publishData.id,
           );
           toast.success(`Published to Instagram: ${account.username}`);
         } catch (err) {
           const errorMessage = err instanceof Error ? err.message : String(err);
           console.error(
             `[v0] Failed to upload to Instagram account ${account.username}:`,
-            errorMessage
+            errorMessage,
           );
           console.error("[v0] Full error object:", err);
           toast.error(
-            `Instagram upload failed for ${account.username}: ${errorMessage}`
+            `Instagram upload failed for ${account.username}: ${errorMessage}`,
           );
         }
       }
@@ -480,7 +391,7 @@ function BulkUploadContent() {
         try {
           console.log(
             "[v0] Uploading to YouTube account:",
-            account.name || account.username
+            account.name || account.username,
           );
 
           const uploadResponse = await fetch("/api/youtube/upload", {
@@ -488,6 +399,7 @@ function BulkUploadContent() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               accessToken: account.accessToken || account.token,
+              refreshToken: account.refreshToken,
               videoUrl: url,
               title: videoTitle,
               description: settings.description,
@@ -503,34 +415,52 @@ function BulkUploadContent() {
           const uploadData = await uploadResponse.json();
           console.log("[v0] YouTube upload response:", uploadData);
 
+          if (
+            uploadData.accessToken &&
+            uploadData.accessToken !== account.accessToken
+          ) {
+            const storedAccounts = JSON.parse(
+              localStorage.getItem("youtube_accounts") || "[]",
+            );
+            const updatedAccounts = storedAccounts.map((a: any) =>
+              a.id === account.id
+                ? { ...a, accessToken: uploadData.accessToken }
+                : a,
+            );
+            localStorage.setItem(
+              "youtube_accounts",
+              JSON.stringify(updatedAccounts),
+            );
+          }
+
           if (!uploadResponse.ok) {
             console.error(
               `[v0] YouTube upload failed for ${account.name}:`,
-              uploadData.error
+              uploadData.error,
             );
             toast.error(
               `YouTube upload failed for ${account.name || account.username}: ${
                 uploadData.error || "Unknown error"
-              }`
+              }`,
             );
           } else {
             console.log(
               "[v0] Successfully uploaded to YouTube:",
-              uploadData.videoId
+              uploadData.videoId,
             );
             toast.success(
-              `Published to YouTube: ${account.name || account.username}`
+              `Published to YouTube: ${account.name || account.username}`,
             );
           }
         } catch (err) {
           console.error(
             `[v0] Failed to upload to YouTube account ${account.name}:`,
-            err
+            err,
           );
           toast.error(
             `YouTube upload failed for ${account.name || account.username}: ${
               err instanceof Error ? err.message : "Unknown error"
-            }`
+            }`,
           );
         }
       }
@@ -544,15 +474,15 @@ function BulkUploadContent() {
                 uploadedUrl: url,
                 processedAt: new Date().toISOString(),
               }
-            : v
-        )
+            : v,
+        ),
       );
       setActiveUploadProgress(0);
 
       toast.success(`Uploaded: ${videoTitle}`);
 
       const remainingPending = videos.filter(
-        (v) => v.status === "pending" && v.id !== nextVideo.id
+        (v) => v.status === "pending" && v.id !== nextVideo.id,
       );
       console.log("[v0] Remaining pending videos:", remainingPending.length);
 
@@ -561,7 +491,7 @@ function BulkUploadContent() {
         const delayMs = delayMinutes * 60 * 1000;
 
         toast.info(
-          `Next upload in ${delayMinutes} minutes. ${remainingPending.length} videos remaining.`
+          `Next upload in ${delayMinutes} minutes. ${remainingPending.length} videos remaining.`,
         );
         console.log("[v0] Scheduling next upload in", delayMinutes, "minutes");
 
@@ -585,8 +515,8 @@ function BulkUploadContent() {
                 status: "error",
                 error: error.message,
               }
-            : v
-        )
+            : v,
+        ),
       );
 
       toast.error(`Failed to upload: ${error.message}`);
@@ -827,7 +757,7 @@ function BulkUploadContent() {
                               checked={selectedAccounts.some(
                                 (a) =>
                                   a.id === account.id &&
-                                  a.platform === account.platform
+                                  a.platform === account.platform,
                               )}
                               onChange={() => toggleAccount(account)}
                               className="w-4 h-4 rounded cursor-pointer"
@@ -878,8 +808,10 @@ function BulkUploadContent() {
                   Click to select videos
                 </span>
                 <span className="text-xs text-white/40">
-                  or drag and drop (max {(MAX_UPLOAD_FILE_SIZE_BYTES /
-                    (1024 * 1024 * 1024)).toFixed(0)}
+                  or drag and drop (max{" "}
+                  {(MAX_UPLOAD_FILE_SIZE_BYTES / (1024 * 1024 * 1024)).toFixed(
+                    0,
+                  )}
                   GB each)
                 </span>
               </button>
@@ -914,10 +846,10 @@ function BulkUploadContent() {
                         video.status === "pending"
                           ? "bg-white/5 border-white/10 hover:border-white/20"
                           : video.status === "processing"
-                          ? "bg-blue-500/10 border-blue-500/30"
-                          : video.status === "uploaded"
-                          ? "bg-green-500/10 border-green-500/30"
-                          : "bg-red-500/10 border-red-500/30"
+                            ? "bg-blue-500/10 border-blue-500/30"
+                            : video.status === "uploaded"
+                              ? "bg-green-500/10 border-green-500/30"
+                              : "bg-red-500/10 border-red-500/30"
                       }`}
                     >
                       <div className="flex items-start gap-4">

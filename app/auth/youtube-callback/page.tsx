@@ -60,12 +60,15 @@ export default function YouTubeCallback() {
         const existingYTAccounts = JSON.parse(
           localStorage.getItem("youtube_accounts") || "[]",
         );
+        const existingAccount = existingYTAccounts.find(
+          (a: any) => a.id === data.channelId,
+        );
         const newAccount = {
           id: data.channelId,
           name: data.channelName,
           thumbnail: data.thumbnail,
           accessToken: data.access_token,
-          refreshToken: data.refresh_token,
+          refreshToken: data.refresh_token || existingAccount?.refreshToken || "",
           subscriberCount: data.subscriberCount,
         };
 

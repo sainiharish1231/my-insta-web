@@ -1,8 +1,9 @@
 "use client";
 import { useState, useRef } from "react";
 import type React from "react";
-import { useRouter } from "next/navigation";
-import { createMedia, publishMedia } from "@/lib/meta";
+
+import { useRouter, useSearchParams } from "next/navigation";
+import { createMedia, publishMedia, uploadMediaToBlob } from "@/lib/meta";
 import {
   Upload,
   Youtube,
@@ -205,8 +206,72 @@ export default function UploadPage() {
     setIsPublishing(true);
     setError("");
 
-    for (const account of selectedAccounts) {
-      try {
+    try {
+      const ytAccountsStored = JSON.parse(
+        localStorage.getItem("youtube_accounts") || "[]"
+      );
+
+      let finalMediaUrl = mediaUrl;
+
+      if (selectedFile && !uploadedFileUrl) {
+        setProgress("Uploading file...");
+        finalMediaUrl = await uploadMediaToBlob(selectedFile);
+        setUploadedFileUrl(finalMediaUrl);
+
+        if (
+          finalMediaUrl.includes("localhost") ||
+          finalMediaUrl.includes("127.0.0.1")
+        ) {
+          throw new Error(
+            "Local URLs won't work! Please deploy your app first."
+          );
+        }
+      } else if (uploadedFileUrl) {
+        finalMediaUrl = uploadedFileUrl;
+      } else if (!mediaUrl) {
+        throw new Error("Please provide a media URL or select a file");
+      }
+
+      const finalCaption =
+        selectedHashtags.length > 0
+          ? `${caption}\n\n${selectedHashtags.join(" ")}`
+          : caption;
+
+      if (scheduleType === "schedule") {
+        const scheduledDateTime = new Date(`${scheduleDate}T${scheduleTime}`);
+
+        const scheduledPosts = JSON.parse(
+          localStorage.getItem("scheduled_posts") || "[]"
+        );
+        scheduledPosts.push({
+          id: Date.now().toString(),
+          mediaUrl: finalMediaUrl,
+          caption: finalCaption,
+          title,
+          keywords,
+          contentType,
+          location,
+          accounts: selectedAccounts.map((acc) => ({
+            id: acc.id,
+            username: acc.username,
+            platform: acc.platform,
+            token: acc.token,
+          })),
+          scheduledFor: scheduledDateTime.toISOString(),
+          status: "scheduled",
+        });
+        localStorage.setItem("scheduled_posts", JSON.stringify(scheduledPosts));
+
+        setProgress("Post scheduled successfully!");
+        setTimeout(() => {
+          router.push("/dashboard");
+        }, 2000);
+        return;
+      }
+
+      for (let i = 0; i < selectedAccounts.length; i++) {
+        const account = selectedAccounts[i];
+
         setSelectedAccounts((prev) =>
           prev.map((a) =>
             a.id === account.id ? { ...a, status: "uploading" } : a
@@ -227,46 +292,61 @@ export default function UploadPage() {
             await publishMedia({
               mediaContainerId: mediaContainer.id,
               token: account.token,
+              creationId,
+            });
+          } else if (account.platform === "youtube") {
+            const ytAccount = ytAccountsStored.find(
+              (a: any) => a.id === account.id
+            );
+            if (!ytAccount?.accessToken) {
+              throw new Error(
+                "YouTube access token not found. Please reconnect your YouTube account."
+              );
+            }
+
+            const uploadResponse = await fetch("/api/youtube/upload", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                accessToken: ytAccount.accessToken,
+                videoUrl: finalMediaUrl,
+                title: title || caption.substring(0, 100) || "Untitled Video",
+                description: caption,
+                keywords: keywords
+                  .split(",")
+                  .map((k) => k.trim())
+                  .filter(Boolean),
+                privacy: "public",
+                isShort: contentType === "SHORT",
+              }),
             });
 
-            setSelectedAccounts((prev) =>
-              prev.map((a) =>
-                a.id === account.id ? { ...a, status: "success" } : a
-              )
-            );
-          }
-        } else if (account.platform === "youtube") {
-          // Post to YouTube
-          const response = await fetch("/api/youtube/upload", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              videoUrl: cloudinaryUrl,
-              title: caption || "New Video",
-              description: caption,
-              tokens: { access_token: account.token },
-            }),
-          });
+            if (!uploadResponse.ok) {
+              const errorData = await uploadResponse.json();
+              throw new Error(errorData.error || "YouTube upload failed");
+            }
 
-          if (response.ok) {
-            setSelectedAccounts((prev) =>
-              prev.map((a) =>
-                a.id === account.id ? { ...a, status: "success" } : a
-              )
-            );
+            const result = await uploadResponse.json();
+            console.log("[v0] YouTube video uploaded:", result.url);
           }
+
+          setSelectedAccounts((prev) =>
+            prev.map((a) =>
+              a.id === account.id ? { ...a, status: "success" } : a
+            )
+          );
+        } catch (err: any) {
+          setSelectedAccounts((prev) =>
+            prev.map((a) =>
+              a.id === account.id
+                ? { ...a, status: "error", error: err.message }
+                : a
+            )
+          );
         }
-      } catch (err: any) {
-        console.error("[v0] Publish error:", err);
-        setSelectedAccounts((prev) =>
-          prev.map((a) =>
-            a.id === account.id
-              ? { ...a, status: "error", error: err.message }
-              : a
-          )
-        );
       }
-    }
 
     setIsPublishing(false);
   };
