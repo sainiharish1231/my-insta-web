@@ -862,6 +862,15 @@ export default function Dashboard() {
             <h3 className="font-semibold text-white mb-1">Video Bridge</h3>
             <p className="text-xs text-white/50">Primary Insta to IG / YT</p>
           </button>
+
+          <button
+            onClick={() => router.push("/latest-video-stats")}
+            className="p-6 bg-gradient-to-br from-emerald-500/20 to-cyan-500/20 hover:from-emerald-500/30 hover:to-cyan-500/30 border border-emerald-500/30 rounded-2xl transition-all group"
+          >
+            <BarChart2 className="w-8 h-8 text-emerald-300 mb-3 group-hover:scale-110 transition-transform" />
+            <h3 className="font-semibold text-white mb-1">Last Video Stats</h3>
+            <p className="text-xs text-white/50">Views and likes by account</p>
+          </button>
         </div>
 
         {/* Video Splitter Modal/Section */}

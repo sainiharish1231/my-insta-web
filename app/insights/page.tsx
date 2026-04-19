@@ -26,12 +26,12 @@ interface Media {
 }
 
 interface Insights {
-  likes?: number;
-  comments?: number;
-  shares?: number;
-  views?: number;
-  reach?: number;
-  engagement?: number;
+  likes?: number | string;
+  comments?: number | string;
+  shares?: number | string;
+  views?: number | string;
+  reach?: number | string;
+  engagement?: number | string;
 }
 
 export default function InsightsPage() {
