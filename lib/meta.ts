@@ -253,6 +253,50 @@ export async function uploadMediaAssetToCloudinary(
   }
 }
 
+export async function uploadRemoteMediaToCloudinary(
+  mediaUrl: string,
+  options?: {
+    folder?: string
+    resourceType?: "image" | "video" | "raw" | "auto"
+  },
+): Promise<{ secureUrl: string; publicId: string; resourceType: string }> {
+  const { cloudName, uploadPreset } = getCloudinaryConfig()
+  const resourceType = options?.resourceType || "auto"
+  const formData = new FormData()
+
+  formData.append("file", mediaUrl)
+  formData.append("upload_preset", uploadPreset)
+
+  if (options?.folder) {
+    formData.append("folder", options.folder)
+  }
+
+  const res = await fetch(
+    `https://api.cloudinary.com/v1_1/${cloudName}/${resourceType}/upload`,
+    {
+      method: "POST",
+      body: formData,
+    },
+  )
+
+  if (!res.ok) {
+    const errorText = await res.text()
+    throw new Error(`Cloudinary remote upload failed: ${errorText}`)
+  }
+
+  const data = await res.json()
+
+  if (!data.secure_url || !data.public_id) {
+    throw new Error("Remote upload succeeded but response metadata was incomplete")
+  }
+
+  return {
+    secureUrl: data.secure_url,
+    publicId: data.public_id,
+    resourceType: data.resource_type || resourceType,
+  }
+}
+
 export async function uploadMediaToCloudinary(file: File): Promise<string> {
   const asset = await uploadMediaAssetToCloudinary(file)
   return asset.secureUrl

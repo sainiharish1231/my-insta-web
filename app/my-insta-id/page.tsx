@@ -62,6 +62,7 @@ export default function MyInstaIdPage() {
   const [selectedAccountId, setSelectedAccountId] = useState("");
   const [media, setMedia] = useState<InstagramMedia[]>([]);
   const [refreshSeed, setRefreshSeed] = useState(0);
+  const [primaryAccountId, setPrimaryAccountId] = useState("");
   const [loadingAccounts, setLoadingAccounts] = useState(true);
   const [loadingMedia, setLoadingMedia] = useState(false);
   const [error, setError] = useState("");
@@ -75,10 +76,12 @@ export default function MyInstaIdPage() {
       setAccounts(storedAccounts);
 
       if (storedAccounts.length > 0) {
+        const storedPrimaryId = localStorage.getItem("primary_ig_account_id");
         const storedSelected = localStorage.getItem("ig_user_id");
         const preferredAccount = storedAccounts.find(
-          (account) => account.id === storedSelected
+          (account) => account.id === storedPrimaryId || account.id === storedSelected
         );
+        setPrimaryAccountId(storedPrimaryId || storedAccounts[0].id);
         setSelectedAccountId(preferredAccount?.id || storedAccounts[0].id);
       }
     } catch (loadError) {
@@ -158,6 +161,11 @@ export default function MyInstaIdPage() {
   );
   const latestPost = media[0];
 
+  const setPrimaryAccount = (accountId: string) => {
+    setPrimaryAccountId(accountId);
+    localStorage.setItem("primary_ig_account_id", accountId);
+  };
+
   return (
     <div className="min-h-screen bg-slate-950 text-white">
       <header className="sticky top-0 z-50 border-b border-white/10 bg-slate-900/80 backdrop-blur-xl">
@@ -222,36 +230,68 @@ export default function MyInstaIdPage() {
             <div className="space-y-3">
               {accounts.map((account) => {
                 const isSelected = account.id === selectedAccountId;
+                const isPrimary = account.id === primaryAccountId;
 
                 return (
-                  <button
+                  <div
                     key={account.id}
-                    onClick={() => setSelectedAccountId(account.id)}
                     className={`w-full rounded-2xl border p-3 text-left transition-all ${
                       isSelected
                         ? "border-pink-500/40 bg-gradient-to-r from-pink-500/15 to-orange-500/10"
                         : "border-white/10 bg-slate-900/50 hover:border-white/20 hover:bg-white/10"
                     }`}
                   >
-                    <div className="flex items-center gap-3">
-                      <img
-                        src={
-                          account.profile_picture_url ||
-                          "/placeholder.svg?height=48&width=48&query=instagram profile"
-                        }
-                        alt={account.username}
-                        className="h-12 w-12 rounded-full object-cover"
-                      />
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate font-medium text-white">
-                          @{account.username}
-                        </p>
-                        <p className="text-xs text-white/50">
-                          {account.followers_count?.toLocaleString() || 0} followers
-                        </p>
+                    <button
+                      onClick={() => setSelectedAccountId(account.id)}
+                      className="w-full text-left"
+                    >
+                      <div className="flex items-center gap-3">
+                        <img
+                          src={
+                            account.profile_picture_url ||
+                            "/placeholder.svg?height=48&width=48&query=instagram profile"
+                          }
+                          alt={account.username}
+                          className="h-12 w-12 rounded-full object-cover"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <p className="truncate font-medium text-white">
+                              @{account.username}
+                            </p>
+                            {isPrimary && (
+                              <span className="rounded-full border border-emerald-400/30 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-emerald-300">
+                                Primary
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-white/50">
+                            {account.followers_count?.toLocaleString() || 0} followers
+                          </p>
+                        </div>
                       </div>
+                    </button>
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        onClick={() => setPrimaryAccount(account.id)}
+                        className={`rounded-xl px-3 py-2 text-xs font-medium transition-colors ${
+                          isPrimary
+                            ? "bg-emerald-500/15 text-emerald-300"
+                            : "bg-white/8 text-white/70 hover:bg-white/12 hover:text-white"
+                        }`}
+                      >
+                        {isPrimary ? "Primary Account" : "Set Primary"}
+                      </button>
+                      {isPrimary && (
+                        <button
+                          onClick={() => router.push("/insta-video-bridge")}
+                          className="rounded-xl bg-fuchsia-500/15 px-3 py-2 text-xs font-medium text-fuchsia-200 transition-colors hover:bg-fuchsia-500/25"
+                        >
+                          Open Repost Page
+                        </button>
+                      )}
                     </div>
-                  </button>
+                  </div>
                 );
               })}
             </div>

@@ -853,6 +853,15 @@ export default function Dashboard() {
             <h3 className="font-semibold text-white mb-1">My Insta IDs</h3>
             <p className="text-xs text-white/50">View accounts and posts</p>
           </button>
+
+          <button
+            onClick={() => router.push("/insta-video-bridge")}
+            className="p-6 bg-gradient-to-br from-cyan-500/20 to-blue-500/20 hover:from-cyan-500/30 hover:to-blue-500/30 border border-cyan-500/30 rounded-2xl transition-all group"
+          >
+            <Youtube className="w-8 h-8 text-cyan-300 mb-3 group-hover:scale-110 transition-transform" />
+            <h3 className="font-semibold text-white mb-1">Video Bridge</h3>
+            <p className="text-xs text-white/50">Primary Insta to IG / YT</p>
+          </button>
         </div>
 
         {/* Video Splitter Modal/Section */}
