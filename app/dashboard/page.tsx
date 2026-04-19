@@ -799,7 +799,7 @@ export default function Dashboard() {
         </div>
 
         {/* Quick Actions */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
+        <div className="grid grid-cols-2 gap-4 mb-8 md:grid-cols-3 xl:grid-cols-6">
           <button
             onClick={() => navigateToUpload("post")}
             className="p-6 bg-gradient-to-br from-purple-500/20 to-pink-500/20 hover:from-purple-500/30 hover:to-pink-500/30 border border-purple-500/30 rounded-2xl transition-all group"
@@ -843,6 +843,15 @@ export default function Dashboard() {
             <FolderOpen className="w-8 h-8 text-amber-400 mb-3 group-hover:scale-110 transition-transform" />
             <h3 className="font-semibold text-white mb-1">Bulk Upload</h3>
             <p className="text-xs text-white/50">Auto-post multiple videos</p>
+          </button>
+
+          <button
+            onClick={() => router.push("/my-insta-id")}
+            className="p-6 bg-gradient-to-br from-fuchsia-500/20 to-pink-500/20 hover:from-fuchsia-500/30 hover:to-pink-500/30 border border-fuchsia-500/30 rounded-2xl transition-all group"
+          >
+            <Instagram className="w-8 h-8 text-fuchsia-300 mb-3 group-hover:scale-110 transition-transform" />
+            <h3 className="font-semibold text-white mb-1">My Insta IDs</h3>
+            <p className="text-xs text-white/50">View accounts and posts</p>
           </button>
         </div>
 
