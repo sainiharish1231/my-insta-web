@@ -17,7 +17,6 @@ import {
   MessageCircle,
 } from "lucide-react";
 import { getMediaInsights, getMediaList } from "@/lib/meta";
-import { getYouTubeVideoDetails } from "@/lib/youtube";
 
 interface InstagramAccount {
   id: string;
@@ -46,6 +45,8 @@ interface YouTubeAccount {
   thumbnail?: string;
   accessToken?: string;
   token?: string;
+  refreshToken?: string;
+  refresh_token?: string;
 }
 
 interface AccountVideoStat {
@@ -123,6 +124,38 @@ export default function LatestVideoStatsPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [stats, setStats] = useState<AccountVideoStat[]>([]);
+
+  const persistYouTubeAccessToken = (
+    accountId: string,
+    nextAccessToken: string,
+  ) => {
+    try {
+      const storedAccounts = JSON.parse(
+        localStorage.getItem("youtube_accounts") || "[]",
+      );
+
+      if (!Array.isArray(storedAccounts)) {
+        return;
+      }
+
+      const updatedAccounts = storedAccounts.map((storedAccount: any) =>
+        storedAccount.id === accountId
+          ? {
+              ...storedAccount,
+              accessToken: nextAccessToken,
+              token: nextAccessToken,
+            }
+          : storedAccount,
+      );
+
+      localStorage.setItem("youtube_accounts", JSON.stringify(updatedAccounts));
+    } catch (persistError) {
+      console.warn(
+        `[v0] Could not persist refreshed YouTube token for ${accountId}:`,
+        persistError,
+      );
+    }
+  };
 
   const isInstagramVideoItem = (item: InstagramMediaItem) =>
     item.media_type === "VIDEO" ||
@@ -318,7 +351,9 @@ export default function LatestVideoStatsPage() {
       // Process YouTube accounts
       for (const account of ytAccounts) {
         const accessToken = account.accessToken || account.token;
-        if (!accessToken) {
+        const refreshToken = account.refreshToken || account.refresh_token;
+
+        if (!accessToken && !refreshToken) {
           nextStats.push({
             id: `youtube-${account.id}`,
             accountId: account.id,
@@ -334,21 +369,32 @@ export default function LatestVideoStatsPage() {
         }
 
         try {
-          // Fetch latest video
-          const searchResponse = await fetch(
-            `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${account.id}&order=date&type=video&maxResults=1&access_token=${accessToken}`,
-          );
-          const searchData = await searchResponse.json();
+          const response = await fetch("/api/youtube/latest-video-stats", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              channelId: account.id,
+              accessToken,
+              refreshToken,
+            }),
+          });
+          const data = await response.json();
 
-          if (!searchResponse.ok) {
+          if (!response.ok) {
             throw new Error(
-              searchData.error?.message || "Failed to fetch YouTube videos",
+              data.error || "Failed to fetch latest YouTube video",
             );
           }
 
-          const latestVideo = searchData.items?.[0];
+          if (data.accessToken && data.accessToken !== accessToken) {
+            persistYouTubeAccessToken(account.id, data.accessToken);
+          }
 
-          if (!latestVideo?.id?.videoId) {
+          const details = data.video;
+
+          if (!details?.id) {
             nextStats.push({
               id: `youtube-${account.id}`,
               accountId: account.id,
@@ -362,16 +408,6 @@ export default function LatestVideoStatsPage() {
               error: "No videos found for this channel.",
             });
             continue;
-          }
-
-          // Get video details
-          const details = await getYouTubeVideoDetails(
-            latestVideo.id.videoId,
-            accessToken,
-          );
-
-          if (!details) {
-            throw new Error("Could not load video details");
           }
 
           nextStats.push({
