@@ -1020,6 +1020,21 @@ export default function YouTubeShortsPage() {
 
       setIsAnalyzing(true);
       setUploadedSourceUrl(null);
+      setDownloadProgress({
+        phase: "idle",
+        percent: 0,
+        loadedBytes: 0,
+        totalBytes: null,
+        status: "",
+      });
+      setCreationProgress({
+        phase: "idle",
+        percent: 0,
+        total: 0,
+        processed: 0,
+        saved: 0,
+        status: "",
+      });
 
       try {
         const durationSeconds = await getVideoDurationFromFile(nextFile);
@@ -1218,7 +1233,10 @@ export default function YouTubeShortsPage() {
         ? await (async () => {
             const formData = new FormData();
             formData.append("sourceUrl", uploadedSourceUrlForQueue || "");
-            formData.append("fileName", sourceFile?.name || "uploaded-video.mp4");
+            formData.append(
+              "fileName",
+              sourceFile?.name || "uploaded-video.mp4",
+            );
             formData.append("contentType", sourceFile?.type || "video/mp4");
             formData.append(
               "durationSeconds",
