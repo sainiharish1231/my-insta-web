@@ -1,5 +1,5 @@
 import { createWriteStream, existsSync } from "fs";
-import { access, mkdir, mkdtemp, readFile, readdir, rm, unlink } from "fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "fs/promises";
 import os from "os";
 import path from "path";
 import { spawn } from "child_process";
@@ -13,6 +13,7 @@ import {
   buildGeneratedShortCopy,
   buildShortsPlan,
   extractYouTubeVideoId,
+  normalizeYouTubeUrl,
   type GeneratedShortAsset,
   type ShortsVideoMetadata,
 } from "@/lib/youtube-shorts";
@@ -51,6 +52,16 @@ if (resolvedFfmpegPath) {
 
 type SourceVideoMetadata = Omit<ShortsVideoMetadata, "sourceUrl">;
 type DownloadEngine = "ytdl" | "yt-dlp" | "youtubei.js";
+type YtDlpCookieContext = {
+  cookieFilePath?: string;
+  cleanup: () => Promise<void>;
+};
+type YtDlpRuntimeContext = {
+  command: string;
+  argsPrefix: string[];
+  cookieArgs: string[];
+  cleanup: () => Promise<void>;
+};
 
 let youtubeJsClientPromise: Promise<any> | null = null;
 
@@ -67,6 +78,24 @@ async function pathExists(targetPath: string) {
   }
 }
 
+function hasConfiguredYouTubeCookies() {
+  return Boolean(
+    process.env.YOUTUBE_COOKIES_FILE ||
+      process.env.YOUTUBE_COOKIES_BASE64 ||
+      process.env.YOUTUBE_COOKIES,
+  );
+}
+
+function normalizeAndValidateYouTubeSourceUrl(sourceUrl: string) {
+  const normalizedSourceUrl = normalizeYouTubeUrl(sourceUrl);
+
+  if (!normalizedSourceUrl || !extractYouTubeVideoId(normalizedSourceUrl) || !ytdl.validateURL(normalizedSourceUrl)) {
+    throw new Error("Please enter a valid YouTube video URL.");
+  }
+
+  return normalizedSourceUrl;
+}
+
 function normalizeYouTubeError(error: unknown, mode: "metadata" | "download") {
   const fallbackMessage =
     mode === "metadata"
@@ -78,6 +107,16 @@ function normalizeYouTubeError(error: unknown, mode: "metadata" | "download") {
   }
 
   const message = error.message || fallbackMessage;
+  const normalizedMessage = message.toLowerCase();
+
+  if (
+    normalizedMessage.includes("sign in to confirm you're not a bot") ||
+    normalizedMessage.includes("sign in to confirm you’re not a bot")
+  ) {
+    return hasConfiguredYouTubeCookies()
+      ? "YouTube bot-check trigger ho gaya. Cookies refresh karke dubara try karo."
+      : "YouTube ne 'sign in to confirm you're not a bot' block diya. Mobile/shared links ab auto-normalize honge, lekin agar block continue rahe to YOUTUBE_COOKIES_FILE ya YOUTUBE_COOKIES_BASE64 configure karo.";
+  }
 
   if (
     message.includes("Failed to find any playable formats") ||
@@ -157,31 +196,24 @@ function buildSourceVideoMetadataFromYtdlInfo(info: ytdl.videoInfo): SourceVideo
   };
 }
 
-function buildSourceVideoMetadataFromYouTubeJsInfo(info: any): SourceVideoMetadata {
-  const basicInfo = info?.basic_info || {};
-  const title = basicInfo.title?.trim?.() || "YouTube Video";
-  const description = basicInfo.short_description?.trim?.() || "";
+function buildSourceVideoMetadataFromYtDlpInfo(info: any): SourceVideoMetadata {
+  const title = info?.title?.trim?.() || "YouTube Video";
+  const description = info?.description?.trim?.() || "";
 
   return {
-    videoId: basicInfo.id,
+    videoId: info?.id,
     title,
     description,
     keywords: deriveKeywordsFromMetadata(
       title,
       description,
-      Array.isArray(basicInfo.keywords) ? basicInfo.keywords : [],
+      Array.isArray(info?.tags) ? info.tags : [],
     ),
-    durationSeconds: Number(basicInfo.duration || 0),
-    thumbnailUrl: getBestThumbnail(
-      Array.isArray(basicInfo.thumbnail)
-        ? basicInfo.thumbnail.map((thumbnail: any) => ({
-            url: thumbnail.url,
-            width: thumbnail.width,
-            height: thumbnail.height,
-          }))
-        : [],
-    ),
-    authorName: basicInfo.author,
+    durationSeconds: Number(info?.duration || 0),
+    thumbnailUrl:
+      getBestThumbnail(Array.isArray(info?.thumbnails) ? info.thumbnails : []) ||
+      info?.thumbnail,
+    authorName: info?.uploader || info?.channel,
   };
 }
 
@@ -208,42 +240,36 @@ function deriveKeywordsFromMetadata(title: string, description: string, keywords
 }
 
 async function getSourceVideoMetadata(sourceUrl: string): Promise<SourceVideoMetadata> {
-  const info = await getYouTubeBasicInfo(sourceUrl);
-  return buildSourceVideoMetadataFromYtdlInfo(info);
+  let lastError: unknown;
+
+  try {
+    const ytDlpInfo = await getYouTubeMetadataWithYtDlp(sourceUrl);
+    return buildSourceVideoMetadataFromYtDlpInfo(ytDlpInfo);
+  } catch (error) {
+    lastError = error;
+    console.warn("[v0] yt-dlp metadata failed, falling back to ytdl:", error);
+  }
+
+  try {
+    const info = await getYouTubeBasicInfo(sourceUrl);
+    return buildSourceVideoMetadataFromYtdlInfo(info);
+  } catch (error) {
+    lastError = error;
+  }
+
+  throw new Error(normalizeYouTubeError(lastError, "metadata"));
 }
 
 async function downloadYouTubeSourceVideo(sourceUrl: string, outputBasePath: string) {
-  const outputPath = `${outputBasePath}.mp4`;
-
   try {
-    const info = await getPlayableYouTubeInfo(sourceUrl);
-    const selectedFormat =
-      pickMuxedDownloadFormat(info.formats) ||
-      ytdl.chooseFormat(info.formats, { quality: "highest", filter: "audioandvideo" });
-
-    if (!selectedFormat?.itag) {
-      throw new Error(
-        "Could not find a downloadable combined audio/video format for this video.",
-      );
-    }
-
-    const downloadStream = ytdl.downloadFromInfo(info, {
-      quality: selectedFormat.itag,
-    });
-
-    await pipeline(downloadStream, createWriteStream(outputPath));
-
-    return {
-      engine: "ytdl" as DownloadEngine,
-      outputPath,
-    };
-  } catch (error) {
-    console.warn("[v0] ytdl download failed, falling back to yt-dlp:", error);
+    return await downloadYouTubeSourceVideoWithYtDlp(sourceUrl, outputBasePath);
+  } catch (ytDlpError) {
+    console.warn("[v0] yt-dlp download failed, falling back to ytdl:", ytDlpError);
 
     try {
-      return await downloadYouTubeSourceVideoWithYtDlp(sourceUrl, outputBasePath);
-    } catch (ytDlpError) {
-      console.warn("[v0] yt-dlp download failed, falling back to youtubei.js:", ytDlpError);
+      return await downloadYouTubeSourceVideoWithYtdl(sourceUrl, outputBasePath);
+    } catch (ytdlError) {
+      console.warn("[v0] ytdl download failed, falling back to youtubei.js:", ytdlError);
       return downloadYouTubeSourceVideoWithYouTubeJs(sourceUrl, outputBasePath);
     }
   }
@@ -302,23 +328,177 @@ async function resolveYtDlpCommand() {
   };
 }
 
+async function createYtDlpCookieContext(): Promise<YtDlpCookieContext> {
+  const cookieFilePath = process.env.YOUTUBE_COOKIES_FILE?.trim();
+  if (cookieFilePath) {
+    if (await pathExists(cookieFilePath)) {
+      return {
+        cookieFilePath,
+        cleanup: async () => undefined,
+      };
+    }
+
+    console.warn("[v0] YOUTUBE_COOKIES_FILE was configured but the file was not found:", cookieFilePath);
+  }
+
+  const encodedCookies = process.env.YOUTUBE_COOKIES_BASE64?.trim();
+  const inlineCookies = process.env.YOUTUBE_COOKIES?.trim();
+
+  if (!encodedCookies && !inlineCookies) {
+    return {
+      cleanup: async () => undefined,
+    };
+  }
+
+  const cookieContent = encodedCookies
+    ? Buffer.from(encodedCookies, "base64").toString("utf8")
+    : inlineCookies!.replace(/\\n/g, "\n");
+
+  if (!cookieContent.trim()) {
+    return {
+      cleanup: async () => undefined,
+    };
+  }
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "youtube-cookies-"));
+  const tempCookiePath = path.join(tempRoot, "cookies.txt");
+  await writeFile(tempCookiePath, cookieContent, "utf8");
+
+  return {
+    cookieFilePath: tempCookiePath,
+    cleanup: async () => {
+      await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
+    },
+  };
+}
+
+async function resolveYtDlpRuntimeContext(): Promise<YtDlpRuntimeContext> {
+  const { command, argsPrefix } = await resolveYtDlpCommand();
+  const cookieContext = await createYtDlpCookieContext();
+
+  return {
+    command,
+    argsPrefix,
+    cookieArgs: cookieContext.cookieFilePath
+      ? ["--cookies", cookieContext.cookieFilePath]
+      : [],
+    cleanup: cookieContext.cleanup,
+  };
+}
+
 async function getResolvedFfmpegPath() {
   return resolvedFfmpegPath;
+}
+
+function getYtDlpBaseArgs() {
+  return [
+    "--no-playlist",
+    "--no-warnings",
+    "--extractor-args",
+    "youtube:player_client=android,web,ios",
+    "--add-header",
+    "Referer:https://www.youtube.com/",
+    "--add-header",
+    "Origin:https://www.youtube.com",
+  ];
+}
+
+async function runYtDlp(args: string[]) {
+  const { command, argsPrefix, cookieArgs, cleanup } = await resolveYtDlpRuntimeContext();
+
+  try {
+    return await new Promise<string>((resolve, reject) => {
+      const child = spawn(command, [...argsPrefix, ...cookieArgs, ...args], {
+        cwd: process.cwd(),
+        env: process.env,
+      });
+
+      let stdout = "";
+      let stderr = "";
+
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk.toString();
+      });
+
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk.toString();
+      });
+
+      child.on("error", (error) => {
+        reject(error);
+      });
+
+      child.on("close", (code) => {
+        if (code === 0) {
+          resolve(stdout);
+          return;
+        }
+
+        reject(new Error(stderr.trim() || stdout.trim() || `yt-dlp exited with code ${code}`));
+      });
+    });
+  } finally {
+    await cleanup();
+  }
+}
+
+async function getYouTubeMetadataWithYtDlp(sourceUrl: string) {
+  const output = await runYtDlp([
+    ...getYtDlpBaseArgs(),
+    "--dump-single-json",
+    "--skip-download",
+    sourceUrl,
+  ]);
+
+  try {
+    return JSON.parse(output);
+  } catch (error) {
+    throw new Error(
+      error instanceof Error
+        ? `yt-dlp metadata parse failed: ${error.message}`
+        : "yt-dlp metadata parse failed",
+    );
+  }
+}
+
+async function downloadYouTubeSourceVideoWithYtdl(
+  sourceUrl: string,
+  outputBasePath: string,
+): Promise<{ engine: DownloadEngine; outputPath: string }> {
+  const outputPath = `${outputBasePath}.mp4`;
+  const info = await getPlayableYouTubeInfo(sourceUrl);
+  const selectedFormat =
+    pickMuxedDownloadFormat(info.formats) ||
+    ytdl.chooseFormat(info.formats, { quality: "highest", filter: "audioandvideo" });
+
+  if (!selectedFormat?.itag) {
+    throw new Error(
+      "Could not find a downloadable combined audio/video format for this video.",
+    );
+  }
+
+  const downloadStream = ytdl.downloadFromInfo(info, {
+    quality: selectedFormat.itag,
+  });
+
+  await pipeline(downloadStream, createWriteStream(outputPath));
+
+  return {
+    engine: "ytdl",
+    outputPath,
+  };
 }
 
 async function downloadYouTubeSourceVideoWithYtDlp(
   sourceUrl: string,
   outputBasePath: string,
 ): Promise<{ engine: DownloadEngine; outputPath: string }> {
-  const { command, argsPrefix } = await resolveYtDlpCommand();
   const ytDlpFfmpegPath = await getResolvedFfmpegPath();
   const outputTemplate = `${outputBasePath}.%(ext)s`;
   const tempDir = path.dirname(outputBasePath);
 
   const args = [
-    ...argsPrefix,
-    "--no-playlist",
-    "--no-warnings",
+    ...getYtDlpBaseArgs(),
     "--format",
     "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b",
     "--merge-output-format",
@@ -334,31 +514,7 @@ async function downloadYouTubeSourceVideoWithYtDlp(
 
   args.push(sourceUrl);
 
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: process.cwd(),
-      env: process.env,
-    });
-
-    let stderr = "";
-
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-
-    child.on("error", (error) => {
-      reject(error);
-    });
-
-    child.on("close", (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-
-      reject(new Error(stderr.trim() || `yt-dlp exited with code ${code}`));
-    });
-  });
+  await runYtDlp(args);
 
   const downloadedFiles = (await readdir(tempDir))
     .filter((file) => file.startsWith(path.basename(outputBasePath)))
@@ -391,7 +547,6 @@ async function downloadYouTubeSourceVideoWithYouTubeJs(
 
   try {
     const innertube = await getYouTubeJsClient();
-    const info = await innertube.getBasicInfo(videoId, { client: "IOS" });
     const attempts = [
       { client: "IOS", type: "video+audio", quality: "best", format: "mp4" },
       { client: "WEB", type: "video+audio", quality: "best", format: "mp4" },
@@ -418,7 +573,7 @@ async function downloadYouTubeSourceVideoWithYouTubeJs(
     throw lastError instanceof Error ? lastError : new Error("youtubei.js download failed");
   } catch (error) {
     throw new Error(
-      `YouTube source download failed after ytdl + youtubei.js fallback. ${
+      `YouTube source download failed after yt-dlp + ytdl + youtubei.js fallback. ${
         error instanceof Error ? error.message : "Unknown download error."
       }`,
     );
@@ -499,19 +654,9 @@ export async function getYouTubeShortsMetadata({
   segmentDurationSeconds?: number;
   overlapSeconds?: number;
 }) {
-  if (!ytdl.validateURL(sourceUrl)) {
-    throw new Error("Please enter a valid YouTube long video URL.");
-  }
-
-  const info = await getYouTubeBasicInfo(sourceUrl);
-  const title = info.videoDetails.title?.trim() || "YouTube Video";
-  const description = info.videoDetails.description?.trim() || "";
-  const keywords = deriveKeywordsFromMetadata(
-    title,
-    description,
-    Array.isArray(info.videoDetails.keywords) ? info.videoDetails.keywords : [],
-  );
-  const durationSeconds = Number(info.videoDetails.lengthSeconds || 0);
+  const normalizedSourceUrl = normalizeAndValidateYouTubeSourceUrl(sourceUrl);
+  const metadata = await getSourceVideoMetadata(normalizedSourceUrl);
+  const durationSeconds = Number(metadata.durationSeconds || 0);
   const plan = buildShortsPlan({
     durationSeconds,
     segmentDurationSeconds,
@@ -519,14 +664,14 @@ export async function getYouTubeShortsMetadata({
   });
 
   const video: ShortsVideoMetadata = {
-    sourceUrl,
-    videoId: info.videoDetails.videoId,
-    title,
-    description,
-    keywords,
+    sourceUrl: normalizedSourceUrl,
+    videoId: metadata.videoId,
+    title: metadata.title,
+    description: metadata.description,
+    keywords: metadata.keywords,
     durationSeconds,
-    thumbnailUrl: getBestThumbnail(info.videoDetails.thumbnails),
-    authorName: info.videoDetails.author?.name,
+    thumbnailUrl: metadata.thumbnailUrl,
+    authorName: metadata.authorName,
   };
 
   return {
@@ -550,18 +695,16 @@ export async function prepareYouTubeShortsSource({
   description?: string;
   keywords?: string[];
 }) {
-  if (!ytdl.validateURL(sourceUrl)) {
-    throw new Error("Please enter a valid YouTube long video URL.");
-  }
+  const normalizedSourceUrl = normalizeAndValidateYouTubeSourceUrl(sourceUrl);
 
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "youtube-shorts-source-"));
   const sourcePathBase = path.join(tempRoot, "source-video");
   const uploadFolder = `youtube-shorts/source/${new Date().toISOString().slice(0, 10)}/${Date.now()}`;
 
   try {
-    const metadata = await getSourceVideoMetadata(sourceUrl);
+    const metadata = await getSourceVideoMetadata(normalizedSourceUrl);
     const { engine, outputPath: sourcePath } = await downloadYouTubeSourceVideo(
-      sourceUrl,
+      normalizedSourceUrl,
       sourcePathBase,
     );
     const sourceTitle = title?.trim() || metadata.title || "YouTube Video";
@@ -585,7 +728,7 @@ export async function prepareYouTubeShortsSource({
     });
 
     const video: ShortsVideoMetadata = {
-      sourceUrl,
+      sourceUrl: normalizedSourceUrl,
       videoId: metadata.videoId,
       title: sourceTitle,
       description: sourceDescription,
@@ -612,22 +755,20 @@ export async function downloadYouTubeSourceVideoLocally({
 }: {
   sourceUrl: string;
 }) {
-  if (!ytdl.validateURL(sourceUrl)) {
-    throw new Error("Please enter a valid YouTube long video URL.");
-  }
+  const normalizedSourceUrl = normalizeAndValidateYouTubeSourceUrl(sourceUrl);
 
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "youtube-shorts-local-"));
   const sourcePathBase = path.join(tempRoot, "source-video");
 
   try {
     const { engine, outputPath } = await downloadYouTubeSourceVideo(
-      sourceUrl,
+      normalizedSourceUrl,
       sourcePathBase,
     );
     const fileBuffer = await readFile(outputPath);
     const extension = path.extname(outputPath) || ".mp4";
     const safeBaseName = sanitizePathPart(
-      extractYouTubeVideoId(sourceUrl) || `youtube-source-${Date.now()}`,
+      extractYouTubeVideoId(normalizedSourceUrl) || `youtube-source-${Date.now()}`,
     );
 
     return {
@@ -661,13 +802,17 @@ export async function buildYouTubeShortAssets({
   description?: string;
   keywords?: string[];
 }) {
+  const normalizedSourceUrl = normalizeAndValidateYouTubeSourceUrl(sourceUrl);
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "youtube-shorts-"));
   const sourcePathBase = path.join(tempRoot, "source-video");
   const uploadFolder = `youtube-shorts/${new Date().toISOString().slice(0, 10)}/${Date.now()}`;
 
   try {
-    const metadata = await getSourceVideoMetadata(sourceUrl);
-    const { outputPath: sourcePath } = await downloadYouTubeSourceVideo(sourceUrl, sourcePathBase);
+    const metadata = await getSourceVideoMetadata(normalizedSourceUrl);
+    const { outputPath: sourcePath } = await downloadYouTubeSourceVideo(
+      normalizedSourceUrl,
+      sourcePathBase,
+    );
     const sourceTitle = title?.trim() || metadata.title || "YouTube Video";
     const sourceDescription = description?.trim() || metadata.description || "";
     const sourceKeywords =
@@ -722,7 +867,7 @@ export async function buildYouTubeShortAssets({
     }
 
     const video: ShortsVideoMetadata = {
-      sourceUrl,
+      sourceUrl: normalizedSourceUrl,
       videoId: metadata.videoId,
       title: sourceTitle,
       description: sourceDescription,

@@ -40,6 +40,8 @@ export interface BuildShortsPlanOptions {
   maximumSegmentSeconds?: number;
 }
 
+const YOUTUBE_VIDEO_ID_PATTERN = /^[a-zA-Z0-9_-]{6,}$/;
+
 function sanitizeKeyword(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "").trim();
 }
@@ -204,16 +206,78 @@ export function buildGeneratedShortCopy({
   };
 }
 
+function getParsableYouTubeUrl(url: string) {
+  const trimmed = url.trim();
+
+  if (!trimmed) {
+    return "";
+  }
+
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+
+  if (/^(?:www\.|m\.|music\.)?youtube(?:-nocookie)?\.com/i.test(trimmed) || /^youtu\.be/i.test(trimmed)) {
+    return `https://${trimmed}`;
+  }
+
+  return trimmed;
+}
+
+function normalizeExtractedVideoId(value?: string | null) {
+  if (!value) {
+    return undefined;
+  }
+
+  const normalized = value.trim().replace(/[^a-zA-Z0-9_-]/g, "");
+  return YOUTUBE_VIDEO_ID_PATTERN.test(normalized) ? normalized : undefined;
+}
+
 export function extractYouTubeVideoId(url: string) {
   try {
-    const parsed = new URL(url);
+    const parsed = new URL(getParsableYouTubeUrl(url));
+    const hostname = parsed.hostname.toLowerCase();
+    const pathSegments = parsed.pathname.split("/").filter(Boolean);
 
-    if (parsed.hostname.includes("youtu.be")) {
-      return parsed.pathname.replace("/", "").trim();
+    if (hostname === "youtu.be" || hostname.endsWith(".youtu.be")) {
+      return normalizeExtractedVideoId(pathSegments[0]);
     }
 
-    return parsed.searchParams.get("v") || undefined;
+    const attributionLink = parsed.searchParams.get("u");
+    if (pathSegments[0] === "attribution_link" && attributionLink) {
+      const nestedUrl = attributionLink.startsWith("http")
+        ? attributionLink
+        : `https://www.youtube.com${attributionLink}`;
+
+      return extractYouTubeVideoId(nestedUrl);
+    }
+
+    if (!hostname.includes("youtube.com") && !hostname.includes("youtube-nocookie.com")) {
+      return undefined;
+    }
+
+    const directVideoId = normalizeExtractedVideoId(parsed.searchParams.get("v"));
+    if (directVideoId) {
+      return directVideoId;
+    }
+
+    if (["shorts", "embed", "live", "v"].includes(pathSegments[0] || "")) {
+      return normalizeExtractedVideoId(pathSegments[1]);
+    }
+
+    return undefined;
   } catch {
     return undefined;
   }
+}
+
+export function normalizeYouTubeUrl(url: string) {
+  const parsableUrl = getParsableYouTubeUrl(url);
+  const videoId = extractYouTubeVideoId(parsableUrl);
+
+  if (!videoId) {
+    return parsableUrl;
+  }
+
+  return `https://www.youtube.com/watch?v=${videoId}`;
 }

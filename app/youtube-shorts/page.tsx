@@ -25,6 +25,7 @@ import {
 } from "@/lib/meta";
 import {
   formatSeconds,
+  normalizeYouTubeUrl,
   type GeneratedShortAsset,
   type ShortsVideoMetadata,
   type ShortsWindow,
@@ -79,6 +80,56 @@ interface ShortsCreationProgressState {
 }
 
 const STORAGE_KEY = "youtube_shorts_automation_state";
+const TARGET_ACCOUNT_KEY = "youtube_shorts_target_account_id";
+
+function getStoredString(key: string) {
+  const value = localStorage.getItem(key);
+  return value?.trim() ? value : null;
+}
+
+function getDashboardSelectedInstagramAccountId(accounts: InstagramAccount[]) {
+  try {
+    const storedSelectedAccounts = JSON.parse(
+      localStorage.getItem("selected_accounts") || "[]",
+    );
+
+    if (!Array.isArray(storedSelectedAccounts)) {
+      return null;
+    }
+
+    return (
+      storedSelectedAccounts.find(
+        (accountId): accountId is string =>
+          typeof accountId === "string" &&
+          accounts.some((account) => account.id === accountId),
+      ) || null
+    );
+  } catch {
+    return null;
+  }
+}
+
+function resolvePreferredInstagramAccountId(
+  accounts: InstagramAccount[],
+  persistedSelectedId?: string | null,
+) {
+  const validAccountIds = new Set(accounts.map((account) => account.id));
+  const candidates = [
+    persistedSelectedId,
+    getStoredString(TARGET_ACCOUNT_KEY),
+    getStoredString("primary_ig_account_id"),
+    getStoredString("ig_user_id"),
+    getDashboardSelectedInstagramAccountId(accounts),
+    accounts[0]?.id || null,
+  ];
+
+  return (
+    candidates.find(
+      (candidate): candidate is string =>
+        Boolean(candidate && validAccountIds.has(candidate)),
+    ) || null
+  );
+}
 
 function parseKeywords(value: string) {
   return value
@@ -350,18 +401,18 @@ export default function YouTubeShortsPage() {
     setInstagramAccounts(nextAccounts);
 
     const storedState = localStorage.getItem(STORAGE_KEY);
-    const preferredAccountId =
-      localStorage.getItem("primary_ig_account_id") ||
-      localStorage.getItem("ig_user_id") ||
-      nextAccounts[0]?.id ||
-      null;
 
     if (storedState) {
       try {
         const parsed = JSON.parse(storedState) as PersistedState;
         setQueue(Array.isArray(parsed.queue) ? parsed.queue : []);
         setPlanPreview(Array.isArray(parsed.queue) ? parsed.queue : []);
-        setSelectedAccountId(parsed.selectedAccountId || preferredAccountId);
+        setSelectedAccountId(
+          resolvePreferredInstagramAccountId(
+            nextAccounts,
+            parsed.selectedAccountId,
+          ),
+        );
         setIntervalMinutes(parsed.intervalMinutes || 20);
         setIsRunning(parsed.isRunning ?? false);
         setNextRunAt(parsed.nextRunAt || null);
@@ -376,12 +427,32 @@ export default function YouTubeShortsPage() {
         }
       } catch (error) {
         console.error("[v0] Failed to restore shorts state:", error);
-        setSelectedAccountId(preferredAccountId);
+        setSelectedAccountId(resolvePreferredInstagramAccountId(nextAccounts));
       }
     } else {
-      setSelectedAccountId(preferredAccountId);
+      setSelectedAccountId(resolvePreferredInstagramAccountId(nextAccounts));
     }
   }, []);
+
+  useEffect(() => {
+    if (instagramAccounts.length === 0) {
+      if (selectedAccountId !== null) {
+        setSelectedAccountId(null);
+      }
+      return;
+    }
+
+    if (
+      selectedAccountId &&
+      instagramAccounts.some((account) => account.id === selectedAccountId)
+    ) {
+      return;
+    }
+
+    setSelectedAccountId(
+      resolvePreferredInstagramAccountId(instagramAccounts, selectedAccountId),
+    );
+  }, [instagramAccounts]);
 
   useEffect(() => {
     const state: PersistedState = {
@@ -405,6 +476,16 @@ export default function YouTubeShortsPage() {
     selectedAccountId,
     sourceVideo,
   ]);
+
+  useEffect(() => {
+    if (selectedAccountId) {
+      localStorage.setItem(TARGET_ACCOUNT_KEY, selectedAccountId);
+      localStorage.setItem("ig_user_id", selectedAccountId);
+      return;
+    }
+
+    localStorage.removeItem(TARGET_ACCOUNT_KEY);
+  }, [selectedAccountId]);
 
   useEffect(() => {
     return () => {
@@ -540,13 +621,22 @@ export default function YouTubeShortsPage() {
     syncQueueTimer();
   }, [isRunning, nextRunAt, queue.length, syncQueueTimer]);
 
+  const handleToggleTargetAccount = (accountId: string) => {
+    setSelectedAccountId((currentAccountId) =>
+      currentAccountId === accountId ? null : accountId,
+    );
+  };
+
   const handleAnalyze = async () => {
-    if (!sourceUrl.trim()) {
+    const normalizedSourceUrl = normalizeYouTubeUrl(sourceUrl);
+
+    if (!normalizedSourceUrl.trim()) {
       toast.error("YouTube long video URL dalo.");
       return;
     }
 
     setIsAnalyzing(true);
+    setSourceUrl(normalizedSourceUrl);
 
     try {
       const response = await fetch("/api/youtube/shorts/analyze", {
@@ -555,7 +645,7 @@ export default function YouTubeShortsPage() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          url: sourceUrl.trim(),
+          url: normalizedSourceUrl,
           segmentDurationSeconds,
           overlapSeconds,
         }),
@@ -568,6 +658,7 @@ export default function YouTubeShortsPage() {
 
       setSourceVideo(data.video);
       setPlanPreview(data.plan || []);
+      setSourceUrl(data.video?.sourceUrl || normalizedSourceUrl);
       setTitleDraft(data.video.title || "");
       setDescriptionDraft(data.video.description || "");
       setKeywordsDraft((data.video.keywords || []).join(", "));
@@ -580,7 +671,9 @@ export default function YouTubeShortsPage() {
   };
 
   const handleGenerateQueue = async () => {
-    if (!sourceUrl.trim()) {
+    const normalizedSourceUrl = normalizeYouTubeUrl(sourceUrl);
+
+    if (!normalizedSourceUrl.trim()) {
       toast.error("YouTube URL missing hai.");
       return;
     }
@@ -607,6 +700,7 @@ export default function YouTubeShortsPage() {
       saved: 0,
       status: "Metadata ka wait ho raha hai...",
     });
+    setSourceUrl(normalizedSourceUrl);
 
     try {
       const response = await fetch("/api/youtube/shorts/create", {
@@ -615,7 +709,7 @@ export default function YouTubeShortsPage() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          url: sourceUrl.trim(),
+          url: normalizedSourceUrl,
           segmentDurationSeconds,
           overlapSeconds,
           title: titleDraft,
@@ -636,7 +730,7 @@ export default function YouTubeShortsPage() {
           assetUrl:
             buildInstagramReadyCloudinaryVideoUrl(item.cloudinaryPublicId) ||
             item.assetUrl,
-          sourceUrl: sourceUrl.trim(),
+          sourceUrl: data.video?.sourceUrl || normalizedSourceUrl,
           sourceTitle: data.video.title,
           status: "queued",
           createdAt,
@@ -645,6 +739,7 @@ export default function YouTubeShortsPage() {
 
       setSourceVideo(data.video);
       setPlanPreview(data.queue || []);
+      setSourceUrl(data.video?.sourceUrl || normalizedSourceUrl);
       setQueue((prev) => [...prev, ...nextItems]);
       setQueueBuildStatus("Server-side audio-safe shorts ready hain.");
       setDownloadProgress({
@@ -940,7 +1035,7 @@ export default function YouTubeShortsPage() {
                 <div>
                   <h2 className="text-lg font-semibold">1. YouTube Source</h2>
                   <p className="text-sm text-white/55">
-                    Long video URL dalo, metadata fetch karo, phir local source video ko split karke shorts queue banao.
+                    Long video URL dalo, metadata fetch karo, phir local source video ko split karke shorts queue banao. Mobile share links bhi auto-clean ho jayenge.
                   </p>
                 </div>
               </div>
@@ -950,7 +1045,7 @@ export default function YouTubeShortsPage() {
                   type="url"
                   value={sourceUrl}
                   onChange={(event) => setSourceUrl(event.target.value)}
-                  placeholder="https://www.youtube.com/watch?v=..."
+                  placeholder="https://youtu.be/... ya https://youtube.com/shorts/..."
                   className="w-full rounded-2xl border border-white/10 bg-slate-950/50 px-4 py-3 text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-violet-400"
                 />
 
@@ -1048,7 +1143,7 @@ export default function YouTubeShortsPage() {
                 <div>
                   <h2 className="text-lg font-semibold">2. Instagram Target</h2>
                   <p className="text-sm text-white/55">
-                    Isi account par queue one-by-one reels ke form me jayegi.
+                    Primary ya last-used account by default aayega. Kisi card ko tap karke select karo, aur dubara tap karke unselect bhi kar sakte ho.
                   </p>
                 </div>
               </div>
@@ -1062,7 +1157,7 @@ export default function YouTubeShortsPage() {
                   {instagramAccounts.map((account) => (
                     <button
                       key={account.id}
-                      onClick={() => setSelectedAccountId(account.id)}
+                      onClick={() => handleToggleTargetAccount(account.id)}
                       className={`flex w-full items-center gap-3 rounded-2xl border p-4 text-left transition-colors ${
                         selectedAccountId === account.id
                           ? "border-violet-300/30 bg-violet-400/10"
@@ -1081,7 +1176,7 @@ export default function YouTubeShortsPage() {
                         <p className="font-medium text-white">@{account.username}</p>
                         <p className="text-xs text-white/45">
                           {selectedAccountId === account.id
-                            ? "Queue yahin upload hogi"
+                            ? "Queue yahin upload hogi. Tap again to unselect."
                             : "Tap to select"}
                         </p>
                       </div>
