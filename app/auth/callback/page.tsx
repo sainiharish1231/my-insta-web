@@ -3,6 +3,12 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CircularProgress, Stack, Typography, Alert, Box } from "@mui/material";
 import { clearPkceCodeVerifier, getPkceCodeVerifier } from "@/lib/pkce-storage";
+import {
+  fetchInstagramAccountsFromFacebook,
+  mergeInstagramAccounts,
+  persistInstagramAccounts,
+  readStoredInstagramAccounts,
+} from "@/lib/instagram-accounts";
 
 export default function AuthCallback() {
   const router = useRouter();
@@ -80,85 +86,59 @@ export default function AuthCallback() {
         // Clear the code verifier from all storage locations
         clearPkceCodeVerifier();
 
-        setStatus("Fetching Instagram account...");
-        console.log("[v0] Fetching Instagram account");
+        setStatus("Fetching Instagram accounts...");
+        console.log("[v0] Fetching Instagram accounts");
 
-        // Get Facebook Pages
-        const pagesRes = await fetch(
-          `https://graph.facebook.com/v21.0/me/accounts?access_token=${accessToken}`
-        );
-        const pagesData = await pagesRes.json();
+        const fetchedIGAccounts =
+          await fetchInstagramAccountsFromFacebook(accessToken);
 
         console.log(
-          "[v0] Pages data:",
-          pagesData.data ? `${pagesData.data.length} pages found` : "no pages"
+          "[v0] Instagram accounts synced:",
+          fetchedIGAccounts.length
         );
 
-        if (!pagesData.data || pagesData.data.length === 0) {
+        if (fetchedIGAccounts.length === 0) {
           throw new Error(
-            "No Facebook Pages found. Please connect an Instagram Business account to a Facebook Page."
+            "No Instagram Business Account found. Please connect your Instagram Business accounts to Facebook Pages first."
           );
         }
 
-        const pageId = pagesData.data[0].id;
-        const pageToken = pagesData.data[0].access_token;
-
-        // Get Instagram Business Account
-        const igRes = await fetch(
-          `https://graph.facebook.com/v21.0/${pageId}?fields=instagram_business_account&access_token=${pageToken}`
-        );
-        const igData = await igRes.json();
-
-        console.log(
-          "[v0] Instagram data:",
-          igData.instagram_business_account ? "found" : "not found"
+        const existingIGAccounts = readStoredInstagramAccounts(localStorage);
+        const mergedIGAccounts = mergeInstagramAccounts(
+          existingIGAccounts,
+          fetchedIGAccounts
         );
 
-        if (!igData.instagram_business_account) {
-          throw new Error(
-            "No Instagram Business Account found. Please convert your Instagram account to a Business account and connect it to your Facebook Page."
-          );
+        persistInstagramAccounts(mergedIGAccounts, localStorage);
+
+        const storedPrimaryId = localStorage.getItem("primary_ig_account_id");
+        const storedSelectedId = localStorage.getItem("ig_user_id");
+        const preferredAccount =
+          mergedIGAccounts.find(
+            (account) =>
+              account.id === storedPrimaryId || account.id === storedSelectedId
+          ) || fetchedIGAccounts[0];
+
+        // Keep the legacy keys for the rest of the app, but store the user token
+        // so we can refresh all connected pages/accounts later as well.
+        localStorage.setItem("fb_access_token", accessToken);
+        localStorage.setItem("ig_user_id", preferredAccount.id);
+
+        if (preferredAccount.pageId) {
+          localStorage.setItem("fb_page_id", preferredAccount.pageId);
         }
 
-        const igUserId = igData.instagram_business_account.id;
-
-        // Get Instagram account profile info
-        const profileRes = await fetch(
-          `https://graph.facebook.com/v21.0/${igUserId}?fields=username,followers_count,profile_picture_url&access_token=${pageToken}`
-        );
-        const profileData = await profileRes.json();
-
-        const existingIGAccounts = JSON.parse(
-          localStorage.getItem("ig_accounts") || "[]"
-        );
-        const newAccount = {
-          id: igUserId,
-          username: profileData.username || "Instagram User",
-          profile_picture_url: profileData.profile_picture_url,
-          followers_count: profileData.followers_count || 0,
-          token: pageToken, // Store token WITH the account
-          pageId: pageId,
-        };
-
-        // Check if account already exists and update it, otherwise add new
-        const existingIndex = existingIGAccounts.findIndex(
-          (a: any) => a.id === newAccount.id
-        );
-        if (existingIndex >= 0) {
-          existingIGAccounts[existingIndex] = newAccount;
-        } else {
-          existingIGAccounts.push(newAccount);
+        if (
+          !storedPrimaryId ||
+          !mergedIGAccounts.some((account) => account.id === storedPrimaryId)
+        ) {
+          localStorage.setItem("primary_ig_account_id", preferredAccount.id);
         }
-
-        localStorage.setItem("ig_accounts", JSON.stringify(existingIGAccounts));
-
-        // Also keep the old format for backwards compatibility with first account
-        localStorage.setItem("fb_access_token", pageToken);
-        localStorage.setItem("ig_user_id", igUserId);
-        localStorage.setItem("fb_page_id", pageId);
 
         console.log("[v0] Auth successful, redirecting to dashboard");
-        setStatus("Success! Redirecting to dashboard...");
+        setStatus(
+          `Success! ${mergedIGAccounts.length} Instagram account(s) synced. Redirecting to dashboard...`
+        );
         setTimeout(() => router.push("/dashboard"), 1000);
       } catch (error: any) {
         console.error("[v0] Auth error:", error);

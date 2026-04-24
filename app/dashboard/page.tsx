@@ -19,6 +19,12 @@ import {
   Scissors,
 } from "lucide-react";
 import { getMediaList, getMediaInsights } from "@/lib/meta";
+import {
+  fetchInstagramAccountsFromFacebook,
+  mergeInstagramAccounts,
+  persistInstagramAccounts,
+  readStoredInstagramAccounts,
+} from "@/lib/instagram-accounts";
 import { VideoSplitterView } from "@/components/video-splitter-view"; // added VideoSplitterView import
 
 interface InstagramProfile {
@@ -83,72 +89,54 @@ export default function Dashboard() {
 
   const loadInstagramAccounts = useCallback(async (token: string) => {
     try {
-      const storedAccounts = localStorage.getItem("ig_accounts");
-
-      if (storedAccounts) {
-        // New multi-account format
-        const accounts = JSON.parse(storedAccounts).map((a: any) => ({
-          ...a,
-          platform: "instagram" as const,
-        }));
-        setInstagramAccounts(accounts);
-
-        // Select first account by default if none selected
-        if (accounts.length > 0) {
-          const storedId = localStorage.getItem("ig_user_id");
-          if (storedId && accounts.some((a: any) => a.id === storedId)) {
-            setSelectedAccounts((prev) => [...new Set([...prev, storedId])]);
-          } else {
-            setSelectedAccounts((prev) => [
-              ...new Set([...prev, accounts[0].id]),
-            ]);
-            localStorage.setItem("ig_user_id", accounts[0].id);
-          }
+      const applyDefaultSelection = (accounts: InstagramAccount[]) => {
+        if (accounts.length === 0) {
+          return;
         }
+
+        const storedId = localStorage.getItem("ig_user_id");
+        if (storedId && accounts.some((account) => account.id === storedId)) {
+          setSelectedAccounts((prev) => [...new Set([...prev, storedId])]);
+          return;
+        }
+
+        setSelectedAccounts((prev) => [
+          ...new Set([...prev, accounts[0].id]),
+        ]);
+        localStorage.setItem("ig_user_id", accounts[0].id);
+      };
+
+      const storedAccounts = readStoredInstagramAccounts(localStorage).map(
+        (account) => ({
+          ...account,
+          platform: "instagram" as const,
+        })
+      );
+
+      if (storedAccounts.length > 0) {
+        setInstagramAccounts(storedAccounts);
+        applyDefaultSelection(storedAccounts);
+      }
+
+      const syncedAccounts = await fetchInstagramAccountsFromFacebook(token);
+      const mergedAccounts = mergeInstagramAccounts(
+        storedAccounts,
+        syncedAccounts
+      ).map((account) => ({
+        ...account,
+        platform: "instagram" as const,
+      }));
+
+      if (mergedAccounts.length === 0) {
         return;
       }
 
-      // Fallback: old single-account format - fetch from API
-      const res = await fetch(
-        `https://graph.facebook.com/v21.0/me/accounts?fields=instagram_business_account&access_token=${token}`
+      persistInstagramAccounts(
+        mergedAccounts.map(({ platform, ...account }) => account),
+        localStorage
       );
-      const data = await res.json();
-
-      if (data.data) {
-        const igAccounts: InstagramAccount[] = [];
-
-        for (const page of data.data) {
-          if (page.instagram_business_account) {
-            const igId = page.instagram_business_account.id;
-            const profileRes = await fetch(
-              `https://graph.facebook.com/v21.0/${igId}?fields=username,profile_picture_url,followers_count&access_token=${token}`
-            );
-            const profileData = await profileRes.json();
-
-            if (profileData.username) {
-              igAccounts.push({
-                id: igId,
-                username: profileData.username,
-                profile_picture_url: profileData.profile_picture_url,
-                followers_count: profileData.followers_count,
-                platform: "instagram",
-              });
-            }
-          }
-        }
-
-        setInstagramAccounts(igAccounts);
-
-        const storedId = localStorage.getItem("ig_user_id");
-        if (storedId && igAccounts.some((a) => a.id === storedId)) {
-          setSelectedAccounts((prev) => [...new Set([...prev, storedId])]);
-        } else if (igAccounts.length > 0) {
-          setSelectedAccounts((prev) => [
-            ...new Set([...prev, igAccounts[0].id]),
-          ]);
-          localStorage.setItem("ig_user_id", igAccounts[0].id);
-        }
-      }
+      setInstagramAccounts(mergedAccounts);
+      applyDefaultSelection(mergedAccounts);
     } catch (err) {
       console.error("[v0] Error loading Instagram accounts:", err);
     }

@@ -24,6 +24,12 @@ import {
   publishMedia,
 } from "@/lib/meta";
 import {
+  fetchInstagramAccountsFromFacebook,
+  mergeInstagramAccounts,
+  persistInstagramAccounts,
+  readStoredInstagramAccounts,
+} from "@/lib/instagram-accounts";
+import {
   formatSeconds,
   normalizeYouTubeUrl,
   type GeneratedShortAsset,
@@ -36,6 +42,13 @@ interface InstagramAccount {
   username: string;
   profile_picture_url?: string;
   token?: string;
+}
+
+interface YouTubeAccount {
+  id: string;
+  name?: string;
+  username?: string;
+  thumbnail?: string;
 }
 
 interface QueueItem extends GeneratedShortAsset {
@@ -85,6 +98,22 @@ const TARGET_ACCOUNT_KEY = "youtube_shorts_target_account_id";
 function getStoredString(key: string) {
   const value = localStorage.getItem(key);
   return value?.trim() ? value : null;
+}
+
+function readStoredYouTubeAccounts() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem("youtube_accounts") || "[]");
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.filter(
+      (account): account is YouTubeAccount =>
+        Boolean(account && typeof account.id === "string"),
+    );
+  } catch {
+    return [];
+  }
 }
 
 function getDashboardSelectedInstagramAccountId(accounts: InstagramAccount[]) {
@@ -335,6 +364,7 @@ export default function YouTubeShortsPage() {
   const processingRef = useRef(false);
 
   const [instagramAccounts, setInstagramAccounts] = useState<InstagramAccount[]>([]);
+  const [youtubeAccounts, setYouTubeAccounts] = useState<YouTubeAccount[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [sourceUrl, setSourceUrl] = useState("");
   const [segmentDurationSeconds, setSegmentDurationSeconds] = useState(30);
@@ -396,20 +426,23 @@ export default function YouTubeShortsPage() {
   };
 
   useEffect(() => {
-    const storedAccounts = JSON.parse(localStorage.getItem("ig_accounts") || "[]");
-    const nextAccounts = Array.isArray(storedAccounts) ? storedAccounts : [];
-    setInstagramAccounts(nextAccounts);
+    let cancelled = false;
 
-    const storedState = localStorage.getItem(STORAGE_KEY);
+    const applyPersistedState = (accounts: InstagramAccount[]) => {
+      const storedState = localStorage.getItem(STORAGE_KEY);
 
-    if (storedState) {
+      if (!storedState) {
+        setSelectedAccountId(resolvePreferredInstagramAccountId(accounts));
+        return;
+      }
+
       try {
         const parsed = JSON.parse(storedState) as PersistedState;
         setQueue(Array.isArray(parsed.queue) ? parsed.queue : []);
         setPlanPreview(Array.isArray(parsed.queue) ? parsed.queue : []);
         setSelectedAccountId(
           resolvePreferredInstagramAccountId(
-            nextAccounts,
+            accounts,
             parsed.selectedAccountId,
           ),
         );
@@ -427,11 +460,65 @@ export default function YouTubeShortsPage() {
         }
       } catch (error) {
         console.error("[v0] Failed to restore shorts state:", error);
-        setSelectedAccountId(resolvePreferredInstagramAccountId(nextAccounts));
+        setSelectedAccountId(resolvePreferredInstagramAccountId(accounts));
       }
-    } else {
-      setSelectedAccountId(resolvePreferredInstagramAccountId(nextAccounts));
-    }
+    };
+
+    const hydrateAccounts = async () => {
+      const storedInstagramAccounts = readStoredInstagramAccounts(localStorage);
+      const storedYouTubeAccounts = readStoredYouTubeAccounts();
+
+      if (cancelled) {
+        return;
+      }
+
+      setInstagramAccounts(storedInstagramAccounts);
+      setYouTubeAccounts(storedYouTubeAccounts);
+      applyPersistedState(storedInstagramAccounts);
+
+      const fbAccessToken = getStoredString("fb_access_token");
+      if (!fbAccessToken) {
+        return;
+      }
+
+      try {
+        const syncedInstagramAccounts =
+          await fetchInstagramAccountsFromFacebook(fbAccessToken);
+
+        if (cancelled || syncedInstagramAccounts.length === 0) {
+          return;
+        }
+
+        const mergedInstagramAccounts = mergeInstagramAccounts(
+          storedInstagramAccounts,
+          syncedInstagramAccounts,
+        );
+        persistInstagramAccounts(mergedInstagramAccounts, localStorage);
+        setInstagramAccounts(mergedInstagramAccounts);
+      } catch (error) {
+        console.warn("[v0] Could not refresh Instagram accounts for shorts page:", error);
+      }
+    };
+
+    void hydrateAccounts();
+
+    const syncAccountsFromStorage = () => {
+      if (cancelled) {
+        return;
+      }
+
+      setInstagramAccounts(readStoredInstagramAccounts(localStorage));
+      setYouTubeAccounts(readStoredYouTubeAccounts());
+    };
+
+    window.addEventListener("focus", syncAccountsFromStorage);
+    window.addEventListener("storage", syncAccountsFromStorage);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", syncAccountsFromStorage);
+      window.removeEventListener("storage", syncAccountsFromStorage);
+    };
   }, []);
 
   useEffect(() => {
@@ -672,6 +759,7 @@ export default function YouTubeShortsPage() {
 
   const handleGenerateQueue = async () => {
     const normalizedSourceUrl = normalizeYouTubeUrl(sourceUrl);
+    const expectedShortCount = planPreview.length;
 
     if (!normalizedSourceUrl.trim()) {
       toast.error("YouTube URL missing hai.");
@@ -695,10 +783,13 @@ export default function YouTubeShortsPage() {
     setCreationProgress({
       phase: "processing",
       percent: 0,
-      total: 0,
+      total: expectedShortCount,
       processed: 0,
       saved: 0,
-      status: "Metadata ka wait ho raha hai...",
+      status:
+        expectedShortCount > 0
+          ? `${expectedShortCount} planned shorts ke liye server response ka wait ho raha hai...`
+          : "Metadata ka wait ho raha hai...",
     });
     setSourceUrl(normalizedSourceUrl);
 
@@ -767,6 +858,7 @@ export default function YouTubeShortsPage() {
       setCreationProgress((prev) => ({
         ...prev,
         phase: "error",
+        total: prev.total || expectedShortCount,
         status: error.message || "Shorts creation fail ho gayi.",
       }));
       toast.error(error.message || "Queue create nahi hui.");
@@ -844,6 +936,7 @@ export default function YouTubeShortsPage() {
     isCreatingQueue ||
     downloadProgress.phase !== "idle" ||
     creationProgress.phase !== "idle";
+  const plannedShortsCount = creationProgress.total || planPreview.length;
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,#43237a_0%,#1f1147_34%,#120622_68%,#090014_100%)] text-white">
@@ -1005,9 +1098,11 @@ export default function YouTubeShortsPage() {
                   </p>
                 </div>
                 <div className="rounded-2xl border border-violet-300/15 bg-violet-400/10 px-3 py-2 text-sm font-semibold text-violet-100">
-                  {creationProgress.total > 0
-                    ? `${creationProgress.saved}/${creationProgress.total}`
-                    : "0/0"}
+                  {plannedShortsCount > 0
+                    ? `${creationProgress.saved}/${plannedShortsCount}`
+                    : creationProgress.phase === "error"
+                      ? "0 created"
+                      : "0/0"}
                 </div>
               </div>
 
@@ -1019,9 +1114,9 @@ export default function YouTubeShortsPage() {
               </div>
 
               <div className="mt-3 flex flex-wrap items-center gap-3 text-sm text-white/65">
+                <span>Created: {creationProgress.saved}</span>
                 <span>Processed: {creationProgress.processed}</span>
-                <span>Saved: {creationProgress.saved}</span>
-                <span>Total: {creationProgress.total}</span>
+                <span>Planned: {plannedShortsCount}</span>
               </div>
             </div>
           </div>
@@ -1041,6 +1136,35 @@ export default function YouTubeShortsPage() {
               </div>
 
               <div className="space-y-4">
+                {youtubeAccounts.length > 0 ? (
+                  <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
+                    <div className="flex items-center gap-2 text-sm font-medium text-white/80">
+                      <Youtube className="h-4 w-4 text-fuchsia-300" />
+                      <span>Connected YouTube accounts ({youtubeAccounts.length})</span>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {youtubeAccounts.map((account) => (
+                        <div
+                          key={account.id}
+                          className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/70"
+                        >
+                          {account.thumbnail ? (
+                            <img
+                              src={account.thumbnail}
+                              alt={account.username || account.name || "YouTube account"}
+                              className="h-5 w-5 rounded-full object-cover"
+                            />
+                          ) : null}
+                          <span>{account.username || account.name || "YouTube Account"}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="mt-3 text-xs text-white/45">
+                      Yahan source ke liye YouTube accounts visible hain. Actual upload target neeche Instagram section me select hota hai.
+                    </p>
+                  </div>
+                ) : null}
+
                 <input
                   type="url"
                   value={sourceUrl}
@@ -1146,6 +1270,11 @@ export default function YouTubeShortsPage() {
                     Primary ya last-used account by default aayega. Kisi card ko tap karke select karo, aur dubara tap karke unselect bhi kar sakte ho.
                   </p>
                 </div>
+              </div>
+
+              <div className="mb-4 rounded-2xl border border-violet-300/15 bg-violet-400/10 px-4 py-3 text-sm text-violet-100">
+                {instagramAccounts.length} Instagram target account
+                {instagramAccounts.length === 1 ? "" : "s"} synced. Default target primary, last-used, ya dashboard selection se pick hota hai.
               </div>
 
               {instagramAccounts.length === 0 ? (
