@@ -138,7 +138,9 @@ function BulkUploadContent() {
 
               return {
                 id: segment.id,
-                file: new File([blob], segment.fileName, { type: "video/mp4" }),
+                file: new File([blob], segment.fileName, {
+                  type: blob.type || "video/mp4",
+                }),
                 preview: segment.blobUrl,
                 status: "pending" as const,
                 originalTitle: segment.title,

@@ -138,9 +138,10 @@ export function VideoSplitterView({ onAddToQueue }: VideoSplitterViewProps) {
     if (!segment.blob) return;
 
     const url = URL.createObjectURL(segment.blob);
+    const extension = segment.blob.type.includes("webm") ? "webm" : "mp4";
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${segment.title.replace(/[^a-zA-Z0-9]/g, "_")}.webm`;
+    a.download = `${segment.title.replace(/[^a-zA-Z0-9]/g, "_")}.${extension}`;
     a.click();
     URL.revokeObjectURL(url);
     toast.success("Download started");

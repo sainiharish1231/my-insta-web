@@ -354,7 +354,9 @@ export default function Dashboard() {
       endTime: segment.endTime,
       duration: segment.duration,
       blobUrl: URL.createObjectURL(segment.blob!),
-      fileName: `${segment.title.replace(/[^a-zA-Z0-9]/g, "_")}.webm`,
+      fileName: `${segment.title.replace(/[^a-zA-Z0-9]/g, "_")}.${
+        segment.blob?.type?.includes("webm") ? "webm" : "mp4"
+      }`,
       size: segment.blob!.size,
     }));
 
@@ -834,6 +836,15 @@ export default function Dashboard() {
             <Scissors className="w-8 h-8 text-rose-400 mb-3 group-hover:scale-110 transition-transform" />
             <h3 className="font-semibold text-white mb-1">Splitter</h3>
             <p className="text-xs text-white/50">Split long videos</p>
+          </button>
+
+          <button
+            onClick={() => router.push("/youtube-shorts")}
+            className="p-6 bg-gradient-to-br from-red-500/20 to-amber-500/20 hover:from-red-500/30 hover:to-amber-500/30 border border-red-500/30 rounded-2xl transition-all group"
+          >
+            <Youtube className="w-8 h-8 text-red-300 mb-3 group-hover:scale-110 transition-transform" />
+            <h3 className="font-semibold text-white mb-1">YT Shorts</h3>
+            <p className="text-xs text-white/50">URL se shorts queue banao</p>
           </button>
 
           <button

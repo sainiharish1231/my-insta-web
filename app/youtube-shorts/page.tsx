@@ -1,0 +1,1385 @@
+"use client";
+
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import {
+  AlertCircle,
+  ArrowLeft,
+  CheckCircle2,
+  Clock3,
+  Instagram,
+  Loader2,
+  PauseCircle,
+  PlayCircle,
+  Scissors,
+  Sparkles,
+  Trash2,
+  Youtube,
+} from "lucide-react";
+import { toast } from "sonner";
+import { Progress } from "@/components/ui/progress";
+import {
+  buildInstagramReadyCloudinaryVideoUrl,
+  createMedia,
+  publishMedia,
+} from "@/lib/meta";
+import {
+  formatSeconds,
+  type GeneratedShortAsset,
+  type ShortsVideoMetadata,
+  type ShortsWindow,
+} from "@/lib/youtube-shorts";
+
+interface InstagramAccount {
+  id: string;
+  username: string;
+  profile_picture_url?: string;
+  token?: string;
+}
+
+interface QueueItem extends GeneratedShortAsset {
+  sourceUrl: string;
+  sourceTitle: string;
+  status: "queued" | "uploading" | "error";
+  error?: string;
+  createdAt: string;
+}
+
+interface PersistedState {
+  queue: QueueItem[];
+  selectedAccountId: string | null;
+  intervalMinutes: number;
+  deleteAfterPublish: boolean;
+  isRunning: boolean;
+  nextRunAt: string | null;
+  sourceVideo: ShortsVideoMetadata | null;
+  recentUploads: Array<{
+    id: string;
+    title: string;
+    uploadedAt: string;
+    accountUsername: string;
+  }>;
+}
+
+interface SourceDownloadProgressState {
+  phase: "idle" | "preparing" | "downloading" | "complete" | "error";
+  percent: number;
+  loadedBytes: number;
+  totalBytes: number | null;
+  status: string;
+}
+
+interface ShortsCreationProgressState {
+  phase: "idle" | "processing" | "complete" | "error";
+  percent: number;
+  total: number;
+  processed: number;
+  saved: number;
+  status: string;
+}
+
+const STORAGE_KEY = "youtube_shorts_automation_state";
+
+function parseKeywords(value: string) {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) {
+    return "Not scheduled";
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return "Invalid date";
+  }
+
+  return parsed.toLocaleString();
+}
+
+function sanitizeFileName(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function getVideoExtensionFromMimeType(value?: string | null) {
+  if (!value) {
+    return "mp4";
+  }
+
+  if (value.includes("webm")) {
+    return "webm";
+  }
+
+  if (value.includes("ogg")) {
+    return "ogv";
+  }
+
+  return "mp4";
+}
+
+function formatBytes(value: number) {
+  if (value <= 0) {
+    return "0 MB";
+  }
+
+  return `${(value / (1024 * 1024)).toFixed(value >= 1024 * 1024 * 1024 ? 2 : 1)} MB`;
+}
+
+async function buildLocalVideoFile(
+  blob: Blob,
+  title: string,
+  contentType?: string | null
+) {
+  const mimeType = blob.type || contentType || "video/mp4";
+  const safeTitle = sanitizeFileName(title) || `youtube-source-${Date.now()}`;
+  const extension = getVideoExtensionFromMimeType(mimeType);
+
+  return new File([blob], `${safeTitle}.${extension}`, {
+    type: mimeType,
+  });
+}
+
+async function downloadSourceVideoBlob(
+  url: string,
+  onProgress?: (progress: SourceDownloadProgressState) => void
+) {
+  onProgress?.({
+    phase: "preparing",
+    percent: 0,
+    loadedBytes: 0,
+    totalBytes: null,
+    status: "YouTube se source video prepare ho rahi hai...",
+  });
+
+  const response = await fetch("/api/youtube/shorts/source", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ url }),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || "Source video local download nahi hua.");
+  }
+
+  const totalBytesHeader = Number(response.headers.get("content-length") || "0");
+  const totalBytes = Number.isFinite(totalBytesHeader) && totalBytesHeader > 0
+    ? totalBytesHeader
+    : null;
+
+  if (!response.body) {
+    const blob = await response.blob();
+    onProgress?.({
+      phase: "complete",
+      percent: 100,
+      loadedBytes: blob.size,
+      totalBytes: blob.size,
+      status: "Source video download complete.",
+    });
+
+    return {
+      blob,
+      contentType: response.headers.get("content-type"),
+    };
+  }
+
+  const reader = response.body.getReader();
+  const chunks: BlobPart[] = [];
+  let loadedBytes = 0;
+
+  onProgress?.({
+    phase: "downloading",
+    percent: 0,
+    loadedBytes: 0,
+    totalBytes,
+    status: "Source video browser me transfer ho rahi hai...",
+  });
+
+  while (true) {
+    const { done, value } = await reader.read();
+
+    if (done) {
+      break;
+    }
+
+    if (value) {
+      chunks.push(value.slice().buffer);
+      loadedBytes += value.byteLength;
+      const percent = totalBytes
+        ? Math.min(100, Math.round((loadedBytes / totalBytes) * 100))
+        : 0;
+
+      onProgress?.({
+        phase: "downloading",
+        percent,
+        loadedBytes,
+        totalBytes,
+        status: totalBytes
+          ? `Source video download ho rahi hai... ${percent}%`
+          : "Source video download ho rahi hai...",
+      });
+    }
+  }
+
+  const blob = new Blob(chunks, {
+    type: response.headers.get("content-type") || "video/mp4",
+  });
+
+  onProgress?.({
+    phase: "complete",
+    percent: 100,
+    loadedBytes,
+    totalBytes: totalBytes || loadedBytes,
+    status: "Source video download complete.",
+  });
+
+  return {
+    blob,
+    contentType: response.headers.get("content-type"),
+  };
+}
+
+async function deleteCloudinaryAsset(publicId: string, resourceType: string) {
+  const response = await fetch("/api/cloudinary/delete", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      publicId,
+      resourceType,
+    }),
+  });
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || "Failed to delete Cloudinary asset");
+  }
+}
+
+async function cleanupQueuedAsset(item: Pick<QueueItem, "cloudinaryPublicId" | "cloudinaryResourceType">) {
+  if (!item.cloudinaryPublicId) {
+    return;
+  }
+
+  await deleteCloudinaryAsset(item.cloudinaryPublicId, item.cloudinaryResourceType).catch(
+    (error) => {
+      console.error("[v0] Failed to cleanup queued Cloudinary asset:", error);
+    },
+  );
+}
+
+export default function YouTubeShortsPage() {
+  const router = useRouter();
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const processingRef = useRef(false);
+
+  const [instagramAccounts, setInstagramAccounts] = useState<InstagramAccount[]>([]);
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
+  const [sourceUrl, setSourceUrl] = useState("");
+  const [segmentDurationSeconds, setSegmentDurationSeconds] = useState(30);
+  const [overlapSeconds, setOverlapSeconds] = useState(0);
+  const [intervalMinutes, setIntervalMinutes] = useState(20);
+  const [sourceVideo, setSourceVideo] = useState<ShortsVideoMetadata | null>(null);
+  const [planPreview, setPlanPreview] = useState<ShortsWindow[]>([]);
+  const [titleDraft, setTitleDraft] = useState("");
+  const [descriptionDraft, setDescriptionDraft] = useState("");
+  const [keywordsDraft, setKeywordsDraft] = useState("");
+  const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [recentUploads, setRecentUploads] = useState<
+    Array<{ id: string; title: string; uploadedAt: string; accountUsername: string }>
+  >([]);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isCreatingQueue, setIsCreatingQueue] = useState(false);
+  const [queueBuildStatus, setQueueBuildStatus] = useState("");
+  const [downloadProgress, setDownloadProgress] =
+    useState<SourceDownloadProgressState>({
+      phase: "idle",
+      percent: 0,
+      loadedBytes: 0,
+      totalBytes: null,
+      status: "",
+    });
+  const [creationProgress, setCreationProgress] =
+    useState<ShortsCreationProgressState>({
+      phase: "idle",
+      percent: 0,
+      total: 0,
+      processed: 0,
+      saved: 0,
+      status: "",
+    });
+  const [isRunning, setIsRunning] = useState(false);
+  const [nextRunAt, setNextRunAt] = useState<string | null>(null);
+
+  const selectedAccount = useMemo(
+    () =>
+      instagramAccounts.find((account) => account.id === selectedAccountId) || null,
+    [instagramAccounts, selectedAccountId],
+  );
+
+  const queueStats = useMemo(
+    () => ({
+      total: queue.length,
+      uploading: queue.filter((item) => item.status === "uploading").length,
+      error: queue.filter((item) => item.status === "error").length,
+      queued: queue.filter((item) => item.status === "queued").length,
+    }),
+    [queue],
+  );
+
+  const clearTimer = () => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    const storedAccounts = JSON.parse(localStorage.getItem("ig_accounts") || "[]");
+    const nextAccounts = Array.isArray(storedAccounts) ? storedAccounts : [];
+    setInstagramAccounts(nextAccounts);
+
+    const storedState = localStorage.getItem(STORAGE_KEY);
+    const preferredAccountId =
+      localStorage.getItem("primary_ig_account_id") ||
+      localStorage.getItem("ig_user_id") ||
+      nextAccounts[0]?.id ||
+      null;
+
+    if (storedState) {
+      try {
+        const parsed = JSON.parse(storedState) as PersistedState;
+        setQueue(Array.isArray(parsed.queue) ? parsed.queue : []);
+        setPlanPreview(Array.isArray(parsed.queue) ? parsed.queue : []);
+        setSelectedAccountId(parsed.selectedAccountId || preferredAccountId);
+        setIntervalMinutes(parsed.intervalMinutes || 20);
+        setIsRunning(parsed.isRunning ?? false);
+        setNextRunAt(parsed.nextRunAt || null);
+        setSourceVideo(parsed.sourceVideo || null);
+        setRecentUploads(parsed.recentUploads || []);
+
+        if (parsed.sourceVideo) {
+          setSourceUrl(parsed.sourceVideo.sourceUrl || "");
+          setTitleDraft(parsed.sourceVideo.title || "");
+          setDescriptionDraft(parsed.sourceVideo.description || "");
+          setKeywordsDraft((parsed.sourceVideo.keywords || []).join(", "));
+        }
+      } catch (error) {
+        console.error("[v0] Failed to restore shorts state:", error);
+        setSelectedAccountId(preferredAccountId);
+      }
+    } else {
+      setSelectedAccountId(preferredAccountId);
+    }
+  }, []);
+
+  useEffect(() => {
+    const state: PersistedState = {
+      queue,
+      selectedAccountId,
+      intervalMinutes,
+      deleteAfterPublish: true,
+      isRunning,
+      nextRunAt,
+      sourceVideo,
+      recentUploads,
+    };
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  }, [
+    intervalMinutes,
+    isRunning,
+    nextRunAt,
+    queue,
+    recentUploads,
+    selectedAccountId,
+    sourceVideo,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      clearTimer();
+    };
+  }, []);
+
+  const processNextQueueItem = useEffectEvent(async () => {
+    if (processingRef.current || !isRunning) {
+      return;
+    }
+
+    if (!selectedAccount || !selectedAccount.token) {
+      setIsRunning(false);
+      setNextRunAt(null);
+      toast.error("Instagram account token missing hai. Account reconnect karo.");
+      return;
+    }
+
+    const nextItem = queue[0];
+    if (!nextItem) {
+      setIsRunning(false);
+      setNextRunAt(null);
+      return;
+    }
+
+    clearTimer();
+    processingRef.current = true;
+
+    setQueue((prev) =>
+      prev.map((item, index) =>
+        index === 0 ? { ...item, status: "uploading", error: undefined } : item,
+      ),
+    );
+
+    try {
+      const creationId = await createMedia({
+        igUserId: selectedAccount.id,
+        token: selectedAccount.token,
+        mediaUrl: nextItem.assetUrl,
+        caption: nextItem.caption,
+        isReel: true,
+      });
+
+      await publishMedia({
+        igUserId: selectedAccount.id,
+        token: selectedAccount.token,
+        creationId,
+      });
+
+      if (nextItem.cloudinaryPublicId) {
+        await deleteCloudinaryAsset(
+          nextItem.cloudinaryPublicId,
+          nextItem.cloudinaryResourceType,
+        ).catch((error) => {
+          console.error("[v0] Failed to delete processed clip:", error);
+        });
+      }
+
+      let remainingQueue: QueueItem[] = [];
+      setQueue((prev) => {
+        remainingQueue = prev.filter((item) => item.id !== nextItem.id);
+        return remainingQueue;
+      });
+
+      setRecentUploads((prev) => [
+        {
+          id: `${nextItem.id}-${Date.now()}`,
+          title: nextItem.title,
+          uploadedAt: new Date().toISOString(),
+          accountUsername: selectedAccount.username,
+        },
+        ...prev,
+      ].slice(0, 8));
+
+      if (remainingQueue.length > 0) {
+        const scheduledTime = new Date(
+          Date.now() + intervalMinutes * 60 * 1000,
+        ).toISOString();
+        setNextRunAt(scheduledTime);
+        toast.success(
+          `1 short upload ho gaya. Next short ${intervalMinutes} minute baad jayega.`,
+        );
+      } else {
+        setIsRunning(false);
+        setNextRunAt(null);
+        toast.success("Queue complete ho gayi. Sab shorts upload ho gaye.");
+      }
+    } catch (error: any) {
+      setQueue((prev) =>
+        prev.map((item) =>
+          item.id === nextItem.id
+            ? {
+                ...item,
+                status: "error",
+                error: error.message || "Upload failed",
+              }
+            : item,
+        ),
+      );
+      setIsRunning(false);
+      setNextRunAt(null);
+      toast.error(error.message || "Instagram upload fail ho gaya.");
+    } finally {
+      processingRef.current = false;
+    }
+  });
+
+  const syncQueueTimer = useEffectEvent(() => {
+    clearTimer();
+
+    if (!isRunning || queue.length === 0) {
+      return;
+    }
+
+    if (!nextRunAt) {
+      void processNextQueueItem();
+      return;
+    }
+
+    const delay = new Date(nextRunAt).getTime() - Date.now();
+    if (delay <= 0) {
+      void processNextQueueItem();
+      return;
+    }
+
+    timerRef.current = setTimeout(() => {
+      void processNextQueueItem();
+    }, delay);
+  });
+
+  useEffect(() => {
+    syncQueueTimer();
+  }, [isRunning, nextRunAt, queue.length, syncQueueTimer]);
+
+  const handleAnalyze = async () => {
+    if (!sourceUrl.trim()) {
+      toast.error("YouTube long video URL dalo.");
+      return;
+    }
+
+    setIsAnalyzing(true);
+
+    try {
+      const response = await fetch("/api/youtube/shorts/analyze", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          url: sourceUrl.trim(),
+          segmentDurationSeconds,
+          overlapSeconds,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Video details fetch failed");
+      }
+
+      setSourceVideo(data.video);
+      setPlanPreview(data.plan || []);
+      setTitleDraft(data.video.title || "");
+      setDescriptionDraft(data.video.description || "");
+      setKeywordsDraft((data.video.keywords || []).join(", "));
+      toast.success("Video details fetch ho gaye.");
+    } catch (error: any) {
+      toast.error(error.message || "YouTube video analyze nahi hua.");
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const handleGenerateQueue = async () => {
+    if (!sourceUrl.trim()) {
+      toast.error("YouTube URL missing hai.");
+      return;
+    }
+
+    if (instagramAccounts.length === 0) {
+      toast.error("Pehle Instagram account connect karo.");
+      return;
+    }
+
+    setIsCreatingQueue(true);
+    setQueueBuildStatus("Server par source video temp process ho rahi hai...");
+    setDownloadProgress({
+      phase: "preparing",
+      percent: 0,
+      loadedBytes: 0,
+      totalBytes: null,
+      status: "Server temp source prepare ho rahi hai...",
+    });
+    setCreationProgress({
+      phase: "processing",
+      percent: 0,
+      total: 0,
+      processed: 0,
+      saved: 0,
+      status: "Metadata ka wait ho raha hai...",
+    });
+
+    try {
+      const response = await fetch("/api/youtube/shorts/create", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          url: sourceUrl.trim(),
+          segmentDurationSeconds,
+          overlapSeconds,
+          title: titleDraft,
+          description: descriptionDraft,
+          keywords: parseKeywords(keywordsDraft),
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Shorts queue create nahi hui");
+      }
+
+      const createdAt = new Date().toISOString();
+      const nextItems: QueueItem[] = (data.queue || []).map(
+        (item: GeneratedShortAsset) => ({
+          ...item,
+          assetUrl:
+            buildInstagramReadyCloudinaryVideoUrl(item.cloudinaryPublicId) ||
+            item.assetUrl,
+          sourceUrl: sourceUrl.trim(),
+          sourceTitle: data.video.title,
+          status: "queued",
+          createdAt,
+        }),
+      );
+
+      setSourceVideo(data.video);
+      setPlanPreview(data.queue || []);
+      setQueue((prev) => [...prev, ...nextItems]);
+      setQueueBuildStatus("Server-side audio-safe shorts ready hain.");
+      setDownloadProgress({
+        phase: "complete",
+        percent: 100,
+        loadedBytes: 0,
+        totalBytes: null,
+        status: "Source video temp process complete.",
+      });
+      setCreationProgress({
+        phase: "complete",
+        percent: 100,
+        total: nextItems.length,
+        processed: nextItems.length,
+        saved: nextItems.length,
+        status: `Sab ${nextItems.length} shorts server par create ho gayi.`,
+      });
+      toast.success(`${nextItems.length} shorts queue me add ho gaye.`);
+    } catch (error: any) {
+      setDownloadProgress((prev) => ({
+        ...prev,
+        phase: "error",
+        status: error.message || "Source video download fail ho gaya.",
+      }));
+      setCreationProgress((prev) => ({
+        ...prev,
+        phase: "error",
+        status: error.message || "Shorts creation fail ho gayi.",
+      }));
+      toast.error(error.message || "Queue create nahi hui.");
+    } finally {
+      setQueueBuildStatus("");
+      setIsCreatingQueue(false);
+    }
+  };
+
+  const handleStartQueue = () => {
+    if (queue.length === 0) {
+      toast.error("Queue empty hai. Pehle shorts generate karo.");
+      return;
+    }
+
+    if (!selectedAccount || !selectedAccount.token) {
+      toast.error("Upload ke liye ek valid Instagram account select karo.");
+      return;
+    }
+
+    setIsRunning(true);
+    setNextRunAt(null);
+  };
+
+  const handlePauseQueue = () => {
+    clearTimer();
+    setIsRunning(false);
+    setNextRunAt(null);
+  };
+
+  const handleClearQueue = async () => {
+    if (processingRef.current) {
+      toast.error("Current upload complete hone do, phir queue clear karo.");
+      return;
+    }
+
+    const removableItems = [...queue];
+    clearTimer();
+    setIsRunning(false);
+    setNextRunAt(null);
+    setQueue([]);
+
+    await Promise.allSettled(removableItems.map((item) => cleanupQueuedAsset(item)));
+    toast.success("Queue clear ho gayi.");
+  };
+
+  const updateQueueItem = (
+    id: string,
+    changes: Partial<Pick<QueueItem, "title" | "description" | "caption" | "keywords">>,
+  ) => {
+    setQueue((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, ...changes } : item)),
+    );
+  };
+
+  const removeQueueItem = async (id: string) => {
+    if (processingRef.current && queue[0]?.id === id) {
+      toast.error("Current uploading short ko abhi remove nahi kar sakte.");
+      return;
+    }
+
+    const targetItem = queue.find((item) => item.id === id);
+    setQueue((prev) => prev.filter((item) => item.id !== id));
+
+    if (targetItem) {
+      await cleanupQueuedAsset(targetItem);
+    }
+  };
+
+  const suggestedFinishTime =
+    queue.length > 0
+      ? new Date(Date.now() + Math.max(queue.length - 1, 0) * intervalMinutes * 60 * 1000)
+      : null;
+  const showBuildProgress =
+    isCreatingQueue ||
+    downloadProgress.phase !== "idle" ||
+    creationProgress.phase !== "idle";
+
+  return (
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top,#43237a_0%,#1f1147_34%,#120622_68%,#090014_100%)] text-white">
+      <header className="sticky top-0 z-40 border-b border-violet-300/10 bg-[#140824]/85 backdrop-blur-xl">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-4 py-4">
+          <div className="flex items-center gap-4">
+            <button
+              onClick={() => router.push("/dashboard")}
+              className="rounded-2xl p-2 transition-colors hover:bg-white/10"
+            >
+              <ArrowLeft className="h-5 w-5 text-white/70" />
+            </button>
+            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-500 via-fuchsia-500 to-indigo-400 shadow-lg shadow-fuchsia-900/30">
+              <Scissors className="h-7 w-7 text-white" />
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-[0.35em] text-fuchsia-200/70">
+                YouTube to Instagram
+              </p>
+              <h1 className="text-2xl font-semibold">Shorts Automation Studio</h1>
+            </div>
+          </div>
+
+          <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
+            <div className="rounded-2xl border border-violet-300/15 bg-violet-400/10 px-4 py-2 text-sm text-violet-100">
+              {selectedAccount
+                ? `Target: @${selectedAccount.username}`
+                : "Instagram account select karo"}
+            </div>
+            {isRunning ? (
+              <button
+                onClick={handlePauseQueue}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-fuchsia-600 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-fuchsia-500 sm:w-auto"
+              >
+                <PauseCircle className="h-4 w-4" />
+                Stop Queue
+              </button>
+            ) : (
+              <button
+                onClick={handleStartQueue}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-500 via-fuchsia-500 to-indigo-500 px-5 py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90 sm:w-auto"
+              >
+                <PlayCircle className="h-4 w-4" />
+                Upload Queue Start
+              </button>
+            )}
+          </div>
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-7xl px-4 py-6 sm:py-8">
+        <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
+            <div className="text-3xl font-semibold text-white">{queueStats.total}</div>
+            <p className="mt-2 text-sm text-white/55">Shorts in queue</p>
+          </div>
+          <div className="rounded-3xl border border-violet-300/20 bg-violet-400/10 p-5">
+            <div className="text-3xl font-semibold text-violet-100">{queueStats.queued}</div>
+            <p className="mt-2 text-sm text-violet-100/80">Ready to upload</p>
+          </div>
+          <div className="rounded-3xl border border-fuchsia-300/20 bg-fuchsia-500/10 p-5">
+            <div className="text-3xl font-semibold text-fuchsia-100">
+              {intervalMinutes}m
+            </div>
+            <p className="mt-2 text-sm text-fuchsia-100/80">Gap after success</p>
+          </div>
+          <div className="rounded-3xl border border-indigo-300/20 bg-indigo-500/10 p-5">
+            <div className="text-lg font-semibold text-indigo-100">
+              {formatDateTime(nextRunAt)}
+            </div>
+            <p className="mt-2 text-sm text-indigo-100/80">Next scheduled upload</p>
+          </div>
+        </div>
+
+        <div className="mb-6 rounded-3xl border border-violet-300/20 bg-violet-400/10 p-4 text-sm text-violet-100">
+          Queue automation browser tab me run hoti hai. Best result ke liye page open rakho jab tak last short upload na ho jaye.
+        </div>
+
+        <div className="mb-6 grid gap-4 md:grid-cols-3">
+          <div className="rounded-3xl border border-violet-300/20 bg-white/5 p-5 shadow-[0_20px_50px_rgba(91,33,182,0.2)]">
+            <p className="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">Local Source</p>
+            <h2 className="mt-2 text-lg font-semibold text-white">YouTube video local me</h2>
+            <p className="mt-2 text-sm text-white/55">
+              Source video browser ke liye direct download hota hai, storage me park nahi hota.
+            </p>
+          </div>
+          <div className="rounded-3xl border border-violet-300/20 bg-white/5 p-5 shadow-[0_20px_50px_rgba(91,33,182,0.2)]">
+            <p className="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">Shorts Storage</p>
+            <h2 className="mt-2 text-lg font-semibold text-white">Sirf shorts save honge</h2>
+            <p className="mt-2 text-sm text-white/55">
+              Har created short Cloudinary par save hokar queue me turant add hota chala jayega.
+            </p>
+          </div>
+          <div className="rounded-3xl border border-violet-300/20 bg-white/5 p-5 shadow-[0_20px_50px_rgba(91,33,182,0.2)]">
+            <p className="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">Auto Cleanup</p>
+            <h2 className="mt-2 text-lg font-semibold text-white">Upload ke baad delete</h2>
+            <p className="mt-2 text-sm text-white/55">
+              Instagram publish success hote hi short Cloudinary se auto remove ho jayega.
+            </p>
+          </div>
+        </div>
+
+        {showBuildProgress ? (
+          <div className="mb-6 grid gap-4 lg:grid-cols-2">
+            <div className="rounded-3xl border border-violet-300/20 bg-white/5 p-5 shadow-[0_20px_50px_rgba(91,33,182,0.2)]">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">
+                    Download Progress
+                  </p>
+                  <h3 className="mt-2 text-lg font-semibold text-white">
+                    Source video local download
+                  </h3>
+                  <p className="mt-2 text-sm text-white/55">
+                    {downloadProgress.status || "Abhi download start nahi hui."}
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-violet-300/15 bg-violet-400/10 px-3 py-2 text-sm font-semibold text-violet-100">
+                  {downloadProgress.phase === "preparing"
+                    ? "Preparing"
+                    : `${downloadProgress.percent}%`}
+                </div>
+              </div>
+
+              <div className="mt-4">
+                {downloadProgress.phase === "preparing" ? (
+                  <div className="h-2 overflow-hidden rounded-full bg-violet-400/15">
+                    <div className="h-full w-1/3 animate-pulse rounded-full bg-gradient-to-r from-violet-400 via-fuchsia-400 to-indigo-400" />
+                  </div>
+                ) : (
+                  <Progress
+                    value={downloadProgress.percent}
+                    className="h-3 bg-violet-950/60"
+                  />
+                )}
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-center gap-3 text-sm text-white/65">
+                <span>{formatBytes(downloadProgress.loadedBytes)} transferred</span>
+                <span>
+                  {downloadProgress.totalBytes
+                    ? `of ${formatBytes(downloadProgress.totalBytes)}`
+                    : "total size calculating..."}
+                </span>
+              </div>
+            </div>
+
+            <div className="rounded-3xl border border-violet-300/20 bg-white/5 p-5 shadow-[0_20px_50px_rgba(91,33,182,0.2)]">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">
+                    Shorts Progress
+                  </p>
+                  <h3 className="mt-2 text-lg font-semibold text-white">
+                    Shorts kitni create hui
+                  </h3>
+                  <p className="mt-2 text-sm text-white/55">
+                    {creationProgress.status || "Abhi shorts creation start nahi hui."}
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-violet-300/15 bg-violet-400/10 px-3 py-2 text-sm font-semibold text-violet-100">
+                  {creationProgress.total > 0
+                    ? `${creationProgress.saved}/${creationProgress.total}`
+                    : "0/0"}
+                </div>
+              </div>
+
+              <div className="mt-4">
+                <Progress
+                  value={creationProgress.percent}
+                  className="h-3 bg-violet-950/60"
+                />
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-center gap-3 text-sm text-white/65">
+                <span>Processed: {creationProgress.processed}</span>
+                <span>Saved: {creationProgress.saved}</span>
+                <span>Total: {creationProgress.total}</span>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        <div className="grid gap-6 lg:grid-cols-[1fr_1.2fr]">
+          <div className="space-y-6">
+            <section className="rounded-3xl border border-white/10 bg-white/5 p-5 shadow-[0_24px_70px_rgba(76,29,149,0.22)] backdrop-blur-xl sm:p-6">
+              <div className="mb-5 flex items-center gap-3">
+                <Youtube className="h-6 w-6 text-fuchsia-300" />
+                <div>
+                  <h2 className="text-lg font-semibold">1. YouTube Source</h2>
+                  <p className="text-sm text-white/55">
+                    Long video URL dalo, metadata fetch karo, phir local source video ko split karke shorts queue banao.
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <input
+                  type="url"
+                  value={sourceUrl}
+                  onChange={(event) => setSourceUrl(event.target.value)}
+                  placeholder="https://www.youtube.com/watch?v=..."
+                  className="w-full rounded-2xl border border-white/10 bg-slate-950/50 px-4 py-3 text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-violet-400"
+                />
+
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <label className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
+                    <div className="text-xs uppercase tracking-[0.2em] text-white/45">
+                      Clip Seconds
+                    </div>
+                    <input
+                      type="number"
+                      min="10"
+                      max="30"
+                      value={segmentDurationSeconds}
+                      onChange={(event) =>
+                        setSegmentDurationSeconds(
+                          Math.max(10, Math.min(30, Number.parseInt(event.target.value) || 30)),
+                        )
+                      }
+                      className="mt-3 w-full bg-transparent text-2xl font-semibold text-white outline-none"
+                    />
+                  </label>
+
+                  <label className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
+                    <div className="text-xs uppercase tracking-[0.2em] text-white/45">
+                      Overlap
+                    </div>
+                    <input
+                      type="number"
+                      min="0"
+                      max="15"
+                      value={overlapSeconds}
+                      onChange={(event) =>
+                        setOverlapSeconds(
+                          Math.max(0, Math.min(15, Number.parseInt(event.target.value) || 0)),
+                        )
+                      }
+                      className="mt-3 w-full bg-transparent text-2xl font-semibold text-white outline-none"
+                    />
+                  </label>
+
+                  <label className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
+                    <div className="text-xs uppercase tracking-[0.2em] text-white/45">
+                      Upload Gap
+                    </div>
+                    <input
+                      type="number"
+                      min="1"
+                      value={intervalMinutes}
+                      onChange={(event) =>
+                        setIntervalMinutes(Math.max(1, Number.parseInt(event.target.value) || 20))
+                      }
+                      className="mt-3 w-full bg-transparent text-2xl font-semibold text-white outline-none"
+                    />
+                  </label>
+                </div>
+
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    onClick={handleAnalyze}
+                    disabled={isAnalyzing}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-violet-300/20 bg-violet-400/10 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-violet-400/15 disabled:opacity-60 sm:w-auto"
+                  >
+                    {isAnalyzing ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Sparkles className="h-4 w-4" />
+                    )}
+                    Fetch Video Details
+                  </button>
+                  <button
+                    onClick={handleGenerateQueue}
+                    disabled={isCreatingQueue}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-500 via-fuchsia-500 to-indigo-500 px-4 py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-60 sm:w-auto"
+                  >
+                    {isCreatingQueue ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Scissors className="h-4 w-4" />
+                    )}
+                    Generate Shorts Queue
+                  </button>
+                </div>
+
+                {queueBuildStatus ? (
+                  <div className="rounded-2xl border border-violet-300/20 bg-violet-400/10 px-4 py-3 text-sm text-violet-100">
+                    {queueBuildStatus}
+                  </div>
+                ) : null}
+              </div>
+            </section>
+
+            <section className="rounded-3xl border border-white/10 bg-white/5 p-5 shadow-[0_24px_70px_rgba(76,29,149,0.22)] backdrop-blur-xl sm:p-6">
+              <div className="mb-5 flex items-center gap-3">
+                <Instagram className="h-6 w-6 text-violet-300" />
+                <div>
+                  <h2 className="text-lg font-semibold">2. Instagram Target</h2>
+                  <p className="text-sm text-white/55">
+                    Isi account par queue one-by-one reels ke form me jayegi.
+                  </p>
+                </div>
+              </div>
+
+              {instagramAccounts.length === 0 ? (
+                <div className="rounded-2xl border border-red-400/20 bg-red-500/10 p-4 text-sm text-red-100">
+                  Instagram account connected nahi hai. Dashboard ya login page se pehle connect karo.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {instagramAccounts.map((account) => (
+                    <button
+                      key={account.id}
+                      onClick={() => setSelectedAccountId(account.id)}
+                      className={`flex w-full items-center gap-3 rounded-2xl border p-4 text-left transition-colors ${
+                        selectedAccountId === account.id
+                          ? "border-violet-300/30 bg-violet-400/10"
+                          : "border-white/10 bg-slate-950/40 hover:bg-white/5"
+                      }`}
+                    >
+                      <img
+                        src={
+                          account.profile_picture_url ||
+                          "/placeholder-user.jpg"
+                        }
+                        alt={account.username}
+                        className="h-12 w-12 rounded-full object-cover"
+                      />
+                      <div className="flex-1">
+                        <p className="font-medium text-white">@{account.username}</p>
+                        <p className="text-xs text-white/45">
+                          {selectedAccountId === account.id
+                            ? "Queue yahin upload hogi"
+                            : "Tap to select"}
+                        </p>
+                      </div>
+                      {selectedAccountId === account.id && (
+                        <CheckCircle2 className="h-5 w-5 text-violet-200" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <div className="mt-4 rounded-2xl border border-violet-400/20 bg-violet-500/10 p-4 text-sm text-violet-100">
+                Successful upload ke turant baad Cloudinary short auto-delete ho jayega.
+              </div>
+            </section>
+
+            <section className="rounded-3xl border border-white/10 bg-white/5 p-5 shadow-[0_24px_70px_rgba(76,29,149,0.22)] backdrop-blur-xl sm:p-6">
+              <div className="mb-5">
+                <h2 className="text-lg font-semibold">3. Metadata + Plan</h2>
+                <p className="text-sm text-white/55">
+                  Title, description, keywords edit kar sakte ho. Har clip ka caption inhi se regenerate hota hai.
+                </p>
+              </div>
+
+              {!sourceVideo ? (
+                <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-6 text-sm text-white/45">
+                  Abhi tak source analyze nahi hua.
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="flex flex-col gap-4 rounded-2xl border border-white/10 bg-slate-950/40 p-4 sm:flex-row">
+                    {sourceVideo.thumbnailUrl ? (
+                      <img
+                        src={sourceVideo.thumbnailUrl}
+                        alt={sourceVideo.title}
+                        className="h-32 w-full rounded-2xl object-cover sm:w-48"
+                      />
+                    ) : null}
+                    <div className="flex-1">
+                      <p className="text-xs uppercase tracking-[0.25em] text-fuchsia-200/70">
+                        Source video
+                      </p>
+                      <h3 className="mt-2 text-lg font-semibold text-white">
+                        {sourceVideo.title}
+                      </h3>
+                      <p className="mt-2 text-sm text-white/55">
+                        Duration: {formatSeconds(sourceVideo.durationSeconds)} | Shorts planned:{" "}
+                        {planPreview.length}
+                      </p>
+                      <p className="mt-2 text-sm text-white/45">
+                        Channel: {sourceVideo.authorName || "Unknown"}
+                      </p>
+                    </div>
+                  </div>
+
+                  <input
+                    type="text"
+                    value={titleDraft}
+                    onChange={(event) => setTitleDraft(event.target.value)}
+                    placeholder="Shorts title base"
+                    className="w-full rounded-2xl border border-white/10 bg-slate-950/50 px-4 py-3 text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-violet-400"
+                  />
+
+                  <textarea
+                    value={descriptionDraft}
+                    onChange={(event) => setDescriptionDraft(event.target.value)}
+                    rows={5}
+                    placeholder="Shorts description base"
+                    className="w-full rounded-2xl border border-white/10 bg-slate-950/50 px-4 py-3 text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-violet-400"
+                  />
+
+                  <textarea
+                    value={keywordsDraft}
+                    onChange={(event) => setKeywordsDraft(event.target.value)}
+                    rows={3}
+                    placeholder="keyword1, keyword2, keyword3"
+                    className="w-full rounded-2xl border border-white/10 bg-slate-950/50 px-4 py-3 text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-violet-400"
+                  />
+
+                  <div className="rounded-2xl border border-violet-300/15 bg-violet-500/10 p-4">
+                    <div className="mb-3 flex items-center gap-2 text-violet-100">
+                      <Clock3 className="h-4 w-4" />
+                      <span className="text-sm font-medium">Overlap preview</span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {planPreview.slice(0, 10).map((segment) => (
+                        <span
+                          key={segment.id}
+                          className="rounded-full border border-violet-300/20 bg-slate-950/50 px-3 py-1 text-xs text-violet-100"
+                        >
+                          {segment.label}
+                        </span>
+                      ))}
+                      {planPreview.length > 10 && (
+                        <span className="rounded-full border border-white/10 bg-slate-950/50 px-3 py-1 text-xs text-white/60">
+                          +{planPreview.length - 10} more
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </section>
+          </div>
+
+          <div className="space-y-6">
+            <section className="rounded-3xl border border-white/10 bg-white/5 p-5 shadow-[0_24px_70px_rgba(76,29,149,0.22)] backdrop-blur-xl sm:p-6">
+              <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold">4. Upload Queue</h2>
+                  <p className="text-sm text-white/55">
+                    First short abhi jayega. Har next short previous success ke {intervalMinutes} minute baad जाएगा.
+                  </p>
+                </div>
+                {suggestedFinishTime ? (
+                  <div className="rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-2 text-xs text-white/60">
+                    Estimated finish: {formatDateTime(suggestedFinishTime.toISOString())}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+                <button
+                  onClick={handleStartQueue}
+                  disabled={isRunning || queue.length === 0}
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-500 via-fuchsia-500 to-indigo-500 px-4 py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50 sm:w-auto"
+                >
+                  <PlayCircle className="h-4 w-4" />
+                  Start Automation
+                </button>
+                <button
+                  onClick={handlePauseQueue}
+                  disabled={!isRunning}
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-violet-300/15 bg-violet-400/10 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-violet-400/15 disabled:opacity-50 sm:w-auto"
+                >
+                  <PauseCircle className="h-4 w-4" />
+                  Pause
+                </button>
+                <button
+                  onClick={handleClearQueue}
+                  disabled={queue.length === 0}
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-fuchsia-300/20 bg-fuchsia-500/10 px-4 py-3 text-sm font-semibold text-fuchsia-50 transition-colors hover:bg-fuchsia-500/20 disabled:opacity-50 sm:w-auto"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Clear Queue
+                </button>
+              </div>
+
+              {queue.length === 0 ? (
+                <div className="rounded-3xl border border-dashed border-white/10 bg-slate-950/40 p-12 text-center">
+                  <p className="text-lg font-medium text-white/70">Queue empty hai</p>
+                  <p className="mt-2 text-sm text-white/45">
+                    YouTube URL analyze karke shorts generate karo.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {queue.map((item, index) => (
+                    <div
+                      key={item.id}
+                      className={`rounded-3xl border p-4 ${
+                        item.status === "uploading"
+                          ? "border-blue-400/25 bg-blue-500/10"
+                          : item.status === "error"
+                            ? "border-red-400/25 bg-red-500/10"
+                            : "border-white/10 bg-slate-950/40"
+                      }`}
+                    >
+                      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-xs uppercase tracking-[0.25em] text-fuchsia-200/70">
+                            #{index + 1} • {item.label}
+                          </p>
+                          <h3 className="mt-2 text-lg font-semibold text-white">
+                            {item.title}
+                          </h3>
+                          <p className="mt-2 text-sm text-white/50">
+                            Duration {item.durationSeconds}s | Source {item.sourceTitle}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          {item.status === "uploading" && (
+                            <div className="rounded-full border border-blue-400/20 bg-blue-500/10 px-3 py-1 text-xs text-blue-100">
+                              Uploading
+                            </div>
+                          )}
+                          {item.status === "error" && (
+                            <div className="rounded-full border border-red-400/20 bg-red-500/10 px-3 py-1 text-xs text-red-100">
+                              Error
+                            </div>
+                          )}
+                          {item.status === "queued" && (
+                            <div className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/70">
+                              Queued
+                            </div>
+                          )}
+                          <button
+                            onClick={() => removeQueueItem(item.id)}
+                            className="rounded-xl p-2 transition-colors hover:bg-white/10"
+                          >
+                            <Trash2 className="h-4 w-4 text-white/60" />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="space-y-3">
+                        <input
+                          type="text"
+                          value={item.title}
+                          onChange={(event) =>
+                            updateQueueItem(item.id, { title: event.target.value })
+                          }
+                          className="w-full rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-violet-400"
+                        />
+
+                        <textarea
+                          value={item.description}
+                          onChange={(event) =>
+                            updateQueueItem(item.id, {
+                              description: event.target.value,
+                            })
+                          }
+                          rows={4}
+                          className="w-full rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-violet-400"
+                        />
+
+                        <textarea
+                          value={item.caption}
+                          onChange={(event) =>
+                            updateQueueItem(item.id, {
+                              caption: event.target.value,
+                            })
+                          }
+                          rows={4}
+                          className="w-full rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-violet-400"
+                        />
+
+                        <input
+                          type="text"
+                          value={item.keywords.join(", ")}
+                          onChange={(event) =>
+                            updateQueueItem(item.id, {
+                              keywords: parseKeywords(event.target.value),
+                            })
+                          }
+                          className="w-full rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-violet-400"
+                        />
+
+                        {item.error ? (
+                          <div className="flex items-start gap-2 rounded-2xl border border-red-400/20 bg-red-500/10 p-3 text-sm text-red-100">
+                            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                            <span>{item.error}</span>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section className="rounded-3xl border border-white/10 bg-white/5 p-5 shadow-[0_24px_70px_rgba(76,29,149,0.22)] backdrop-blur-xl sm:p-6">
+              <div className="mb-4">
+                <h2 className="text-lg font-semibold">Recent Uploads</h2>
+                <p className="text-sm text-white/55">
+                  Success hone par item queue se remove ho jayega aur yahan history me dikhega.
+                </p>
+              </div>
+
+              {recentUploads.length === 0 ? (
+                <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-6 text-sm text-white/45">
+                  Abhi tak koi short upload nahi hua.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {recentUploads.map((item) => (
+                    <div
+                      key={item.id}
+                      className="rounded-2xl border border-violet-300/20 bg-violet-500/10 p-4"
+                    >
+                      <div className="flex items-start gap-3">
+                        <CheckCircle2 className="mt-0.5 h-5 w-5 text-violet-200" />
+                        <div>
+                          <p className="font-medium text-violet-50">{item.title}</p>
+                          <p className="mt-1 text-sm text-violet-100/80">
+                            @{item.accountUsername} • {formatDateTime(item.uploadedAt)}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}
