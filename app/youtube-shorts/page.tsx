@@ -15,6 +15,7 @@ import {
   Scissors,
   Sparkles,
   Trash2,
+  Upload,
   Youtube,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -40,6 +41,7 @@ import {
   readStoredInstagramAccounts,
 } from "@/lib/instagram-accounts";
 import {
+  buildShortsPlan,
   formatSeconds,
   normalizeYouTubeUrl,
   type GeneratedShortAsset,
@@ -143,9 +145,8 @@ function readStoredYouTubeAccounts() {
       return [];
     }
 
-    return parsed.filter(
-      (account): account is YouTubeAccount =>
-        Boolean(account && typeof account.id === "string"),
+    return parsed.filter((account): account is YouTubeAccount =>
+      Boolean(account && typeof account.id === "string"),
     );
   } catch {
     return [];
@@ -194,9 +195,8 @@ function resolvePreferredInstagramAccountId(
   ];
 
   return (
-    candidates.find(
-      (candidate): candidate is string =>
-        Boolean(candidate && validAccountIds.has(candidate)),
+    candidates.find((candidate): candidate is string =>
+      Boolean(candidate && validAccountIds.has(candidate)),
     ) || null
   );
 }
@@ -206,6 +206,22 @@ function parseKeywords(value: string) {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function stripFileExtension(value: string) {
+  return value.replace(/\.[^/.]+$/, "");
+}
+
+function deriveKeywordsFromText(value: string) {
+  return Array.from(
+    new Set(
+      value
+        .toLowerCase()
+        .split(/[^a-z0-9]+/g)
+        .map((item) => item.trim())
+        .filter((item) => item.length >= 3),
+    ),
+  ).slice(0, 15);
 }
 
 function formatDateTime(value?: string | null) {
@@ -253,10 +269,32 @@ function formatBytes(value: number) {
   return `${(value / (1024 * 1024)).toFixed(value >= 1024 * 1024 * 1024 ? 2 : 1)} MB`;
 }
 
+async function getVideoDurationFromFile(file: File) {
+  const objectUrl = URL.createObjectURL(file);
+
+  try {
+    const durationSeconds = await new Promise<number>((resolve, reject) => {
+      const video = document.createElement("video");
+      video.preload = "metadata";
+      video.onloadedmetadata = () => {
+        resolve(Number.isFinite(video.duration) ? video.duration : 0);
+      };
+      video.onerror = () => {
+        reject(new Error("Video metadata read nahi hui."));
+      };
+      video.src = objectUrl;
+    });
+
+    return Math.max(0, Math.floor(durationSeconds));
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
 async function buildLocalVideoFile(
   blob: Blob,
   title: string,
-  contentType?: string | null
+  contentType?: string | null,
 ) {
   const mimeType = blob.type || contentType || "video/mp4";
   const safeTitle = sanitizeFileName(title) || `youtube-source-${Date.now()}`;
@@ -269,7 +307,7 @@ async function buildLocalVideoFile(
 
 async function downloadSourceVideoBlob(
   url: string,
-  onProgress?: (progress: SourceDownloadProgressState) => void
+  onProgress?: (progress: SourceDownloadProgressState) => void,
 ) {
   onProgress?.({
     phase: "preparing",
@@ -292,10 +330,13 @@ async function downloadSourceVideoBlob(
     throw new Error(errorData.error || "Source video local download nahi hua.");
   }
 
-  const totalBytesHeader = Number(response.headers.get("content-length") || "0");
-  const totalBytes = Number.isFinite(totalBytesHeader) && totalBytesHeader > 0
-    ? totalBytesHeader
-    : null;
+  const totalBytesHeader = Number(
+    response.headers.get("content-length") || "0",
+  );
+  const totalBytes =
+    Number.isFinite(totalBytesHeader) && totalBytesHeader > 0
+      ? totalBytesHeader
+      : null;
 
   if (!response.body) {
     const blob = await response.blob();
@@ -387,39 +428,56 @@ async function deleteCloudinaryAsset(publicId: string, resourceType: string) {
   }
 }
 
-async function cleanupQueuedAsset(item: Pick<QueueItem, "cloudinaryPublicId" | "cloudinaryResourceType">) {
+async function cleanupQueuedAsset(
+  item: Pick<QueueItem, "cloudinaryPublicId" | "cloudinaryResourceType">,
+) {
   if (!item.cloudinaryPublicId) {
     return;
   }
 
-  await deleteCloudinaryAsset(item.cloudinaryPublicId, item.cloudinaryResourceType).catch(
-    (error) => {
-      console.error("[v0] Failed to cleanup queued Cloudinary asset:", error);
-    },
-  );
+  await deleteCloudinaryAsset(
+    item.cloudinaryPublicId,
+    item.cloudinaryResourceType,
+  ).catch((error) => {
+    console.error("[v0] Failed to cleanup queued Cloudinary asset:", error);
+  });
 }
 
 export default function YouTubeShortsPage() {
   const router = useRouter();
   const isMobile = useIsMobile();
+  const sourceFileInputRef = useRef<HTMLInputElement | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const processingRef = useRef(false);
 
-  const [instagramAccounts, setInstagramAccounts] = useState<InstagramAccount[]>([]);
+  const [instagramAccounts, setInstagramAccounts] = useState<
+    InstagramAccount[]
+  >([]);
   const [youtubeAccounts, setYouTubeAccounts] = useState<YouTubeAccount[]>([]);
-  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(
+    null,
+  );
+  const [sourceMode, setSourceMode] = useState<"youtube" | "file">("youtube");
+  const [sourceFile, setSourceFile] = useState<File | null>(null);
   const [sourceUrl, setSourceUrl] = useState("");
-  const [segmentDurationSeconds, setSegmentDurationSeconds] = useState(30);
+  const [segmentDurationSeconds, setSegmentDurationSeconds] = useState(60);
   const [overlapSeconds, setOverlapSeconds] = useState(0);
   const [intervalMinutes, setIntervalMinutes] = useState(20);
-  const [sourceVideo, setSourceVideo] = useState<ShortsVideoMetadata | null>(null);
+  const [sourceVideo, setSourceVideo] = useState<ShortsVideoMetadata | null>(
+    null,
+  );
   const [planPreview, setPlanPreview] = useState<ShortsWindow[]>([]);
   const [titleDraft, setTitleDraft] = useState("");
   const [descriptionDraft, setDescriptionDraft] = useState("");
   const [keywordsDraft, setKeywordsDraft] = useState("");
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [recentUploads, setRecentUploads] = useState<
-    Array<{ id: string; title: string; uploadedAt: string; accountUsername: string }>
+    Array<{
+      id: string;
+      title: string;
+      uploadedAt: string;
+      accountUsername: string;
+    }>
   >([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isCreatingQueue, setIsCreatingQueue] = useState(false);
@@ -444,7 +502,8 @@ export default function YouTubeShortsPage() {
   const [isRunning, setIsRunning] = useState(false);
   const [nextRunAt, setNextRunAt] = useState<string | null>(null);
   const [isRefreshingAccounts, setIsRefreshingAccounts] = useState(false);
-  const [hasAcknowledgedMobileGuide, setHasAcknowledgedMobileGuide] = useState(false);
+  const [hasAcknowledgedMobileGuide, setHasAcknowledgedMobileGuide] =
+    useState(false);
   const [pendingYouTubeAction, setPendingYouTubeAction] =
     useState<PendingYouTubeAction | null>(null);
   const [youtubeGuideDialogOpen, setYouTubeGuideDialogOpen] = useState(false);
@@ -453,7 +512,8 @@ export default function YouTubeShortsPage() {
 
   const selectedAccount = useMemo(
     () =>
-      instagramAccounts.find((account) => account.id === selectedAccountId) || null,
+      instagramAccounts.find((account) => account.id === selectedAccountId) ||
+      null,
     [instagramAccounts, selectedAccountId],
   );
 
@@ -579,7 +639,10 @@ export default function YouTubeShortsPage() {
         persistInstagramAccounts(mergedInstagramAccounts, localStorage);
         setInstagramAccounts(mergedInstagramAccounts);
       } catch (error) {
-        console.warn("[v0] Could not refresh Instagram accounts for shorts page:", error);
+        console.warn(
+          "[v0] Could not refresh Instagram accounts for shorts page:",
+          error,
+        );
       }
     };
 
@@ -663,6 +726,26 @@ export default function YouTubeShortsPage() {
     };
   }, []);
 
+  useEffect(() => {
+    if (sourceMode !== "file" || !sourceFile || !sourceVideo) {
+      return;
+    }
+
+    const nextPlan = buildShortsPlan({
+      durationSeconds: sourceVideo.durationSeconds,
+      segmentDurationSeconds,
+      overlapSeconds,
+    });
+
+    setPlanPreview(nextPlan);
+  }, [
+    overlapSeconds,
+    segmentDurationSeconds,
+    sourceFile,
+    sourceMode,
+    sourceVideo,
+  ]);
+
   const refreshInstagramAccounts = useEffectEvent(
     async (options?: { showToast?: boolean }) => {
       const showToast = options?.showToast ?? false;
@@ -670,7 +753,9 @@ export default function YouTubeShortsPage() {
 
       if (!fbAccessToken) {
         if (showToast) {
-          toast.error("Instagram ko dubara connect karo, tab sab accounts sync honge.");
+          toast.error(
+            "Instagram ko dubara connect karo, tab sab accounts sync honge.",
+          );
         }
         return;
       }
@@ -716,7 +801,10 @@ export default function YouTubeShortsPage() {
   );
 
   const openYouTubeGuideDialog = useEffectEvent(
-    (mode: YouTubeGuideDialogMode, pendingAction?: PendingYouTubeAction | null) => {
+    (
+      mode: YouTubeGuideDialogMode,
+      pendingAction?: PendingYouTubeAction | null,
+    ) => {
       setYouTubeGuideDialogMode(mode);
       setPendingYouTubeAction(pendingAction ?? null);
       setYouTubeGuideDialogOpen(true);
@@ -752,7 +840,9 @@ export default function YouTubeShortsPage() {
     if (!selectedAccount || !selectedAccount.token) {
       setIsRunning(false);
       setNextRunAt(null);
-      toast.error("Instagram account token missing hai. Account reconnect karo.");
+      toast.error(
+        "Instagram account token missing hai. Account reconnect karo.",
+      );
       return;
     }
 
@@ -802,15 +892,17 @@ export default function YouTubeShortsPage() {
         return remainingQueue;
       });
 
-      setRecentUploads((prev) => [
-        {
-          id: `${nextItem.id}-${Date.now()}`,
-          title: nextItem.title,
-          uploadedAt: new Date().toISOString(),
-          accountUsername: selectedAccount.username,
-        },
-        ...prev,
-      ].slice(0, 8));
+      setRecentUploads((prev) =>
+        [
+          {
+            id: `${nextItem.id}-${Date.now()}`,
+            title: nextItem.title,
+            uploadedAt: new Date().toISOString(),
+            accountUsername: selectedAccount.username,
+          },
+          ...prev,
+        ].slice(0, 8),
+      );
 
       if (remainingQueue.length > 0) {
         const scheduledTime = new Date(
@@ -882,7 +974,89 @@ export default function YouTubeShortsPage() {
     setSelectedAccountId(defaultInstagramAccountId);
   };
 
+  const handleOpenSourceFilePicker = () => {
+    sourceFileInputRef.current?.click();
+  };
+
+  const clearSelectedSourceFile = () => {
+    setSourceFile(null);
+    setSourceMode("youtube");
+    setSourceVideo((currentVideo) =>
+      currentVideo?.sourceUrl?.startsWith("uploaded-file:")
+        ? null
+        : currentVideo,
+    );
+    setPlanPreview((currentPlan) =>
+      sourceVideo?.sourceUrl?.startsWith("uploaded-file:") ? [] : currentPlan,
+    );
+  };
+
+  const handleSourceFileSelected = useEffectEvent(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const nextFile = event.target.files?.[0];
+      event.target.value = "";
+
+      if (!nextFile) {
+        return;
+      }
+
+      setIsAnalyzing(true);
+
+      try {
+        const durationSeconds = await getVideoDurationFromFile(nextFile);
+        if (durationSeconds <= 0) {
+          throw new Error("Selected video ka duration read nahi hua.");
+        }
+
+        const sourceTitle =
+          stripFileExtension(nextFile.name).replace(/[_-]+/g, " ").trim() ||
+          "Uploaded Video";
+        const sourceDescription = "Device se selected source video.";
+        const sourceKeywords = deriveKeywordsFromText(sourceTitle);
+        const nextPlan = buildShortsPlan({
+          durationSeconds,
+          segmentDurationSeconds,
+          overlapSeconds,
+        });
+
+        setSourceMode("file");
+        setSourceFile(nextFile);
+        setSourceVideo({
+          sourceUrl: `uploaded-file:${nextFile.name}`,
+          title: sourceTitle,
+          description: sourceDescription,
+          keywords: sourceKeywords,
+          durationSeconds,
+          authorName: "Device Upload",
+        });
+        setPlanPreview(nextPlan);
+        setTitleDraft(sourceTitle);
+        setDescriptionDraft(sourceDescription);
+        setKeywordsDraft(sourceKeywords.join(", "));
+        setQueueBuildStatus("");
+        setYouTubeGuideDialogOpen(false);
+        setPendingYouTubeAction(null);
+        toast.success("Video file ready hai. Ab shorts generate kar sakte ho.");
+      } catch (error: any) {
+        toast.error(error.message || "Video file read nahi hui.");
+      } finally {
+        setIsAnalyzing(false);
+      }
+    },
+  );
+
   const handleAnalyze = useEffectEvent(async () => {
+    if (sourceMode === "file" && sourceFile && sourceVideo) {
+      const nextPlan = buildShortsPlan({
+        durationSeconds: sourceVideo.durationSeconds,
+        segmentDurationSeconds,
+        overlapSeconds,
+      });
+      setPlanPreview(nextPlan);
+      toast.success("Selected video file ready hai.");
+      return;
+    }
+
     const normalizedSourceUrl = normalizeYouTubeUrl(sourceUrl);
 
     if (!normalizedSourceUrl.trim()) {
@@ -938,9 +1112,11 @@ export default function YouTubeShortsPage() {
 
   const handleGenerateQueue = useEffectEvent(async () => {
     const normalizedSourceUrl = normalizeYouTubeUrl(sourceUrl);
+    const isFileSource =
+      sourceMode === "file" && Boolean(sourceFile && sourceVideo);
     const expectedShortCount = planPreview.length;
 
-    if (!normalizedSourceUrl.trim()) {
+    if (!isFileSource && !normalizedSourceUrl.trim()) {
       toast.error("YouTube URL missing hai.");
       return;
     }
@@ -950,7 +1126,7 @@ export default function YouTubeShortsPage() {
       return;
     }
 
-    if (isMobile && !hasAcknowledgedMobileGuide) {
+    if (!isFileSource && isMobile && !hasAcknowledgedMobileGuide) {
       setSourceUrl(normalizedSourceUrl);
       openYouTubeGuideDialog("mobile-guide", "generate");
       return;
@@ -979,20 +1155,45 @@ export default function YouTubeShortsPage() {
     setSourceUrl(normalizedSourceUrl);
 
     try {
-      const response = await fetch("/api/youtube/shorts/create", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          url: normalizedSourceUrl,
-          segmentDurationSeconds,
-          overlapSeconds,
-          title: titleDraft,
-          description: descriptionDraft,
-          keywords: parseKeywords(keywordsDraft),
-        }),
-      });
+      const response = isFileSource
+        ? await (async () => {
+            const formData = new FormData();
+            formData.append("file", sourceFile as File);
+            formData.append(
+              "durationSeconds",
+              String(sourceVideo?.durationSeconds || 0),
+            );
+            formData.append(
+              "segmentDurationSeconds",
+              String(segmentDurationSeconds),
+            );
+            formData.append("overlapSeconds", String(overlapSeconds));
+            formData.append("title", titleDraft);
+            formData.append("description", descriptionDraft);
+            formData.append(
+              "keywords",
+              JSON.stringify(parseKeywords(keywordsDraft)),
+            );
+
+            return fetch("/api/youtube/shorts/create-upload", {
+              method: "POST",
+              body: formData,
+            });
+          })()
+        : await fetch("/api/youtube/shorts/create", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              url: normalizedSourceUrl,
+              segmentDurationSeconds,
+              overlapSeconds,
+              title: titleDraft,
+              description: descriptionDraft,
+              keywords: parseKeywords(keywordsDraft),
+            }),
+          });
 
       const data = await response.json();
       if (!response.ok) {
@@ -1015,7 +1216,9 @@ export default function YouTubeShortsPage() {
 
       setSourceVideo(data.video);
       setPlanPreview(data.queue || []);
-      setSourceUrl(data.video?.sourceUrl || normalizedSourceUrl);
+      setSourceUrl(
+        isFileSource ? "" : data.video?.sourceUrl || normalizedSourceUrl,
+      );
       setQueue((prev) => [...prev, ...nextItems]);
       setQueueBuildStatus("Server-side audio-safe shorts ready hain.");
       setDownloadProgress({
@@ -1023,7 +1226,9 @@ export default function YouTubeShortsPage() {
         percent: 100,
         loadedBytes: 0,
         totalBytes: null,
-        status: "Source video temp process complete.",
+        status: isFileSource
+          ? "Selected source file process complete."
+          : "Source video temp process complete.",
       });
       setCreationProgress({
         phase: "complete",
@@ -1100,13 +1305,17 @@ export default function YouTubeShortsPage() {
     setNextRunAt(null);
     setQueue([]);
 
-    await Promise.allSettled(removableItems.map((item) => cleanupQueuedAsset(item)));
+    await Promise.allSettled(
+      removableItems.map((item) => cleanupQueuedAsset(item)),
+    );
     toast.success("Queue clear ho gayi.");
   };
 
   const updateQueueItem = (
     id: string,
-    changes: Partial<Pick<QueueItem, "title" | "description" | "caption" | "keywords">>,
+    changes: Partial<
+      Pick<QueueItem, "title" | "description" | "caption" | "keywords">
+    >,
   ) => {
     setQueue((prev) =>
       prev.map((item) => (item.id === id ? { ...item, ...changes } : item)),
@@ -1129,7 +1338,10 @@ export default function YouTubeShortsPage() {
 
   const suggestedFinishTime =
     queue.length > 0
-      ? new Date(Date.now() + Math.max(queue.length - 1, 0) * intervalMinutes * 60 * 1000)
+      ? new Date(
+          Date.now() +
+            Math.max(queue.length - 1, 0) * intervalMinutes * 60 * 1000,
+        )
       : null;
   const showBuildProgress =
     isCreatingQueue ||
@@ -1139,7 +1351,10 @@ export default function YouTubeShortsPage() {
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,#43237a_0%,#1f1147_34%,#120622_68%,#090014_100%)] text-white">
-      <Dialog open={youtubeGuideDialogOpen} onOpenChange={setYouTubeGuideDialogOpen}>
+      <Dialog
+        open={youtubeGuideDialogOpen}
+        onOpenChange={setYouTubeGuideDialogOpen}
+      >
         <DialogContent className="max-w-[calc(100%-1.5rem)] border-violet-300/20 bg-[#120622] p-0 text-white sm:max-w-lg">
           <div className="rounded-3xl bg-[radial-gradient(circle_at_top,#4c1d95_0%,#1d0f35_48%,#0b0617_100%)] p-6">
             <DialogHeader>
@@ -1151,8 +1366,8 @@ export default function YouTubeShortsPage() {
               </DialogTitle>
               <DialogDescription className="text-sm leading-6 text-white/70">
                 {youtubeGuideDialogMode === "mobile-guide"
-                  ? "Mobile/shared links auto-normalize ho jayenge. Continue karne se pehle bas confirm kar lo ki agar YouTube extra verification maange to popup wali guide follow karoge."
-                  : "Is video par YouTube ne extra verification maangi hai. Raw error ki jagah yahan clean steps dikh rahe hain."}
+                  ? "Mobile/shared links auto-normalize ho jayenge. Agar YouTube block kare to direct phone video file se bhi shorts bana sakte ho."
+                  : "Is video par YouTube ne extra verification maangi hai. Raw error ki jagah yahan clean steps aur direct file fallback diya gaya hai."}
               </DialogDescription>
             </DialogHeader>
 
@@ -1163,10 +1378,21 @@ export default function YouTubeShortsPage() {
                   : "Next step ye rakho:"}
               </p>
               <div className="mt-3 space-y-2">
-                <p>1. Link ko app automatically normal YouTube watch URL me clean karega.</p>
-                <p>2. Agar YouTube allow kare to shorts normally create ho jayengi.</p>
                 <p>
-                  3. Agar block repeat ho to desktop/browser cookies ko
+                  1. Link ko app automatically normal YouTube watch URL me clean
+                  karega.
+                </p>
+                <p>
+                  2. Agar YouTube allow kare to shorts normally create ho
+                  jayengi.
+                </p>
+                <p>
+                  3. Agar block repeat ho to direct phone se video file select
+                  karke bina cookies ke bhi continue kar sakte ho.
+                </p>
+                <p>
+                  4. Agar fir bhi URL mode hi use karna hai to desktop/browser
+                  cookies ko
                   <span className="mx-1 rounded bg-white/10 px-1.5 py-0.5 font-mono text-xs text-violet-100">
                     YOUTUBE_COOKIES_FILE
                   </span>
@@ -1180,7 +1406,9 @@ export default function YouTubeShortsPage() {
             </div>
 
             <div className="mt-4 rounded-2xl border border-amber-300/15 bg-amber-400/10 p-4 text-xs leading-6 text-amber-100">
-              Mobile par direct cookie setup possible nahi hota. Agar same video baar-baar block ho to ek baar desktop browser se YouTube login karke cookies export karni padengi.
+              Mobile par direct cookie setup possible nahi hota. Agar same video
+              baar-baar block ho to ek baar desktop browser se YouTube login
+              karke cookies export karni padengi.
             </div>
 
             <DialogFooter className="mt-6">
@@ -1199,6 +1427,19 @@ export default function YouTubeShortsPage() {
                   <button
                     type="button"
                     onClick={() => {
+                      handleOpenSourceFilePicker();
+                      rememberMobileGuideAcknowledgement();
+                      setYouTubeGuideDialogOpen(false);
+                      setPendingYouTubeAction(null);
+                    }}
+                    className="inline-flex items-center justify-center gap-2 rounded-2xl border border-violet-300/20 bg-white/5 px-4 py-3 text-sm font-medium text-white transition-colors hover:bg-white/10"
+                  >
+                    <Upload className="h-4 w-4" />
+                    Use Video File
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
                       completePendingYouTubeAction();
                     }}
                     className="inline-flex items-center justify-center rounded-2xl bg-gradient-to-r from-violet-500 via-fuchsia-500 to-indigo-500 px-4 py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90"
@@ -1207,17 +1448,32 @@ export default function YouTubeShortsPage() {
                   </button>
                 </>
               ) : (
-                <button
-                  type="button"
-                  onClick={() => {
-                    rememberMobileGuideAcknowledgement();
-                    setYouTubeGuideDialogOpen(false);
-                    setPendingYouTubeAction(null);
-                  }}
-                  className="inline-flex items-center justify-center rounded-2xl bg-gradient-to-r from-violet-500 via-fuchsia-500 to-indigo-500 px-4 py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90"
-                >
-                  Theek Hai
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleOpenSourceFilePicker();
+                      rememberMobileGuideAcknowledgement();
+                      setYouTubeGuideDialogOpen(false);
+                      setPendingYouTubeAction(null);
+                    }}
+                    className="inline-flex items-center justify-center gap-2 rounded-2xl border border-violet-300/20 bg-white/5 px-4 py-3 text-sm font-medium text-white transition-colors hover:bg-white/10"
+                  >
+                    <Upload className="h-4 w-4" />
+                    Select Video File
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      rememberMobileGuideAcknowledgement();
+                      setYouTubeGuideDialogOpen(false);
+                      setPendingYouTubeAction(null);
+                    }}
+                    className="inline-flex items-center justify-center rounded-2xl bg-gradient-to-r from-violet-500 via-fuchsia-500 to-indigo-500 px-4 py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+                  >
+                    Theek Hai
+                  </button>
+                </>
               )}
             </DialogFooter>
           </div>
@@ -1240,7 +1496,9 @@ export default function YouTubeShortsPage() {
               <p className="text-xs uppercase tracking-[0.35em] text-fuchsia-200/70">
                 YouTube to Instagram
               </p>
-              <h1 className="text-2xl font-semibold">Shorts Automation Studio</h1>
+              <h1 className="text-2xl font-semibold">
+                Shorts Automation Studio
+              </h1>
             </div>
           </div>
 
@@ -1275,7 +1533,9 @@ export default function YouTubeShortsPage() {
         {isMobile ? (
           <div className="mb-4 grid gap-3 grid-cols-2">
             <div className="rounded-3xl border border-white/10 bg-white/5 p-4">
-              <div className="text-2xl font-semibold text-white">{queueStats.total}</div>
+              <div className="text-2xl font-semibold text-white">
+                {queueStats.total}
+              </div>
               <p className="mt-1 text-xs text-white/55">Queue</p>
             </div>
             <div className="rounded-3xl border border-violet-300/20 bg-violet-400/10 p-4">
@@ -1284,56 +1544,115 @@ export default function YouTubeShortsPage() {
               </div>
               <p className="mt-1 text-xs text-violet-100/80">Selected target</p>
             </div>
+            {allConnectedAccounts.length > 0 ? (
+              <div className="col-span-2 rounded-3xl border border-white/10 bg-white/5 p-4">
+                <div className="flex items-center justify-between gap-3 text-sm text-white/80">
+                  <span className="font-medium">My Accounts</span>
+                  <span className="text-xs text-white/45">
+                    IG {compactConnectedAccountSummary.instagram} • YT{" "}
+                    {compactConnectedAccountSummary.youtube}
+                  </span>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {allConnectedAccounts.map((account) => (
+                    <div
+                      key={account.id}
+                      className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-slate-950/50 px-3 py-2 text-xs text-white/75"
+                    >
+                      {account.imageUrl ? (
+                        <img
+                          src={account.imageUrl}
+                          alt={account.label}
+                          className="h-5 w-5 rounded-full object-cover"
+                        />
+                      ) : null}
+                      {account.platform === "instagram" ? (
+                        <Instagram className="h-3.5 w-3.5 text-pink-300" />
+                      ) : (
+                        <Youtube className="h-3.5 w-3.5 text-red-300" />
+                      )}
+                      <span>{account.label}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </div>
         ) : (
           <>
             <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
               <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
-                <div className="text-3xl font-semibold text-white">{queueStats.total}</div>
+                <div className="text-3xl font-semibold text-white">
+                  {queueStats.total}
+                </div>
                 <p className="mt-2 text-sm text-white/55">Shorts in queue</p>
               </div>
               <div className="rounded-3xl border border-violet-300/20 bg-violet-400/10 p-5">
-                <div className="text-3xl font-semibold text-violet-100">{queueStats.queued}</div>
-                <p className="mt-2 text-sm text-violet-100/80">Ready to upload</p>
+                <div className="text-3xl font-semibold text-violet-100">
+                  {queueStats.queued}
+                </div>
+                <p className="mt-2 text-sm text-violet-100/80">
+                  Ready to upload
+                </p>
               </div>
               <div className="rounded-3xl border border-fuchsia-300/20 bg-fuchsia-500/10 p-5">
                 <div className="text-3xl font-semibold text-fuchsia-100">
                   {intervalMinutes}m
                 </div>
-                <p className="mt-2 text-sm text-fuchsia-100/80">Gap after success</p>
+                <p className="mt-2 text-sm text-fuchsia-100/80">
+                  Gap after success
+                </p>
               </div>
               <div className="rounded-3xl border border-indigo-300/20 bg-indigo-500/10 p-5">
                 <div className="text-lg font-semibold text-indigo-100">
                   {formatDateTime(nextRunAt)}
                 </div>
-                <p className="mt-2 text-sm text-indigo-100/80">Next scheduled upload</p>
+                <p className="mt-2 text-sm text-indigo-100/80">
+                  Next scheduled upload
+                </p>
               </div>
             </div>
 
             <div className="mb-6 rounded-3xl border border-violet-300/20 bg-violet-400/10 p-4 text-sm text-violet-100">
-              Queue automation browser tab me run hoti hai. Best result ke liye page open rakho jab tak last short upload na ho jaye.
+              Queue automation browser tab me run hoti hai. Best result ke liye
+              page open rakho jab tak last short upload na ho jaye.
             </div>
 
             <div className="mb-6 grid gap-4 md:grid-cols-3">
               <div className="rounded-3xl border border-violet-300/20 bg-white/5 p-5 shadow-[0_20px_50px_rgba(91,33,182,0.2)]">
-                <p className="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">Local Source</p>
-                <h2 className="mt-2 text-lg font-semibold text-white">YouTube video local me</h2>
+                <p className="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">
+                  Local Source
+                </p>
+                <h2 className="mt-2 text-lg font-semibold text-white">
+                  YouTube video local me
+                </h2>
                 <p className="mt-2 text-sm text-white/55">
-                  Source video browser ke liye direct download hota hai, storage me park nahi hota.
+                  Source video browser ke liye direct download hota hai, storage
+                  me park nahi hota.
                 </p>
               </div>
               <div className="rounded-3xl border border-violet-300/20 bg-white/5 p-5 shadow-[0_20px_50px_rgba(91,33,182,0.2)]">
-                <p className="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">Shorts Storage</p>
-                <h2 className="mt-2 text-lg font-semibold text-white">Sirf shorts save honge</h2>
+                <p className="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">
+                  Shorts Storage
+                </p>
+                <h2 className="mt-2 text-lg font-semibold text-white">
+                  Sirf shorts save honge
+                </h2>
                 <p className="mt-2 text-sm text-white/55">
-                  Har created short Cloudinary par save hokar queue me turant add hota chala jayega.
+                  Har created short Cloudinary par save hokar queue me turant
+                  add hota chala jayega.
                 </p>
               </div>
               <div className="rounded-3xl border border-violet-300/20 bg-white/5 p-5 shadow-[0_20px_50px_rgba(91,33,182,0.2)]">
-                <p className="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">Auto Cleanup</p>
-                <h2 className="mt-2 text-lg font-semibold text-white">Upload ke baad delete</h2>
+                <p className="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">
+                  Auto Cleanup
+                </p>
+                <h2 className="mt-2 text-lg font-semibold text-white">
+                  Upload ke baad delete
+                </h2>
                 <p className="mt-2 text-sm text-white/55">
-                  Instagram publish success hote hi short Cloudinary se auto remove ho jayega.
+                  Instagram publish success hote hi short Cloudinary se auto
+                  remove ho jayega.
                 </p>
               </div>
             </div>
@@ -1376,7 +1695,9 @@ export default function YouTubeShortsPage() {
               </div>
 
               <div className="mt-3 flex flex-wrap items-center gap-3 text-sm text-white/65">
-                <span>{formatBytes(downloadProgress.loadedBytes)} transferred</span>
+                <span>
+                  {formatBytes(downloadProgress.loadedBytes)} transferred
+                </span>
                 <span>
                   {downloadProgress.totalBytes
                     ? `of ${formatBytes(downloadProgress.totalBytes)}`
@@ -1395,7 +1716,8 @@ export default function YouTubeShortsPage() {
                     Shorts kitni create hui
                   </h3>
                   <p className="mt-2 text-sm text-white/55">
-                    {creationProgress.status || "Abhi shorts creation start nahi hui."}
+                    {creationProgress.status ||
+                      "Abhi shorts creation start nahi hui."}
                   </p>
                 </div>
                 <div className="rounded-2xl border border-violet-300/15 bg-violet-400/10 px-3 py-2 text-sm font-semibold text-violet-100">
@@ -1431,12 +1753,24 @@ export default function YouTubeShortsPage() {
                 <div>
                   <h2 className="text-lg font-semibold">1. YouTube Source</h2>
                   <p className="text-sm text-white/55">
-                    Long video URL dalo, metadata fetch karo, phir local source video ko split karke shorts queue banao. Mobile share links bhi auto-clean ho jayenge.
+                    Long video URL dalo, metadata fetch karo, phir local source
+                    video ko split karke shorts queue banao. Mobile share links
+                    bhi auto-clean ho jayenge.
                   </p>
                 </div>
               </div>
 
               <div className="space-y-4">
+                <input
+                  ref={sourceFileInputRef}
+                  type="file"
+                  accept="video/*"
+                  onChange={(event) => {
+                    void handleSourceFileSelected(event);
+                  }}
+                  className="hidden"
+                />
+
                 {isMobile ? (
                   <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
                     <div className="flex items-center justify-between gap-3 text-sm text-white/80">
@@ -1464,7 +1798,9 @@ export default function YouTubeShortsPage() {
                   <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
                     <div className="flex items-center gap-2 text-sm font-medium text-white/80">
                       <Youtube className="h-4 w-4 text-fuchsia-300" />
-                      <span>All connected accounts ({allConnectedAccounts.length})</span>
+                      <span>
+                        All connected accounts ({allConnectedAccounts.length})
+                      </span>
                     </div>
                     <div className="mt-3 flex flex-wrap gap-2">
                       {allConnectedAccounts.map((account) => (
@@ -1489,7 +1825,8 @@ export default function YouTubeShortsPage() {
                       ))}
                     </div>
                     <p className="mt-3 text-xs text-white/45">
-                      Instagram + YouTube dono yahan visible hain. Actual upload target neeche Instagram section me select hota hai.
+                      Instagram + YouTube dono yahan visible hain. Actual upload
+                      target neeche Instagram section me select hota hai.
                     </p>
                   </div>
                 ) : null}
@@ -1497,12 +1834,86 @@ export default function YouTubeShortsPage() {
                 <input
                   type="url"
                   value={sourceUrl}
-                  onChange={(event) => setSourceUrl(event.target.value)}
+                  onChange={(event) => {
+                    setSourceMode("youtube");
+                    setSourceUrl(event.target.value);
+                  }}
                   placeholder="https://youtu.be/... ya https://youtube.com/shorts/..."
                   className="w-full rounded-2xl border border-white/10 bg-slate-950/50 px-4 py-3 text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-violet-400"
                 />
 
-                <div className={`grid gap-3 ${isMobile ? "grid-cols-1" : "sm:grid-cols-3"}`}>
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSourceMode("youtube");
+                    }}
+                    className={`inline-flex items-center justify-center rounded-2xl px-4 py-2 text-sm font-semibold transition-colors ${
+                      sourceMode === "youtube"
+                        ? "bg-violet-500 text-white"
+                        : "border border-white/10 bg-white/5 text-white/75 hover:bg-white/10"
+                    }`}
+                  >
+                    Use YouTube Link
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleOpenSourceFilePicker}
+                    className={`inline-flex items-center justify-center gap-2 rounded-2xl px-4 py-2 text-sm font-semibold transition-colors ${
+                      sourceMode === "file"
+                        ? "bg-violet-500 text-white"
+                        : "border border-white/10 bg-white/5 text-white/75 hover:bg-white/10"
+                    }`}
+                  >
+                    <Upload className="h-4 w-4" />
+                    Use Video File
+                  </button>
+                </div>
+
+                {sourceFile ? (
+                  <div className="rounded-2xl border border-violet-300/20 bg-violet-500/10 p-4 text-sm text-violet-100">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="font-medium text-white">
+                          {sourceFile.name}
+                        </p>
+                        <p className="mt-1 text-xs text-violet-100/80">
+                          {formatBytes(sourceFile.size)} •{" "}
+                          {sourceMode === "file"
+                            ? "Active source: phone video file"
+                            : "Saved file fallback ready"}
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSourceMode("file");
+                          }}
+                          className="rounded-xl border border-violet-300/20 bg-white/5 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-white/10"
+                        >
+                          Use This File
+                        </button>
+                        <button
+                          type="button"
+                          onClick={clearSelectedSourceFile}
+                          className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-white/80 transition-colors hover:bg-white/10"
+                        >
+                          Remove File
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-4 text-sm text-white/55">
+                    YouTube block aaye to phone gallery/files se direct video
+                    select karke bina cookies ke continue kar sakte ho.
+                  </div>
+                )}
+
+                <div
+                  className={`grid gap-3 ${isMobile ? "grid-cols-1" : "sm:grid-cols-3"}`}
+                >
                   <label className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
                     <div className="text-xs uppercase tracking-[0.2em] text-white/45">
                       Clip Seconds
@@ -1514,7 +1925,13 @@ export default function YouTubeShortsPage() {
                       value={segmentDurationSeconds}
                       onChange={(event) =>
                         setSegmentDurationSeconds(
-                          Math.max(10, Math.min(30, Number.parseInt(event.target.value) || 30)),
+                          Math.max(
+                            10,
+                            Math.min(
+                              60,
+                              Number.parseInt(event.target.value) || 30,
+                            ),
+                          ),
                         )
                       }
                       className="mt-3 w-full bg-transparent text-2xl font-semibold text-white outline-none"
@@ -1532,7 +1949,13 @@ export default function YouTubeShortsPage() {
                       value={overlapSeconds}
                       onChange={(event) =>
                         setOverlapSeconds(
-                          Math.max(0, Math.min(15, Number.parseInt(event.target.value) || 0)),
+                          Math.max(
+                            0,
+                            Math.min(
+                              15,
+                              Number.parseInt(event.target.value) || 0,
+                            ),
+                          ),
                         )
                       }
                       className="mt-3 w-full bg-transparent text-2xl font-semibold text-white outline-none"
@@ -1548,7 +1971,12 @@ export default function YouTubeShortsPage() {
                       min="1"
                       value={intervalMinutes}
                       onChange={(event) =>
-                        setIntervalMinutes(Math.max(1, Number.parseInt(event.target.value) || 20))
+                        setIntervalMinutes(
+                          Math.max(
+                            1,
+                            Number.parseInt(event.target.value) || 20,
+                          ),
+                        )
                       }
                       className="mt-3 w-full bg-transparent text-2xl font-semibold text-white outline-none"
                     />
@@ -1566,7 +1994,9 @@ export default function YouTubeShortsPage() {
                     ) : (
                       <Sparkles className="h-4 w-4" />
                     )}
-                    Fetch Video Details
+                    {sourceMode === "file"
+                      ? "Use Selected File"
+                      : "Fetch Video Details"}
                   </button>
                   <button
                     onClick={handleGenerateQueue}
@@ -1578,7 +2008,9 @@ export default function YouTubeShortsPage() {
                     ) : (
                       <Scissors className="h-4 w-4" />
                     )}
-                    Generate Shorts Queue
+                    {sourceMode === "file"
+                      ? "Create Shorts From File"
+                      : "Generate Shorts Queue"}
                   </button>
                 </div>
 
@@ -1596,7 +2028,9 @@ export default function YouTubeShortsPage() {
                 <div>
                   <h2 className="text-lg font-semibold">2. Instagram Target</h2>
                   <p className="text-sm text-white/55">
-                    Primary ya last-used account by default aayega. Kisi card ko tap karke select karo, aur dubara tap karke unselect bhi kar sakte ho.
+                    Primary ya last-used account by default aayega. Kisi card ko
+                    tap karke select karo, aur dubara tap karke unselect bhi kar
+                    sakte ho.
                   </p>
                 </div>
               </div>
@@ -1605,7 +2039,8 @@ export default function YouTubeShortsPage() {
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <p>
                     {instagramAccounts.length} Instagram target account
-                    {instagramAccounts.length === 1 ? "" : "s"} synced. Default target dashboard ya primary account se pick hota hai.
+                    {instagramAccounts.length === 1 ? "" : "s"} synced. Default
+                    target dashboard ya primary account se pick hota hai.
                   </p>
                   <div className="flex flex-wrap gap-2">
                     <button
@@ -1635,7 +2070,8 @@ export default function YouTubeShortsPage() {
 
               {instagramAccounts.length === 0 ? (
                 <div className="rounded-2xl border border-red-400/20 bg-red-500/10 p-4 text-sm text-red-100">
-                  Instagram account connected nahi hai. Dashboard ya login page se pehle connect karo.
+                  Instagram account connected nahi hai. Dashboard ya login page
+                  se pehle connect karo.
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -1650,14 +2086,15 @@ export default function YouTubeShortsPage() {
                     >
                       <img
                         src={
-                          account.profile_picture_url ||
-                          "/placeholder-user.jpg"
+                          account.profile_picture_url || "/placeholder-user.jpg"
                         }
                         alt={account.username}
                         className="h-12 w-12 rounded-full object-cover"
                       />
                       <div className="flex-1">
-                        <p className="font-medium text-white">@{account.username}</p>
+                        <p className="font-medium text-white">
+                          @{account.username}
+                        </p>
                         <p className="text-xs text-white/45">
                           {selectedAccountId === account.id
                             ? "Ye account abhi upload target hai."
@@ -1677,7 +2114,9 @@ export default function YouTubeShortsPage() {
                               : "bg-violet-500 text-white hover:bg-violet-400"
                           }`}
                         >
-                          {selectedAccountId === account.id ? "Deselect" : "Select"}
+                          {selectedAccountId === account.id
+                            ? "Deselect"
+                            : "Select"}
                         </button>
                       </div>
                     </div>
@@ -1686,7 +2125,8 @@ export default function YouTubeShortsPage() {
               )}
 
               <div className="mt-4 rounded-2xl border border-violet-400/20 bg-violet-500/10 p-4 text-sm text-violet-100">
-                Successful upload ke turant baad Cloudinary short auto-delete ho jayega.
+                Successful upload ke turant baad Cloudinary short auto-delete ho
+                jayega.
               </div>
             </section>
 
@@ -1694,7 +2134,8 @@ export default function YouTubeShortsPage() {
               <div className="mb-5">
                 <h2 className="text-lg font-semibold">3. Metadata + Plan</h2>
                 <p className="text-sm text-white/55">
-                  Title, description, keywords edit kar sakte ho. Har clip ka caption inhi se regenerate hota hai.
+                  Title, description, keywords edit kar sakte ho. Har clip ka
+                  caption inhi se regenerate hota hai.
                 </p>
               </div>
 
@@ -1720,11 +2161,14 @@ export default function YouTubeShortsPage() {
                         {sourceVideo.title}
                       </h3>
                       <p className="mt-2 text-sm text-white/55">
-                        Duration: {formatSeconds(sourceVideo.durationSeconds)} | Shorts planned:{" "}
-                        {planPreview.length}
+                        Duration: {formatSeconds(sourceVideo.durationSeconds)} |
+                        Shorts planned: {planPreview.length}
                       </p>
                       <p className="mt-2 text-sm text-white/45">
-                        Channel: {sourceVideo.authorName || "Unknown"}
+                        Source:{" "}
+                        {sourceMode === "file"
+                          ? "Uploaded video file"
+                          : sourceVideo.authorName || "Unknown"}
                       </p>
                     </div>
                   </div>
@@ -1739,7 +2183,9 @@ export default function YouTubeShortsPage() {
 
                   <textarea
                     value={descriptionDraft}
-                    onChange={(event) => setDescriptionDraft(event.target.value)}
+                    onChange={(event) =>
+                      setDescriptionDraft(event.target.value)
+                    }
                     rows={5}
                     placeholder="Shorts description base"
                     className="w-full rounded-2xl border border-white/10 bg-slate-950/50 px-4 py-3 text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-violet-400"
@@ -1756,7 +2202,9 @@ export default function YouTubeShortsPage() {
                   <div className="rounded-2xl border border-violet-300/15 bg-violet-500/10 p-4">
                     <div className="mb-3 flex items-center gap-2 text-violet-100">
                       <Clock3 className="h-4 w-4" />
-                      <span className="text-sm font-medium">Overlap preview</span>
+                      <span className="text-sm font-medium">
+                        Overlap preview
+                      </span>
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {planPreview.slice(0, 10).map((segment) => (
@@ -1785,12 +2233,14 @@ export default function YouTubeShortsPage() {
                 <div>
                   <h2 className="text-lg font-semibold">4. Upload Queue</h2>
                   <p className="text-sm text-white/55">
-                    First short abhi jayega. Har next short previous success ke {intervalMinutes} minute baad जाएगा.
+                    First short abhi jayega. Har next short previous success ke{" "}
+                    {intervalMinutes} minute baad जाएगा.
                   </p>
                 </div>
                 {!isMobile && suggestedFinishTime ? (
                   <div className="rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-2 text-xs text-white/60">
-                    Estimated finish: {formatDateTime(suggestedFinishTime.toISOString())}
+                    Estimated finish:{" "}
+                    {formatDateTime(suggestedFinishTime.toISOString())}
                   </div>
                 ) : null}
               </div>
@@ -1824,7 +2274,9 @@ export default function YouTubeShortsPage() {
 
               {queue.length === 0 ? (
                 <div className="rounded-3xl border border-dashed border-white/10 bg-slate-950/40 p-12 text-center">
-                  <p className="text-lg font-medium text-white/70">Queue empty hai</p>
+                  <p className="text-lg font-medium text-white/70">
+                    Queue empty hai
+                  </p>
                   <p className="mt-2 text-sm text-white/45">
                     YouTube URL analyze karke shorts generate karo.
                   </p>
@@ -1851,7 +2303,8 @@ export default function YouTubeShortsPage() {
                             {item.title}
                           </h3>
                           <p className="mt-2 text-sm text-white/50">
-                            Duration {item.durationSeconds}s | Source {item.sourceTitle}
+                            Duration {item.durationSeconds}s | Source{" "}
+                            {item.sourceTitle}
                           </p>
                         </div>
 
@@ -1885,7 +2338,9 @@ export default function YouTubeShortsPage() {
                           type="text"
                           value={item.title}
                           onChange={(event) =>
-                            updateQueueItem(item.id, { title: event.target.value })
+                            updateQueueItem(item.id, {
+                              title: event.target.value,
+                            })
                           }
                           className="w-full rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-violet-400"
                         />
@@ -1938,37 +2393,41 @@ export default function YouTubeShortsPage() {
 
             {!isMobile || recentUploads.length > 0 ? (
               <section className="rounded-3xl border border-white/10 bg-white/5 p-5 shadow-[0_24px_70px_rgba(76,29,149,0.22)] backdrop-blur-xl sm:p-6">
-              <div className="mb-4">
-                <h2 className="text-lg font-semibold">Recent Uploads</h2>
-                <p className="text-sm text-white/55">
-                  Success hone par item queue se remove ho jayega aur yahan history me dikhega.
-                </p>
-              </div>
-
-              {recentUploads.length === 0 ? (
-                <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-6 text-sm text-white/45">
-                  Abhi tak koi short upload nahi hua.
+                <div className="mb-4">
+                  <h2 className="text-lg font-semibold">Recent Uploads</h2>
+                  <p className="text-sm text-white/55">
+                    Success hone par item queue se remove ho jayega aur yahan
+                    history me dikhega.
+                  </p>
                 </div>
-              ) : (
-                <div className="space-y-3">
-                  {recentUploads.map((item) => (
-                    <div
-                      key={item.id}
-                      className="rounded-2xl border border-violet-300/20 bg-violet-500/10 p-4"
-                    >
-                      <div className="flex items-start gap-3">
-                        <CheckCircle2 className="mt-0.5 h-5 w-5 text-violet-200" />
-                        <div>
-                          <p className="font-medium text-violet-50">{item.title}</p>
-                          <p className="mt-1 text-sm text-violet-100/80">
-                            @{item.accountUsername} • {formatDateTime(item.uploadedAt)}
-                          </p>
+
+                {recentUploads.length === 0 ? (
+                  <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-6 text-sm text-white/45">
+                    Abhi tak koi short upload nahi hua.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {recentUploads.map((item) => (
+                      <div
+                        key={item.id}
+                        className="rounded-2xl border border-violet-300/20 bg-violet-500/10 p-4"
+                      >
+                        <div className="flex items-start gap-3">
+                          <CheckCircle2 className="mt-0.5 h-5 w-5 text-violet-200" />
+                          <div>
+                            <p className="font-medium text-violet-50">
+                              {item.title}
+                            </p>
+                            <p className="mt-1 text-sm text-violet-100/80">
+                              @{item.accountUsername} •{" "}
+                              {formatDateTime(item.uploadedAt)}
+                            </p>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
-              )}
+                    ))}
+                  </div>
+                )}
               </section>
             ) : null}
           </div>

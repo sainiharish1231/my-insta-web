@@ -645,6 +645,98 @@ async function uploadClipToCloudinary({
   };
 }
 
+async function buildShortAssetsFromPreparedSource({
+  sourcePath,
+  sourceUrl,
+  videoId,
+  sourceTitle,
+  sourceDescription,
+  sourceKeywords,
+  durationSeconds,
+  thumbnailUrl,
+  authorName,
+  segmentDurationSeconds,
+  overlapSeconds,
+  uploadFolder,
+}: {
+  sourcePath: string;
+  sourceUrl: string;
+  videoId?: string;
+  sourceTitle: string;
+  sourceDescription: string;
+  sourceKeywords: string[];
+  durationSeconds: number;
+  thumbnailUrl?: string;
+  authorName?: string;
+  segmentDurationSeconds: number;
+  overlapSeconds: number;
+  uploadFolder: string;
+}) {
+  const plan = buildShortsPlan({
+    durationSeconds,
+    segmentDurationSeconds,
+    overlapSeconds,
+  });
+
+  if (plan.length === 0) {
+    throw new Error("This video is too short to split into shorts.");
+  }
+
+  const tempRoot = path.dirname(sourcePath);
+  const generatedAssets: GeneratedShortAsset[] = [];
+
+  for (const segment of plan) {
+    const clipFilename = `${sanitizePathPart(segment.id)}.mp4`;
+    const clipPath = path.join(tempRoot, clipFilename);
+
+    await renderVerticalShort({
+      inputPath: sourcePath,
+      outputPath: clipPath,
+      startSeconds: segment.startSeconds,
+      durationSeconds: segment.durationSeconds,
+    });
+
+    const uploadedAsset = await uploadClipToCloudinary({
+      filePath: clipPath,
+      folder: uploadFolder,
+      publicId: sanitizePathPart(segment.id),
+    });
+
+    const generatedCopy = buildGeneratedShortCopy({
+      originalTitle: sourceTitle,
+      originalDescription: sourceDescription,
+      originalKeywords: sourceKeywords,
+      segment,
+      totalSegments: plan.length,
+    });
+
+    generatedAssets.push({
+      ...segment,
+      ...generatedCopy,
+      ...uploadedAsset,
+    });
+
+    await unlink(clipPath).catch(() => undefined);
+  }
+
+  const video: ShortsVideoMetadata = {
+    sourceUrl,
+    videoId,
+    title: sourceTitle,
+    description: sourceDescription,
+    keywords: sourceKeywords,
+    durationSeconds,
+    thumbnailUrl,
+    authorName,
+  };
+
+  return {
+    video,
+    queue: generatedAssets,
+    uploadFolder,
+  };
+}
+
 export async function getYouTubeShortsMetadata({
   sourceUrl,
   segmentDurationSeconds = 30,
@@ -820,68 +912,94 @@ export async function buildYouTubeShortAssets({
         ? keywords
         : metadata.keywords;
     const durationSeconds = Number(metadata.durationSeconds || 0);
-    const plan = buildShortsPlan({
-      durationSeconds,
-      segmentDurationSeconds,
-      overlapSeconds,
-    });
 
-    if (plan.length === 0) {
-      throw new Error("This video is too short to split into 10-15 second shorts.");
-    }
-
-    const generatedAssets: GeneratedShortAsset[] = [];
-
-    for (const segment of plan) {
-      const clipFilename = `${sanitizePathPart(segment.id)}.mp4`;
-      const clipPath = path.join(tempRoot, clipFilename);
-
-      await renderVerticalShort({
-        inputPath: sourcePath,
-        outputPath: clipPath,
-        startSeconds: segment.startSeconds,
-        durationSeconds: segment.durationSeconds,
-      });
-
-      const uploadedAsset = await uploadClipToCloudinary({
-        filePath: clipPath,
-        folder: uploadFolder,
-        publicId: sanitizePathPart(segment.id),
-      });
-
-      const generatedCopy = buildGeneratedShortCopy({
-        originalTitle: sourceTitle,
-        originalDescription: sourceDescription,
-        originalKeywords: sourceKeywords,
-        segment,
-        totalSegments: plan.length,
-      });
-
-      generatedAssets.push({
-        ...segment,
-        ...generatedCopy,
-        ...uploadedAsset,
-      });
-
-      await unlink(clipPath).catch(() => undefined);
-    }
-
-    const video: ShortsVideoMetadata = {
+    return await buildShortAssetsFromPreparedSource({
+      sourcePath,
       sourceUrl: normalizedSourceUrl,
       videoId: metadata.videoId,
-      title: sourceTitle,
-      description: sourceDescription,
-      keywords: sourceKeywords,
+      sourceTitle,
+      sourceDescription,
+      sourceKeywords,
       durationSeconds,
       thumbnailUrl: metadata.thumbnailUrl,
       authorName: metadata.authorName,
-    };
-
-    return {
-      video,
-      queue: generatedAssets,
+      segmentDurationSeconds,
+      overlapSeconds,
       uploadFolder,
-    };
+    });
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+export async function buildUploadedVideoShortAssets({
+  fileBuffer,
+  fileName,
+  contentType,
+  durationSeconds,
+  segmentDurationSeconds = 15,
+  overlapSeconds = 5,
+  title,
+  description,
+  keywords = [],
+}: {
+  fileBuffer: Buffer;
+  fileName: string;
+  contentType?: string;
+  durationSeconds: number;
+  segmentDurationSeconds?: number;
+  overlapSeconds?: number;
+  title?: string;
+  description?: string;
+  keywords?: string[];
+}) {
+  if (!fileBuffer.length) {
+    throw new Error("Uploaded video file is empty.");
+  }
+
+  const safeDurationSeconds = Math.max(0, Math.floor(durationSeconds));
+  if (safeDurationSeconds <= 0) {
+    throw new Error("Uploaded video duration invalid hai. Dusri file try karo.");
+  }
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "uploaded-youtube-shorts-"));
+  const extension =
+    path.extname(fileName) ||
+    (contentType?.includes("webm")
+      ? ".webm"
+      : contentType?.includes("quicktime")
+        ? ".mov"
+        : ".mp4");
+  const sanitizedBaseName = sanitizePathPart(
+    path.basename(fileName, path.extname(fileName)) || `uploaded-video-${Date.now()}`,
+  );
+  const sourcePath = path.join(tempRoot, `${sanitizedBaseName}${extension}`);
+  const uploadFolder = `youtube-shorts/uploaded/${new Date().toISOString().slice(0, 10)}/${Date.now()}`;
+
+  try {
+    await writeFile(sourcePath, fileBuffer);
+
+    const sourceTitle = title?.trim() || path.basename(fileName, path.extname(fileName)) || "Uploaded Video";
+    const sourceDescription =
+      description?.trim() || "Uploaded source video for shorts generation.";
+    const sourceKeywords =
+      keywords.length > 0
+        ? keywords
+        : deriveKeywordsFromMetadata(sourceTitle, sourceDescription, []);
+
+    return await buildShortAssetsFromPreparedSource({
+      sourcePath,
+      sourceUrl: `uploaded-file:${fileName}`,
+      videoId: sanitizedBaseName,
+      sourceTitle,
+      sourceDescription,
+      sourceKeywords,
+      durationSeconds: safeDurationSeconds,
+      segmentDurationSeconds,
+      overlapSeconds,
+      uploadFolder,
+      authorName: "Uploaded from device",
+    });
   } finally {
     await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
   }
