@@ -109,8 +109,16 @@ const MOBILE_YOUTUBE_GUIDE_KEY = "youtube_shorts_mobile_youtube_guide_ack";
 type PendingYouTubeAction = "analyze" | "generate";
 type YouTubeGuideDialogMode = "mobile-guide" | "bot-check";
 
+function getBrowserStorage() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  return window.localStorage;
+}
+
 function getStoredString(key: string) {
-  const value = localStorage.getItem(key);
+  const value = getBrowserStorage()?.getItem(key);
   return value?.trim() ? value : null;
 }
 
@@ -128,7 +136,9 @@ function getFriendlyBotCheckStatus() {
 
 function readStoredYouTubeAccounts() {
   try {
-    const parsed = JSON.parse(localStorage.getItem("youtube_accounts") || "[]");
+    const parsed = JSON.parse(
+      getBrowserStorage()?.getItem("youtube_accounts") || "[]",
+    );
     if (!Array.isArray(parsed)) {
       return [];
     }
@@ -144,8 +154,13 @@ function readStoredYouTubeAccounts() {
 
 function getDashboardSelectedInstagramAccountId(accounts: InstagramAccount[]) {
   try {
+    const browserStorage = getBrowserStorage();
+    if (!browserStorage) {
+      return null;
+    }
+
     const storedSelectedAccounts = JSON.parse(
-      localStorage.getItem("selected_accounts") || "[]",
+      browserStorage.getItem("selected_accounts") || "[]",
     );
 
     if (!Array.isArray(storedSelectedAccounts)) {
