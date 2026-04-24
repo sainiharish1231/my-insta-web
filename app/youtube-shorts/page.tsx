@@ -11,13 +11,23 @@ import {
   Loader2,
   PauseCircle,
   PlayCircle,
+  RefreshCw,
   Scissors,
   Sparkles,
   Trash2,
   Youtube,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { Progress } from "@/components/ui/progress";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   buildInstagramReadyCloudinaryVideoUrl,
   createMedia,
@@ -94,10 +104,26 @@ interface ShortsCreationProgressState {
 
 const STORAGE_KEY = "youtube_shorts_automation_state";
 const TARGET_ACCOUNT_KEY = "youtube_shorts_target_account_id";
+const MOBILE_YOUTUBE_GUIDE_KEY = "youtube_shorts_mobile_youtube_guide_ack";
+
+type PendingYouTubeAction = "analyze" | "generate";
+type YouTubeGuideDialogMode = "mobile-guide" | "bot-check";
 
 function getStoredString(key: string) {
   const value = localStorage.getItem(key);
   return value?.trim() ? value : null;
+}
+
+function isYouTubeBotCheckMessage(message?: string | null) {
+  const normalizedMessage = message?.toLowerCase() || "";
+  return (
+    normalizedMessage.includes("sign in to confirm you're not a bot") ||
+    normalizedMessage.includes("sign in to confirm you’re not a bot")
+  );
+}
+
+function getFriendlyBotCheckStatus() {
+  return "YouTube ko is video ke liye extra confirmation chahiye. Popup me next step dekh lo.";
 }
 
 function readStoredYouTubeAccounts() {
@@ -144,11 +170,11 @@ function resolvePreferredInstagramAccountId(
 ) {
   const validAccountIds = new Set(accounts.map((account) => account.id));
   const candidates = [
-    persistedSelectedId,
+    getDashboardSelectedInstagramAccountId(accounts),
     getStoredString(TARGET_ACCOUNT_KEY),
     getStoredString("primary_ig_account_id"),
     getStoredString("ig_user_id"),
-    getDashboardSelectedInstagramAccountId(accounts),
+    persistedSelectedId,
     accounts[0]?.id || null,
   ];
 
@@ -360,6 +386,7 @@ async function cleanupQueuedAsset(item: Pick<QueueItem, "cloudinaryPublicId" | "
 
 export default function YouTubeShortsPage() {
   const router = useRouter();
+  const isMobile = useIsMobile();
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const processingRef = useRef(false);
 
@@ -401,11 +428,36 @@ export default function YouTubeShortsPage() {
     });
   const [isRunning, setIsRunning] = useState(false);
   const [nextRunAt, setNextRunAt] = useState<string | null>(null);
+  const [isRefreshingAccounts, setIsRefreshingAccounts] = useState(false);
+  const [hasAcknowledgedMobileGuide, setHasAcknowledgedMobileGuide] = useState(false);
+  const [pendingYouTubeAction, setPendingYouTubeAction] =
+    useState<PendingYouTubeAction | null>(null);
+  const [youtubeGuideDialogOpen, setYouTubeGuideDialogOpen] = useState(false);
+  const [youtubeGuideDialogMode, setYouTubeGuideDialogMode] =
+    useState<YouTubeGuideDialogMode>("mobile-guide");
 
   const selectedAccount = useMemo(
     () =>
       instagramAccounts.find((account) => account.id === selectedAccountId) || null,
     [instagramAccounts, selectedAccountId],
+  );
+
+  const allConnectedAccounts = useMemo(
+    () => [
+      ...instagramAccounts.map((account) => ({
+        id: `instagram-${account.id}`,
+        label: `@${account.username}`,
+        platform: "instagram" as const,
+        imageUrl: account.profile_picture_url,
+      })),
+      ...youtubeAccounts.map((account) => ({
+        id: `youtube-${account.id}`,
+        label: account.username || account.name || "YouTube Account",
+        platform: "youtube" as const,
+        imageUrl: account.thumbnail,
+      })),
+    ],
+    [instagramAccounts, youtubeAccounts],
   );
 
   const queueStats = useMemo(
@@ -417,6 +469,18 @@ export default function YouTubeShortsPage() {
     }),
     [queue],
   );
+  const defaultInstagramAccountId = useMemo(
+    () => resolvePreferredInstagramAccountId(instagramAccounts),
+    [instagramAccounts],
+  );
+  const compactConnectedAccountSummary = useMemo(
+    () => ({
+      instagram: instagramAccounts.length,
+      youtube: youtubeAccounts.length,
+      total: instagramAccounts.length + youtubeAccounts.length,
+    }),
+    [instagramAccounts, youtubeAccounts],
+  );
 
   const clearTimer = () => {
     if (timerRef.current) {
@@ -426,6 +490,10 @@ export default function YouTubeShortsPage() {
   };
 
   useEffect(() => {
+    setHasAcknowledgedMobileGuide(
+      localStorage.getItem(MOBILE_YOUTUBE_GUIDE_KEY) === "1",
+    );
+
     let cancelled = false;
 
     const applyPersistedState = (accounts: InstagramAccount[]) => {
@@ -580,6 +648,87 @@ export default function YouTubeShortsPage() {
     };
   }, []);
 
+  const refreshInstagramAccounts = useEffectEvent(
+    async (options?: { showToast?: boolean }) => {
+      const showToast = options?.showToast ?? false;
+      const fbAccessToken = getStoredString("fb_access_token");
+
+      if (!fbAccessToken) {
+        if (showToast) {
+          toast.error("Instagram ko dubara connect karo, tab sab accounts sync honge.");
+        }
+        return;
+      }
+
+      setIsRefreshingAccounts(true);
+
+      try {
+        const syncedInstagramAccounts =
+          await fetchInstagramAccountsFromFacebook(fbAccessToken);
+
+        if (syncedInstagramAccounts.length === 0) {
+          if (showToast) {
+            toast.error("Koi extra Instagram account sync nahi hua.");
+          }
+          return;
+        }
+
+        const mergedInstagramAccounts = mergeInstagramAccounts(
+          readStoredInstagramAccounts(localStorage),
+          syncedInstagramAccounts,
+        );
+
+        persistInstagramAccounts(mergedInstagramAccounts, localStorage);
+        setInstagramAccounts(mergedInstagramAccounts);
+
+        if (showToast) {
+          toast.success(
+            `${mergedInstagramAccounts.length} Instagram target account sync ho gaye.`,
+          );
+        }
+      } catch (error) {
+        console.warn("[v0] Manual Instagram account refresh failed:", error);
+
+        if (showToast) {
+          toast.error(
+            "Instagram accounts refresh nahi huye. Ek baar Instagram reconnect karke try karo.",
+          );
+        }
+      } finally {
+        setIsRefreshingAccounts(false);
+      }
+    },
+  );
+
+  const openYouTubeGuideDialog = useEffectEvent(
+    (mode: YouTubeGuideDialogMode, pendingAction?: PendingYouTubeAction | null) => {
+      setYouTubeGuideDialogMode(mode);
+      setPendingYouTubeAction(pendingAction ?? null);
+      setYouTubeGuideDialogOpen(true);
+    },
+  );
+
+  const rememberMobileGuideAcknowledgement = () => {
+    localStorage.setItem(MOBILE_YOUTUBE_GUIDE_KEY, "1");
+    setHasAcknowledgedMobileGuide(true);
+  };
+
+  const completePendingYouTubeAction = useEffectEvent(() => {
+    const nextAction = pendingYouTubeAction;
+    setPendingYouTubeAction(null);
+    setYouTubeGuideDialogOpen(false);
+    rememberMobileGuideAcknowledgement();
+
+    if (nextAction === "analyze") {
+      void handleAnalyze();
+      return;
+    }
+
+    if (nextAction === "generate") {
+      void handleGenerateQueue();
+    }
+  });
+
   const processNextQueueItem = useEffectEvent(async () => {
     if (processingRef.current || !isRunning) {
       return;
@@ -714,11 +863,21 @@ export default function YouTubeShortsPage() {
     );
   };
 
-  const handleAnalyze = async () => {
+  const handleSelectDefaultTargetAccount = () => {
+    setSelectedAccountId(defaultInstagramAccountId);
+  };
+
+  const handleAnalyze = useEffectEvent(async () => {
     const normalizedSourceUrl = normalizeYouTubeUrl(sourceUrl);
 
     if (!normalizedSourceUrl.trim()) {
       toast.error("YouTube long video URL dalo.");
+      return;
+    }
+
+    if (isMobile && !hasAcknowledgedMobileGuide) {
+      setSourceUrl(normalizedSourceUrl);
+      openYouTubeGuideDialog("mobile-guide", "analyze");
       return;
     }
 
@@ -751,13 +910,18 @@ export default function YouTubeShortsPage() {
       setKeywordsDraft((data.video.keywords || []).join(", "));
       toast.success("Video details fetch ho gaye.");
     } catch (error: any) {
+      if (isYouTubeBotCheckMessage(error?.message)) {
+        openYouTubeGuideDialog("bot-check");
+        return;
+      }
+
       toast.error(error.message || "YouTube video analyze nahi hua.");
     } finally {
       setIsAnalyzing(false);
     }
-  };
+  });
 
-  const handleGenerateQueue = async () => {
+  const handleGenerateQueue = useEffectEvent(async () => {
     const normalizedSourceUrl = normalizeYouTubeUrl(sourceUrl);
     const expectedShortCount = planPreview.length;
 
@@ -768,6 +932,12 @@ export default function YouTubeShortsPage() {
 
     if (instagramAccounts.length === 0) {
       toast.error("Pehle Instagram account connect karo.");
+      return;
+    }
+
+    if (isMobile && !hasAcknowledgedMobileGuide) {
+      setSourceUrl(normalizedSourceUrl);
+      openYouTubeGuideDialog("mobile-guide", "generate");
       return;
     }
 
@@ -859,14 +1029,28 @@ export default function YouTubeShortsPage() {
         ...prev,
         phase: "error",
         total: prev.total || expectedShortCount,
-        status: error.message || "Shorts creation fail ho gayi.",
+        status: isYouTubeBotCheckMessage(error?.message)
+          ? getFriendlyBotCheckStatus()
+          : error.message || "Shorts creation fail ho gayi.",
       }));
+
+      if (isYouTubeBotCheckMessage(error?.message)) {
+        setDownloadProgress((prev) => ({
+          ...prev,
+          phase: "error",
+          status: getFriendlyBotCheckStatus(),
+        }));
+        setQueueBuildStatus(getFriendlyBotCheckStatus());
+        openYouTubeGuideDialog("bot-check");
+        return;
+      }
+
       toast.error(error.message || "Queue create nahi hui.");
     } finally {
       setQueueBuildStatus("");
       setIsCreatingQueue(false);
     }
-  };
+  });
 
   const handleStartQueue = () => {
     if (queue.length === 0) {
@@ -940,6 +1124,91 @@ export default function YouTubeShortsPage() {
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,#43237a_0%,#1f1147_34%,#120622_68%,#090014_100%)] text-white">
+      <Dialog open={youtubeGuideDialogOpen} onOpenChange={setYouTubeGuideDialogOpen}>
+        <DialogContent className="max-w-[calc(100%-1.5rem)] border-violet-300/20 bg-[#120622] p-0 text-white sm:max-w-lg">
+          <div className="rounded-3xl bg-[radial-gradient(circle_at_top,#4c1d95_0%,#1d0f35_48%,#0b0617_100%)] p-6">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-xl text-white">
+                <AlertCircle className="h-5 w-5 text-amber-300" />
+                {youtubeGuideDialogMode === "mobile-guide"
+                  ? "Mobile Confirm Required"
+                  : "YouTube Confirmation Needed"}
+              </DialogTitle>
+              <DialogDescription className="text-sm leading-6 text-white/70">
+                {youtubeGuideDialogMode === "mobile-guide"
+                  ? "Mobile/shared links auto-normalize ho jayenge. Continue karne se pehle bas confirm kar lo ki agar YouTube extra verification maange to popup wali guide follow karoge."
+                  : "Is video par YouTube ne extra verification maangi hai. Raw error ki jagah yahan clean steps dikh rahe hain."}
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="mt-5 rounded-2xl border border-violet-300/15 bg-white/5 p-4 text-sm text-white/80">
+              <p className="font-medium text-white">
+                {youtubeGuideDialogMode === "mobile-guide"
+                  ? "Continue ke baad ye hoga:"
+                  : "Next step ye rakho:"}
+              </p>
+              <div className="mt-3 space-y-2">
+                <p>1. Link ko app automatically normal YouTube watch URL me clean karega.</p>
+                <p>2. Agar YouTube allow kare to shorts normally create ho jayengi.</p>
+                <p>
+                  3. Agar block repeat ho to desktop/browser cookies ko
+                  <span className="mx-1 rounded bg-white/10 px-1.5 py-0.5 font-mono text-xs text-violet-100">
+                    YOUTUBE_COOKIES_FILE
+                  </span>
+                  ya
+                  <span className="mx-1 rounded bg-white/10 px-1.5 py-0.5 font-mono text-xs text-violet-100">
+                    YOUTUBE_COOKIES_BASE64
+                  </span>
+                  me set karna padega.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-2xl border border-amber-300/15 bg-amber-400/10 p-4 text-xs leading-6 text-amber-100">
+              Mobile par direct cookie setup possible nahi hota. Agar same video baar-baar block ho to ek baar desktop browser se YouTube login karke cookies export karni padengi.
+            </div>
+
+            <DialogFooter className="mt-6">
+              {youtubeGuideDialogMode === "mobile-guide" ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPendingYouTubeAction(null);
+                      setYouTubeGuideDialogOpen(false);
+                    }}
+                    className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-medium text-white/80 transition-colors hover:bg-white/10"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      completePendingYouTubeAction();
+                    }}
+                    className="inline-flex items-center justify-center rounded-2xl bg-gradient-to-r from-violet-500 via-fuchsia-500 to-indigo-500 px-4 py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+                  >
+                    Continue
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    rememberMobileGuideAcknowledgement();
+                    setYouTubeGuideDialogOpen(false);
+                    setPendingYouTubeAction(null);
+                  }}
+                  className="inline-flex items-center justify-center rounded-2xl bg-gradient-to-r from-violet-500 via-fuchsia-500 to-indigo-500 px-4 py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+                >
+                  Theek Hai
+                </button>
+              )}
+            </DialogFooter>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <header className="sticky top-0 z-40 border-b border-violet-300/10 bg-[#140824]/85 backdrop-blur-xl">
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-4 py-4">
           <div className="flex items-center gap-4">
@@ -988,56 +1257,73 @@ export default function YouTubeShortsPage() {
       </header>
 
       <main className="mx-auto max-w-7xl px-4 py-6 sm:py-8">
-        <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
-            <div className="text-3xl font-semibold text-white">{queueStats.total}</div>
-            <p className="mt-2 text-sm text-white/55">Shorts in queue</p>
-          </div>
-          <div className="rounded-3xl border border-violet-300/20 bg-violet-400/10 p-5">
-            <div className="text-3xl font-semibold text-violet-100">{queueStats.queued}</div>
-            <p className="mt-2 text-sm text-violet-100/80">Ready to upload</p>
-          </div>
-          <div className="rounded-3xl border border-fuchsia-300/20 bg-fuchsia-500/10 p-5">
-            <div className="text-3xl font-semibold text-fuchsia-100">
-              {intervalMinutes}m
+        {isMobile ? (
+          <div className="mb-4 grid gap-3 grid-cols-2">
+            <div className="rounded-3xl border border-white/10 bg-white/5 p-4">
+              <div className="text-2xl font-semibold text-white">{queueStats.total}</div>
+              <p className="mt-1 text-xs text-white/55">Queue</p>
             </div>
-            <p className="mt-2 text-sm text-fuchsia-100/80">Gap after success</p>
-          </div>
-          <div className="rounded-3xl border border-indigo-300/20 bg-indigo-500/10 p-5">
-            <div className="text-lg font-semibold text-indigo-100">
-              {formatDateTime(nextRunAt)}
+            <div className="rounded-3xl border border-violet-300/20 bg-violet-400/10 p-4">
+              <div className="text-sm font-semibold text-violet-100">
+                {selectedAccount ? `@${selectedAccount.username}` : "No target"}
+              </div>
+              <p className="mt-1 text-xs text-violet-100/80">Selected target</p>
             </div>
-            <p className="mt-2 text-sm text-indigo-100/80">Next scheduled upload</p>
           </div>
-        </div>
+        ) : (
+          <>
+            <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
+                <div className="text-3xl font-semibold text-white">{queueStats.total}</div>
+                <p className="mt-2 text-sm text-white/55">Shorts in queue</p>
+              </div>
+              <div className="rounded-3xl border border-violet-300/20 bg-violet-400/10 p-5">
+                <div className="text-3xl font-semibold text-violet-100">{queueStats.queued}</div>
+                <p className="mt-2 text-sm text-violet-100/80">Ready to upload</p>
+              </div>
+              <div className="rounded-3xl border border-fuchsia-300/20 bg-fuchsia-500/10 p-5">
+                <div className="text-3xl font-semibold text-fuchsia-100">
+                  {intervalMinutes}m
+                </div>
+                <p className="mt-2 text-sm text-fuchsia-100/80">Gap after success</p>
+              </div>
+              <div className="rounded-3xl border border-indigo-300/20 bg-indigo-500/10 p-5">
+                <div className="text-lg font-semibold text-indigo-100">
+                  {formatDateTime(nextRunAt)}
+                </div>
+                <p className="mt-2 text-sm text-indigo-100/80">Next scheduled upload</p>
+              </div>
+            </div>
 
-        <div className="mb-6 rounded-3xl border border-violet-300/20 bg-violet-400/10 p-4 text-sm text-violet-100">
-          Queue automation browser tab me run hoti hai. Best result ke liye page open rakho jab tak last short upload na ho jaye.
-        </div>
+            <div className="mb-6 rounded-3xl border border-violet-300/20 bg-violet-400/10 p-4 text-sm text-violet-100">
+              Queue automation browser tab me run hoti hai. Best result ke liye page open rakho jab tak last short upload na ho jaye.
+            </div>
 
-        <div className="mb-6 grid gap-4 md:grid-cols-3">
-          <div className="rounded-3xl border border-violet-300/20 bg-white/5 p-5 shadow-[0_20px_50px_rgba(91,33,182,0.2)]">
-            <p className="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">Local Source</p>
-            <h2 className="mt-2 text-lg font-semibold text-white">YouTube video local me</h2>
-            <p className="mt-2 text-sm text-white/55">
-              Source video browser ke liye direct download hota hai, storage me park nahi hota.
-            </p>
-          </div>
-          <div className="rounded-3xl border border-violet-300/20 bg-white/5 p-5 shadow-[0_20px_50px_rgba(91,33,182,0.2)]">
-            <p className="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">Shorts Storage</p>
-            <h2 className="mt-2 text-lg font-semibold text-white">Sirf shorts save honge</h2>
-            <p className="mt-2 text-sm text-white/55">
-              Har created short Cloudinary par save hokar queue me turant add hota chala jayega.
-            </p>
-          </div>
-          <div className="rounded-3xl border border-violet-300/20 bg-white/5 p-5 shadow-[0_20px_50px_rgba(91,33,182,0.2)]">
-            <p className="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">Auto Cleanup</p>
-            <h2 className="mt-2 text-lg font-semibold text-white">Upload ke baad delete</h2>
-            <p className="mt-2 text-sm text-white/55">
-              Instagram publish success hote hi short Cloudinary se auto remove ho jayega.
-            </p>
-          </div>
-        </div>
+            <div className="mb-6 grid gap-4 md:grid-cols-3">
+              <div className="rounded-3xl border border-violet-300/20 bg-white/5 p-5 shadow-[0_20px_50px_rgba(91,33,182,0.2)]">
+                <p className="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">Local Source</p>
+                <h2 className="mt-2 text-lg font-semibold text-white">YouTube video local me</h2>
+                <p className="mt-2 text-sm text-white/55">
+                  Source video browser ke liye direct download hota hai, storage me park nahi hota.
+                </p>
+              </div>
+              <div className="rounded-3xl border border-violet-300/20 bg-white/5 p-5 shadow-[0_20px_50px_rgba(91,33,182,0.2)]">
+                <p className="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">Shorts Storage</p>
+                <h2 className="mt-2 text-lg font-semibold text-white">Sirf shorts save honge</h2>
+                <p className="mt-2 text-sm text-white/55">
+                  Har created short Cloudinary par save hokar queue me turant add hota chala jayega.
+                </p>
+              </div>
+              <div className="rounded-3xl border border-violet-300/20 bg-white/5 p-5 shadow-[0_20px_50px_rgba(91,33,182,0.2)]">
+                <p className="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">Auto Cleanup</p>
+                <h2 className="mt-2 text-lg font-semibold text-white">Upload ke baad delete</h2>
+                <p className="mt-2 text-sm text-white/55">
+                  Instagram publish success hote hi short Cloudinary se auto remove ho jayega.
+                </p>
+              </div>
+            </div>
+          </>
+        )}
 
         {showBuildProgress ? (
           <div className="mb-6 grid gap-4 lg:grid-cols-2">
@@ -1136,31 +1422,59 @@ export default function YouTubeShortsPage() {
               </div>
 
               <div className="space-y-4">
-                {youtubeAccounts.length > 0 ? (
+                {isMobile ? (
+                  <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
+                    <div className="flex items-center justify-between gap-3 text-sm text-white/80">
+                      <span className="font-medium">Connected Accounts</span>
+                      <span className="text-xs text-white/45">
+                        {compactConnectedAccountSummary.total} total
+                      </span>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-3">
+                      <div className="rounded-2xl border border-pink-300/15 bg-pink-500/10 px-3 py-3 text-center">
+                        <p className="text-lg font-semibold text-white">
+                          {compactConnectedAccountSummary.instagram}
+                        </p>
+                        <p className="text-xs text-white/60">Instagram</p>
+                      </div>
+                      <div className="rounded-2xl border border-red-300/15 bg-red-500/10 px-3 py-3 text-center">
+                        <p className="text-lg font-semibold text-white">
+                          {compactConnectedAccountSummary.youtube}
+                        </p>
+                        <p className="text-xs text-white/60">YouTube</p>
+                      </div>
+                    </div>
+                  </div>
+                ) : allConnectedAccounts.length > 0 ? (
                   <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
                     <div className="flex items-center gap-2 text-sm font-medium text-white/80">
                       <Youtube className="h-4 w-4 text-fuchsia-300" />
-                      <span>Connected YouTube accounts ({youtubeAccounts.length})</span>
+                      <span>All connected accounts ({allConnectedAccounts.length})</span>
                     </div>
                     <div className="mt-3 flex flex-wrap gap-2">
-                      {youtubeAccounts.map((account) => (
+                      {allConnectedAccounts.map((account) => (
                         <div
                           key={account.id}
                           className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/70"
                         >
-                          {account.thumbnail ? (
+                          {account.imageUrl ? (
                             <img
-                              src={account.thumbnail}
-                              alt={account.username || account.name || "YouTube account"}
+                              src={account.imageUrl}
+                              alt={account.label}
                               className="h-5 w-5 rounded-full object-cover"
                             />
                           ) : null}
-                          <span>{account.username || account.name || "YouTube Account"}</span>
+                          {account.platform === "instagram" ? (
+                            <Instagram className="h-3.5 w-3.5 text-pink-300" />
+                          ) : (
+                            <Youtube className="h-3.5 w-3.5 text-red-300" />
+                          )}
+                          <span>{account.label}</span>
                         </div>
                       ))}
                     </div>
                     <p className="mt-3 text-xs text-white/45">
-                      Yahan source ke liye YouTube accounts visible hain. Actual upload target neeche Instagram section me select hota hai.
+                      Instagram + YouTube dono yahan visible hain. Actual upload target neeche Instagram section me select hota hai.
                     </p>
                   </div>
                 ) : null}
@@ -1173,7 +1487,7 @@ export default function YouTubeShortsPage() {
                   className="w-full rounded-2xl border border-white/10 bg-slate-950/50 px-4 py-3 text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-violet-400"
                 />
 
-                <div className="grid gap-3 sm:grid-cols-3">
+                <div className={`grid gap-3 ${isMobile ? "grid-cols-1" : "sm:grid-cols-3"}`}>
                   <label className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
                     <div className="text-xs uppercase tracking-[0.2em] text-white/45">
                       Clip Seconds
@@ -1273,8 +1587,35 @@ export default function YouTubeShortsPage() {
               </div>
 
               <div className="mb-4 rounded-2xl border border-violet-300/15 bg-violet-400/10 px-4 py-3 text-sm text-violet-100">
-                {instagramAccounts.length} Instagram target account
-                {instagramAccounts.length === 1 ? "" : "s"} synced. Default target primary, last-used, ya dashboard selection se pick hota hai.
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <p>
+                    {instagramAccounts.length} Instagram target account
+                    {instagramAccounts.length === 1 ? "" : "s"} synced. Default target dashboard ya primary account se pick hota hai.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={handleSelectDefaultTargetAccount}
+                      disabled={!defaultInstagramAccountId}
+                      className="inline-flex items-center justify-center rounded-2xl border border-violet-300/20 bg-white/5 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-white/10 disabled:opacity-60"
+                    >
+                      Use Default
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void refreshInstagramAccounts({ showToast: true });
+                      }}
+                      disabled={isRefreshingAccounts}
+                      className="inline-flex items-center justify-center gap-2 rounded-2xl border border-violet-300/20 bg-white/5 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-white/10 disabled:opacity-60"
+                    >
+                      <RefreshCw
+                        className={`h-3.5 w-3.5 ${isRefreshingAccounts ? "animate-spin" : ""}`}
+                      />
+                      Refresh
+                    </button>
+                  </div>
+                </div>
               </div>
 
               {instagramAccounts.length === 0 ? (
@@ -1284,9 +1625,8 @@ export default function YouTubeShortsPage() {
               ) : (
                 <div className="space-y-3">
                   {instagramAccounts.map((account) => (
-                    <button
+                    <div
                       key={account.id}
-                      onClick={() => handleToggleTargetAccount(account.id)}
                       className={`flex w-full items-center gap-3 rounded-2xl border p-4 text-left transition-colors ${
                         selectedAccountId === account.id
                           ? "border-violet-300/30 bg-violet-400/10"
@@ -1305,14 +1645,27 @@ export default function YouTubeShortsPage() {
                         <p className="font-medium text-white">@{account.username}</p>
                         <p className="text-xs text-white/45">
                           {selectedAccountId === account.id
-                            ? "Queue yahin upload hogi. Tap again to unselect."
-                            : "Tap to select"}
+                            ? "Ye account abhi upload target hai."
+                            : "Is account par shorts upload ho sakti hain."}
                         </p>
                       </div>
-                      {selectedAccountId === account.id && (
-                        <CheckCircle2 className="h-5 w-5 text-violet-200" />
-                      )}
-                    </button>
+                      <div className="flex items-center gap-2">
+                        {selectedAccountId === account.id && (
+                          <CheckCircle2 className="h-5 w-5 text-violet-200" />
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleToggleTargetAccount(account.id)}
+                          className={`min-w-[82px] rounded-xl px-3 py-2 text-xs font-semibold transition-colors ${
+                            selectedAccountId === account.id
+                              ? "bg-white/10 text-white hover:bg-white/15"
+                              : "bg-violet-500 text-white hover:bg-violet-400"
+                          }`}
+                        >
+                          {selectedAccountId === account.id ? "Deselect" : "Select"}
+                        </button>
+                      </div>
+                    </div>
                   ))}
                 </div>
               )}
@@ -1420,7 +1773,7 @@ export default function YouTubeShortsPage() {
                     First short abhi jayega. Har next short previous success ke {intervalMinutes} minute baad जाएगा.
                   </p>
                 </div>
-                {suggestedFinishTime ? (
+                {!isMobile && suggestedFinishTime ? (
                   <div className="rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-2 text-xs text-white/60">
                     Estimated finish: {formatDateTime(suggestedFinishTime.toISOString())}
                   </div>
@@ -1568,7 +1921,8 @@ export default function YouTubeShortsPage() {
               )}
             </section>
 
-            <section className="rounded-3xl border border-white/10 bg-white/5 p-5 shadow-[0_24px_70px_rgba(76,29,149,0.22)] backdrop-blur-xl sm:p-6">
+            {!isMobile || recentUploads.length > 0 ? (
+              <section className="rounded-3xl border border-white/10 bg-white/5 p-5 shadow-[0_24px_70px_rgba(76,29,149,0.22)] backdrop-blur-xl sm:p-6">
               <div className="mb-4">
                 <h2 className="text-lg font-semibold">Recent Uploads</h2>
                 <p className="text-sm text-white/55">
@@ -1600,7 +1954,8 @@ export default function YouTubeShortsPage() {
                   ))}
                 </div>
               )}
-            </section>
+              </section>
+            ) : null}
           </div>
         </div>
       </main>
