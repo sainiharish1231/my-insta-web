@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { buildUploadedVideoShortAssets } from "@/lib/server/youtube-shorts";
+import {
+  buildRemoteVideoShortAssets,
+  buildUploadedVideoShortAssets,
+} from "@/lib/server/youtube-shorts";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -37,10 +40,13 @@ export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
     const file = formData.get("file");
+    const sourceUrlEntry = formData.get("sourceUrl");
+    const sourceUrl =
+      typeof sourceUrlEntry === "string" ? sourceUrlEntry : undefined;
 
-    if (!(file instanceof File)) {
+    if (!(file instanceof File) && !sourceUrl) {
       return NextResponse.json(
-        { error: "Video file is required." },
+        { error: "Video file ya uploaded source URL required hai." },
         { status: 400 },
       );
     }
@@ -48,17 +54,42 @@ export async function POST(request: NextRequest) {
     const title = formData.get("title");
     const description = formData.get("description");
 
-    const data = await buildUploadedVideoShortAssets({
-      fileBuffer: Buffer.from(await file.arrayBuffer()),
-      fileName: file.name,
-      contentType: file.type,
-      durationSeconds: parseNumber(formData.get("durationSeconds"), 0),
-      segmentDurationSeconds: parseNumber(formData.get("segmentDurationSeconds"), 30),
-      overlapSeconds: parseNumber(formData.get("overlapSeconds"), 0),
-      title: typeof title === "string" ? title : undefined,
-      description: typeof description === "string" ? description : undefined,
-      keywords: parseKeywords(formData.get("keywords")),
-    });
+    const data =
+      file instanceof File
+        ? await buildUploadedVideoShortAssets({
+            fileBuffer: Buffer.from(await file.arrayBuffer()),
+            fileName: file.name,
+            contentType: file.type,
+            durationSeconds: parseNumber(formData.get("durationSeconds"), 0),
+            segmentDurationSeconds: parseNumber(
+              formData.get("segmentDurationSeconds"),
+              30,
+            ),
+            overlapSeconds: parseNumber(formData.get("overlapSeconds"), 0),
+            title: typeof title === "string" ? title : undefined,
+            description: typeof description === "string" ? description : undefined,
+            keywords: parseKeywords(formData.get("keywords")),
+          })
+        : await buildRemoteVideoShortAssets({
+            sourceUrl: sourceUrl!,
+            fileName:
+              typeof formData.get("fileName") === "string"
+                ? String(formData.get("fileName"))
+                : undefined,
+            contentType:
+              typeof formData.get("contentType") === "string"
+                ? String(formData.get("contentType"))
+                : undefined,
+            durationSeconds: parseNumber(formData.get("durationSeconds"), 0),
+            segmentDurationSeconds: parseNumber(
+              formData.get("segmentDurationSeconds"),
+              30,
+            ),
+            overlapSeconds: parseNumber(formData.get("overlapSeconds"), 0),
+            title: typeof title === "string" ? title : undefined,
+            description: typeof description === "string" ? description : undefined,
+            keywords: parseKeywords(formData.get("keywords")),
+          });
 
     return NextResponse.json({
       success: true,

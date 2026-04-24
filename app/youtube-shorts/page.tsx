@@ -34,6 +34,7 @@ import {
   createMedia,
   publishMedia,
 } from "@/lib/meta";
+import { uploadMediaToBlob } from "@/lib/media-upload";
 import {
   fetchInstagramAccountsFromFacebook,
   mergeInstagramAccounts,
@@ -107,6 +108,7 @@ interface ShortsCreationProgressState {
 const STORAGE_KEY = "youtube_shorts_automation_state";
 const TARGET_ACCOUNT_KEY = "youtube_shorts_target_account_id";
 const MOBILE_YOUTUBE_GUIDE_KEY = "youtube_shorts_mobile_youtube_guide_ack";
+const SOURCE_FILE_INPUT_ID = "youtube-shorts-source-file-input";
 
 type PendingYouTubeAction = "analyze" | "generate";
 type YouTubeGuideDialogMode = "mobile-guide" | "bot-check";
@@ -446,7 +448,6 @@ async function cleanupQueuedAsset(
 export default function YouTubeShortsPage() {
   const router = useRouter();
   const isMobile = useIsMobile();
-  const sourceFileInputRef = useRef<HTMLInputElement | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const processingRef = useRef(false);
 
@@ -459,6 +460,9 @@ export default function YouTubeShortsPage() {
   );
   const [sourceMode, setSourceMode] = useState<"youtube" | "file">("youtube");
   const [sourceFile, setSourceFile] = useState<File | null>(null);
+  const [uploadedSourceUrl, setUploadedSourceUrl] = useState<string | null>(
+    null,
+  );
   const [sourceUrl, setSourceUrl] = useState("");
   const [segmentDurationSeconds, setSegmentDurationSeconds] = useState(60);
   const [overlapSeconds, setOverlapSeconds] = useState(0);
@@ -509,6 +513,8 @@ export default function YouTubeShortsPage() {
   const [youtubeGuideDialogOpen, setYouTubeGuideDialogOpen] = useState(false);
   const [youtubeGuideDialogMode, setYouTubeGuideDialogMode] =
     useState<YouTubeGuideDialogMode>("mobile-guide");
+  const [autoGenerateAfterFilePick, setAutoGenerateAfterFilePick] =
+    useState(false);
 
   const selectedAccount = useMemo(
     () =>
@@ -746,6 +752,20 @@ export default function YouTubeShortsPage() {
     sourceVideo,
   ]);
 
+  useEffect(() => {
+    if (
+      !autoGenerateAfterFilePick ||
+      sourceMode !== "file" ||
+      !sourceFile ||
+      !sourceVideo
+    ) {
+      return;
+    }
+
+    setAutoGenerateAfterFilePick(false);
+    void handleGenerateQueue();
+  }, [autoGenerateAfterFilePick, sourceFile, sourceMode, sourceVideo]);
+
   const refreshInstagramAccounts = useEffectEvent(
     async (options?: { showToast?: boolean }) => {
       const showToast = options?.showToast ?? false;
@@ -974,11 +994,9 @@ export default function YouTubeShortsPage() {
     setSelectedAccountId(defaultInstagramAccountId);
   };
 
-  const handleOpenSourceFilePicker = () => {
-    sourceFileInputRef.current?.click();
-  };
-
   const clearSelectedSourceFile = () => {
+    setAutoGenerateAfterFilePick(false);
+    setUploadedSourceUrl(null);
     setSourceFile(null);
     setSourceMode("youtube");
     setSourceVideo((currentVideo) =>
@@ -1001,6 +1019,7 @@ export default function YouTubeShortsPage() {
       }
 
       setIsAnalyzing(true);
+      setUploadedSourceUrl(null);
 
       try {
         const durationSeconds = await getVideoDurationFromFile(nextFile);
@@ -1100,7 +1119,7 @@ export default function YouTubeShortsPage() {
       toast.success("Video details fetch ho gaye.");
     } catch (error: any) {
       if (isYouTubeBotCheckMessage(error?.message)) {
-        openYouTubeGuideDialog("bot-check");
+        openYouTubeGuideDialog("bot-check", "analyze");
         return;
       }
 
@@ -1133,13 +1152,19 @@ export default function YouTubeShortsPage() {
     }
 
     setIsCreatingQueue(true);
-    setQueueBuildStatus("Server par source video temp process ho rahi hai...");
+    setQueueBuildStatus(
+      isFileSource
+        ? "Selected file process start ho rahi hai..."
+        : "Server par source video temp process ho rahi hai...",
+    );
     setDownloadProgress({
       phase: "preparing",
       percent: 0,
       loadedBytes: 0,
       totalBytes: null,
-      status: "Server temp source prepare ho rahi hai...",
+      status: isFileSource
+        ? "Selected file source prepare ho rahi hai..."
+        : "Server temp source prepare ho rahi hai...",
     });
     setCreationProgress({
       phase: "processing",
@@ -1155,10 +1180,46 @@ export default function YouTubeShortsPage() {
     setSourceUrl(normalizedSourceUrl);
 
     try {
+      let uploadedSourceUrlForQueue = uploadedSourceUrl;
+
+      if (isFileSource && !uploadedSourceUrlForQueue) {
+        setQueueBuildStatus("Selected file secure upload ho rahi hai...");
+        setDownloadProgress({
+          phase: "downloading",
+          percent: 0,
+          loadedBytes: 0,
+          totalBytes: null,
+          status: "Selected file secure upload start ho rahi hai...",
+        });
+
+        uploadedSourceUrlForQueue = await uploadMediaToBlob(
+          sourceFile as File,
+          (percent) => {
+            setDownloadProgress({
+              phase: percent >= 100 ? "preparing" : "downloading",
+              percent,
+              loadedBytes: 0,
+              totalBytes: null,
+              status:
+                percent >= 100
+                  ? "Source file upload complete. Server shorts bana raha hai..."
+                  : `Selected file secure upload ho rahi hai... ${percent}%`,
+            });
+          },
+        );
+
+        setUploadedSourceUrl(uploadedSourceUrlForQueue);
+        setQueueBuildStatus(
+          "Uploaded source file server par shorts me convert ho rahi hai...",
+        );
+      }
+
       const response = isFileSource
         ? await (async () => {
             const formData = new FormData();
-            formData.append("file", sourceFile as File);
+            formData.append("sourceUrl", uploadedSourceUrlForQueue || "");
+            formData.append("fileName", sourceFile?.name || "uploaded-video.mp4");
+            formData.append("contentType", sourceFile?.type || "video/mp4");
             formData.append(
               "durationSeconds",
               String(sourceVideo?.durationSeconds || 0),
@@ -1261,7 +1322,7 @@ export default function YouTubeShortsPage() {
           status: getFriendlyBotCheckStatus(),
         }));
         setQueueBuildStatus(getFriendlyBotCheckStatus());
-        openYouTubeGuideDialog("bot-check");
+        openYouTubeGuideDialog("bot-check", "generate");
         return;
       }
 
@@ -1388,7 +1449,8 @@ export default function YouTubeShortsPage() {
                 </p>
                 <p>
                   3. Agar block repeat ho to direct phone se video file select
-                  karke bina cookies ke bhi continue kar sakte ho.
+                  karke secure upload ke through bina cookies ke bhi continue
+                  kar sakte ho.
                 </p>
                 <p>
                   4. Agar fir bhi URL mode hi use karna hai to desktop/browser
@@ -1424,19 +1486,20 @@ export default function YouTubeShortsPage() {
                   >
                     Cancel
                   </button>
-                  <button
-                    type="button"
+                  <label
+                    htmlFor={SOURCE_FILE_INPUT_ID}
                     onClick={() => {
-                      handleOpenSourceFilePicker();
+                      setAutoGenerateAfterFilePick(
+                        pendingYouTubeAction === "generate",
+                      );
                       rememberMobileGuideAcknowledgement();
-                      setYouTubeGuideDialogOpen(false);
-                      setPendingYouTubeAction(null);
+                      setSourceMode("file");
                     }}
                     className="inline-flex items-center justify-center gap-2 rounded-2xl border border-violet-300/20 bg-white/5 px-4 py-3 text-sm font-medium text-white transition-colors hover:bg-white/10"
                   >
                     <Upload className="h-4 w-4" />
                     Use Video File
-                  </button>
+                  </label>
                   <button
                     type="button"
                     onClick={() => {
@@ -1449,19 +1512,20 @@ export default function YouTubeShortsPage() {
                 </>
               ) : (
                 <>
-                  <button
-                    type="button"
+                  <label
+                    htmlFor={SOURCE_FILE_INPUT_ID}
                     onClick={() => {
-                      handleOpenSourceFilePicker();
+                      setAutoGenerateAfterFilePick(
+                        pendingYouTubeAction === "generate",
+                      );
                       rememberMobileGuideAcknowledgement();
-                      setYouTubeGuideDialogOpen(false);
-                      setPendingYouTubeAction(null);
+                      setSourceMode("file");
                     }}
                     className="inline-flex items-center justify-center gap-2 rounded-2xl border border-violet-300/20 bg-white/5 px-4 py-3 text-sm font-medium text-white transition-colors hover:bg-white/10"
                   >
                     <Upload className="h-4 w-4" />
                     Select Video File
-                  </button>
+                  </label>
                   <button
                     type="button"
                     onClick={() => {
@@ -1665,13 +1729,18 @@ export default function YouTubeShortsPage() {
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <p className="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">
-                    Download Progress
+                    Source Progress
                   </p>
                   <h3 className="mt-2 text-lg font-semibold text-white">
-                    Source video local download
+                    {sourceMode === "file"
+                      ? "Selected file secure upload + processing"
+                      : "Source video local download"}
                   </h3>
                   <p className="mt-2 text-sm text-white/55">
-                    {downloadProgress.status || "Abhi download start nahi hui."}
+                    {downloadProgress.status ||
+                      (sourceMode === "file"
+                        ? "Abhi source file upload start nahi hui."
+                        : "Abhi download start nahi hui.")}
                   </p>
                 </div>
                 <div className="rounded-2xl border border-violet-300/15 bg-violet-400/10 px-3 py-2 text-sm font-semibold text-violet-100">
@@ -1695,14 +1764,21 @@ export default function YouTubeShortsPage() {
               </div>
 
               <div className="mt-3 flex flex-wrap items-center gap-3 text-sm text-white/65">
-                <span>
-                  {formatBytes(downloadProgress.loadedBytes)} transferred
-                </span>
-                <span>
-                  {downloadProgress.totalBytes
-                    ? `of ${formatBytes(downloadProgress.totalBytes)}`
-                    : "total size calculating..."}
-                </span>
+                {downloadProgress.totalBytes ? (
+                  <>
+                    <span>
+                      {formatBytes(downloadProgress.loadedBytes)}{" "}
+                      {sourceMode === "file" ? "uploaded" : "transferred"}
+                    </span>
+                    <span>of {formatBytes(downloadProgress.totalBytes)}</span>
+                  </>
+                ) : (
+                  <span>
+                    {sourceMode === "file"
+                      ? "Live site par source file pehle secure cloud upload hoti hai."
+                      : "total size calculating..."}
+                  </span>
+                )}
               </div>
             </div>
 
@@ -1762,39 +1838,16 @@ export default function YouTubeShortsPage() {
 
               <div className="space-y-4">
                 <input
-                  ref={sourceFileInputRef}
+                  id={SOURCE_FILE_INPUT_ID}
                   type="file"
                   accept="video/*"
                   onChange={(event) => {
                     void handleSourceFileSelected(event);
                   }}
-                  className="hidden"
+                  className="sr-only"
                 />
 
-                {isMobile ? (
-                  <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
-                    <div className="flex items-center justify-between gap-3 text-sm text-white/80">
-                      <span className="font-medium">Connected Accounts</span>
-                      <span className="text-xs text-white/45">
-                        {compactConnectedAccountSummary.total} total
-                      </span>
-                    </div>
-                    <div className="mt-3 grid grid-cols-2 gap-3">
-                      <div className="rounded-2xl border border-pink-300/15 bg-pink-500/10 px-3 py-3 text-center">
-                        <p className="text-lg font-semibold text-white">
-                          {compactConnectedAccountSummary.instagram}
-                        </p>
-                        <p className="text-xs text-white/60">Instagram</p>
-                      </div>
-                      <div className="rounded-2xl border border-red-300/15 bg-red-500/10 px-3 py-3 text-center">
-                        <p className="text-lg font-semibold text-white">
-                          {compactConnectedAccountSummary.youtube}
-                        </p>
-                        <p className="text-xs text-white/60">YouTube</p>
-                      </div>
-                    </div>
-                  </div>
-                ) : allConnectedAccounts.length > 0 ? (
+                {!isMobile && allConnectedAccounts.length > 0 ? (
                   <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
                     <div className="flex items-center gap-2 text-sm font-medium text-white/80">
                       <Youtube className="h-4 w-4 text-fuchsia-300" />
@@ -1856,9 +1909,12 @@ export default function YouTubeShortsPage() {
                   >
                     Use YouTube Link
                   </button>
-                  <button
-                    type="button"
-                    onClick={handleOpenSourceFilePicker}
+                  <label
+                    htmlFor={SOURCE_FILE_INPUT_ID}
+                    onClick={() => {
+                      setAutoGenerateAfterFilePick(false);
+                      setSourceMode("file");
+                    }}
                     className={`inline-flex items-center justify-center gap-2 rounded-2xl px-4 py-2 text-sm font-semibold transition-colors ${
                       sourceMode === "file"
                         ? "bg-violet-500 text-white"
@@ -1867,7 +1923,7 @@ export default function YouTubeShortsPage() {
                   >
                     <Upload className="h-4 w-4" />
                     Use Video File
-                  </button>
+                  </label>
                 </div>
 
                 {sourceFile ? (
@@ -1880,7 +1936,7 @@ export default function YouTubeShortsPage() {
                         <p className="mt-1 text-xs text-violet-100/80">
                           {formatBytes(sourceFile.size)} •{" "}
                           {sourceMode === "file"
-                            ? "Active source: phone video file"
+                            ? "Active source: phone video file (live par secure upload)"
                             : "Saved file fallback ready"}
                         </p>
                       </div>
@@ -2070,8 +2126,10 @@ export default function YouTubeShortsPage() {
 
               {instagramAccounts.length === 0 ? (
                 <div className="rounded-2xl border border-red-400/20 bg-red-500/10 p-4 text-sm text-red-100">
-                  Instagram account connected nahi hai. Dashboard ya login page
-                  se pehle connect karo.
+                  Instagram account connected nahi hai. Localhost aur live
+                  domain alag browser storage use karte hain, isliye local login
+                  live site par auto-show nahi hota. Dashboard ya login page se
+                  live domain par dubara connect karo.
                 </div>
               ) : (
                 <div className="space-y-3">

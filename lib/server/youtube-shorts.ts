@@ -580,6 +580,26 @@ async function downloadYouTubeSourceVideoWithYouTubeJs(
   }
 }
 
+async function downloadRemoteSourceVideo(
+  sourceUrl: string,
+  outputPath: string,
+) {
+  const response = await fetch(sourceUrl, {
+    redirect: "follow",
+  });
+
+  if (!response.ok || !response.body) {
+    throw new Error(
+      `Uploaded source file download failed with status ${response.status}.`,
+    );
+  }
+
+  await pipeline(
+    Readable.fromWeb(response.body as any),
+    createWriteStream(outputPath),
+  );
+}
+
 async function renderVerticalShort({
   inputPath,
   outputPath,
@@ -990,6 +1010,92 @@ export async function buildUploadedVideoShortAssets({
     return await buildShortAssetsFromPreparedSource({
       sourcePath,
       sourceUrl: `uploaded-file:${fileName}`,
+      videoId: sanitizedBaseName,
+      sourceTitle,
+      sourceDescription,
+      sourceKeywords,
+      durationSeconds: safeDurationSeconds,
+      segmentDurationSeconds,
+      overlapSeconds,
+      uploadFolder,
+      authorName: "Uploaded from device",
+    });
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+export async function buildRemoteVideoShortAssets({
+  sourceUrl,
+  fileName,
+  contentType,
+  durationSeconds,
+  segmentDurationSeconds = 15,
+  overlapSeconds = 5,
+  title,
+  description,
+  keywords = [],
+}: {
+  sourceUrl: string;
+  fileName?: string;
+  contentType?: string;
+  durationSeconds: number;
+  segmentDurationSeconds?: number;
+  overlapSeconds?: number;
+  title?: string;
+  description?: string;
+  keywords?: string[];
+}) {
+  if (!sourceUrl.trim()) {
+    throw new Error("Uploaded source URL missing hai.");
+  }
+
+  const safeDurationSeconds = Math.max(0, Math.floor(durationSeconds));
+  if (safeDurationSeconds <= 0) {
+    throw new Error("Uploaded video duration invalid hai. Dusri file try karo.");
+  }
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "remote-youtube-shorts-"));
+  const sourceUrlPathname = (() => {
+    try {
+      return new URL(sourceUrl).pathname;
+    } catch {
+      return sourceUrl;
+    }
+  })();
+  const extension =
+    path.extname(fileName || sourceUrlPathname) ||
+    (contentType?.includes("webm")
+      ? ".webm"
+      : contentType?.includes("quicktime")
+        ? ".mov"
+        : ".mp4");
+  const sanitizedBaseName = sanitizePathPart(
+    path.basename(
+      fileName || sourceUrlPathname,
+      path.extname(fileName || sourceUrlPathname),
+    ) || `uploaded-video-${Date.now()}`,
+  );
+  const sourcePath = path.join(tempRoot, `${sanitizedBaseName}${extension}`);
+  const uploadFolder = `youtube-shorts/uploaded/${new Date().toISOString().slice(0, 10)}/${Date.now()}`;
+
+  try {
+    await downloadRemoteSourceVideo(sourceUrl, sourcePath);
+
+    const sourceTitle =
+      title?.trim() ||
+      path.basename(fileName || sourceUrlPathname, path.extname(fileName || sourceUrlPathname)) ||
+      "Uploaded Video";
+    const sourceDescription =
+      description?.trim() || "Uploaded source video for shorts generation.";
+    const sourceKeywords =
+      keywords.length > 0
+        ? keywords
+        : deriveKeywordsFromMetadata(sourceTitle, sourceDescription, []);
+
+    return await buildShortAssetsFromPreparedSource({
+      sourcePath,
+      sourceUrl,
       videoId: sanitizedBaseName,
       sourceTitle,
       sourceDescription,
