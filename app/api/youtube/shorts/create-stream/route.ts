@@ -7,7 +7,7 @@ import type {
 } from "@/lib/youtube-shorts";
 
 export const runtime = "nodejs";
-export const maxDuration = 600;
+export const maxDuration = 300;
 
 function parseFramingMode(value: unknown): ShortsFramingMode | undefined {
   return value === "fill" || value === "show-full" ? value : undefined;
