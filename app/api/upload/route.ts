@@ -4,14 +4,15 @@ import { ObjectId } from "mongodb";
 import { getDb, getGridFSBucket } from "@/lib/mongodb";
 
 export const runtime = "nodejs";
-export const maxDuration = 60; // Upload bypasses this via presigned URLs
+export const maxDuration = 30; // Upload bypasses this via presigned URLs
 
 const SIMPLE_UPLOAD_MAX_BYTES = 500 * 1024 * 1024; // 500MB single upload
 const CHUNK_UPLOAD_MAX_BYTES = 2 * 1024 * 1024 * 1024; // 2GB per chunk
 
 // Cloudinary config for presigned uploads (large videos)
 const CLOUDINARY_CLOUD_NAME = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
-const CLOUDINARY_UPLOAD_PRESET = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET;
+const CLOUDINARY_UPLOAD_PRESET =
+  process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET;
 
 function buildFileUrl(request: Request, fileId: string) {
   const origin =
@@ -39,7 +40,7 @@ async function handleSingleUpload(request: Request, file: File) {
         error:
           "File is too large for single-request upload. Retry with chunked upload.",
       },
-      { status: 413 }
+      { status: 413 },
     );
   }
 
@@ -69,13 +70,17 @@ async function handleSingleUpload(request: Request, file: File) {
   });
 }
 
-async function handleChunkedUpload(request: Request, formData: FormData, file: File) {
+async function handleChunkedUpload(
+  request: Request,
+  formData: FormData,
+  file: File,
+) {
   if (file.size > CHUNK_UPLOAD_MAX_BYTES) {
     return NextResponse.json(
       {
         error: "Chunk payload is too large. Reduce chunk size and try again.",
       },
-      { status: 413 }
+      { status: 413 },
     );
   }
 
@@ -97,21 +102,21 @@ async function handleChunkedUpload(request: Request, formData: FormData, file: F
   ) {
     return NextResponse.json(
       { error: "Missing chunk upload metadata" },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
   if (chunkIndex < 0 || totalChunks <= 0 || chunkIndex >= totalChunks) {
     return NextResponse.json(
       { error: "Invalid chunk indices" },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
   if (chunkSize <= 0 || fileSize <= 0) {
     return NextResponse.json(
       { error: "Invalid file size metadata" },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
@@ -132,7 +137,7 @@ async function handleChunkedUpload(request: Request, formData: FormData, file: F
         data: chunkBuffer,
       },
     },
-    { upsert: true }
+    { upsert: true },
   );
 
   const uploadId = fileId.toString();
@@ -158,7 +163,7 @@ async function handleChunkedUpload(request: Request, formData: FormData, file: F
         uploadedChunks: uploadedChunkCount,
         totalChunks,
       },
-      { status: 409 }
+      { status: 409 },
     );
   }
 
@@ -182,7 +187,7 @@ async function handleChunkedUpload(request: Request, formData: FormData, file: F
         },
       },
     },
-    { upsert: true }
+    { upsert: true },
   );
 
   return NextResponse.json({
@@ -196,8 +201,11 @@ export async function GET() {
   try {
     if (!CLOUDINARY_CLOUD_NAME || !CLOUDINARY_UPLOAD_PRESET) {
       return NextResponse.json(
-        { error: "Cloudinary not configured. Set NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME and NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET" },
-        { status: 500 }
+        {
+          error:
+            "Cloudinary not configured. Set NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME and NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET",
+        },
+        { status: 500 },
       );
     }
 
@@ -216,7 +224,7 @@ export async function GET() {
     console.error("[v0] Error getting upload URL:", error);
     return NextResponse.json(
       { error: "Failed to get upload URL" },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
@@ -245,7 +253,7 @@ export async function POST(request: Request) {
     console.error("Upload error:", error);
     return NextResponse.json(
       { error: error.message || "Upload failed" },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
