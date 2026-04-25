@@ -18,14 +18,74 @@ export interface ShortsVideoMetadata {
   authorName?: string;
 }
 
+export type ShortsFramingMode = "show-full" | "fill";
+export type ShortsQualityPreset = "auto" | "1080p" | "1440p" | "2160p";
+export type ShortsResolvedQualityPreset = Exclude<ShortsQualityPreset, "auto">;
+
+export const SHORTS_FRAMING_MODE_OPTIONS = [
+  {
+    value: "show-full",
+    label: "Show Full Video",
+    description: "Keep the whole video visible with a blurred vertical background.",
+  },
+  {
+    value: "fill",
+    label: "Fill Frame",
+    description: "Zoom and crop the source so the full 9:16 frame stays filled.",
+  },
+] as const;
+
+export const SHORTS_QUALITY_PRESET_OPTIONS = [
+  {
+    value: "auto",
+    label: "Auto Up To 4K",
+    description: "Match the source quality and render as high as 2160x3840.",
+  },
+  {
+    value: "1080p",
+    label: "1080p",
+    description: "Fastest Full HD vertical render at 1080x1920.",
+  },
+  {
+    value: "1440p",
+    label: "1440p",
+    description: "Sharper vertical render at 1440x2560.",
+  },
+  {
+    value: "2160p",
+    label: "4K",
+    description: "Maximum vertical render at 2160x3840.",
+  },
+] as const;
+
+export interface ShortsRenderSettings {
+  framingMode?: ShortsFramingMode;
+  qualityPreset?: ShortsQualityPreset;
+  includeLogoOverlay?: boolean;
+}
+
+export interface ShortsRenderMetadata {
+  renderWidth: number;
+  renderHeight: number;
+  renderLabel: string;
+  framingMode: ShortsFramingMode;
+  hasLogoOverlay: boolean;
+}
+
 export interface GeneratedShortCopy {
   title: string;
   description: string;
   keywords: string[];
   caption: string;
+  partLabel: string;
+  headlineLines: string[];
+  highlightedLineIndex: number;
 }
 
-export interface GeneratedShortAsset extends ShortsWindow, GeneratedShortCopy {
+export interface GeneratedShortAsset
+  extends ShortsWindow,
+    GeneratedShortCopy,
+    ShortsRenderMetadata {
   assetUrl: string;
   cloudinaryPublicId: string;
   cloudinaryResourceType: string;
@@ -72,6 +132,132 @@ function trimText(value: string, maxLength: number) {
   return `${normalized.slice(0, Math.max(0, maxLength - 1)).trim()}...`;
 }
 
+function cleanHeadlineSourceText(value: string) {
+  return value
+    .replace(/\b(official|video|shorts?|reels?|instagram|youtube|viral|clip)\b/gi, " ")
+    .replace(/[#|]+/g, " ")
+    .replace(/[^\p{L}\p{N}\s!?.,&'/-]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function joinWords(words: string[]) {
+  return words.join(" ").trim();
+}
+
+function splitHeadlineWords(
+  words: string[],
+  lineCount: number,
+  maxLineLength: number,
+) {
+  if (words.length === 0) {
+    return [];
+  }
+
+  const breakCount = Math.max(0, lineCount - 1);
+  const best = {
+    score: Number.POSITIVE_INFINITY,
+    lines: [joinWords(words)],
+  };
+
+  const considerLines = (indices: number[]) => {
+    const lines: string[] = [];
+    let cursor = 0;
+
+    for (const index of [...indices, words.length]) {
+      lines.push(joinWords(words.slice(cursor, index)));
+      cursor = index;
+    }
+
+    if (lines.some((line) => !line)) {
+      return;
+    }
+
+    const lengths = lines.map((line) => line.length);
+    const longest = Math.max(...lengths);
+    const shortest = Math.min(...lengths);
+    const overflowPenalty = lengths.reduce((penalty, length) => {
+      if (length <= maxLineLength) {
+        return penalty;
+      }
+
+      const overflow = length - maxLineLength;
+      return penalty + overflow * overflow * 5;
+    }, 0);
+    const score = overflowPenalty + (longest - shortest) * 2 + longest;
+
+    if (score < best.score) {
+      best.score = score;
+      best.lines = lines;
+    }
+  };
+
+  const search = (startIndex: number, remainingBreaks: number, indices: number[]) => {
+    if (remainingBreaks === 0) {
+      considerLines(indices);
+      return;
+    }
+
+    const maxIndex = words.length - remainingBreaks;
+    for (let index = startIndex; index <= maxIndex; index += 1) {
+      search(index + 1, remainingBreaks - 1, [...indices, index]);
+    }
+  };
+
+  if (breakCount === 0 || words.length === 1) {
+    return best.lines;
+  }
+
+  search(1, breakCount, []);
+  return best.lines;
+}
+
+export function buildHeadlineLinesFromTitle(title: string) {
+  const cleanedTitle = cleanHeadlineSourceText(title);
+  const words = cleanedTitle
+    .split(/\s+/)
+    .map((word) => word.trim())
+    .filter(Boolean)
+    .slice(0, 12);
+
+  if (words.length === 0) {
+    return ["Zaroor Dekho", "Aage Kya Hua"];
+  }
+
+  if (words.length === 1) {
+    return [words[0], "Zaroor Dekho"];
+  }
+
+  if (words.length <= 4) {
+    return splitHeadlineWords(words, 2, 18).slice(0, 2);
+  }
+
+  if (words.length <= 8) {
+    return splitHeadlineWords(words, 2, 22).slice(0, 2);
+  }
+
+  return splitHeadlineWords(words, 3, 20).slice(0, 3);
+}
+
+export function getHeadlineHighlightLineIndex(lines: string[]) {
+  if (lines.length <= 1) {
+    return 0;
+  }
+
+  let bestIndex = 0;
+  let bestLength = Number.POSITIVE_INFINITY;
+
+  lines.forEach((line, index) => {
+    const nextLength = line.trim().length;
+    if (nextLength > 0 && nextLength < bestLength) {
+      bestLength = nextLength;
+      bestIndex = index;
+    }
+  });
+
+  return bestIndex;
+}
+
 export function formatSeconds(totalSeconds: number) {
   const safeSeconds = Math.max(0, Math.floor(totalSeconds));
   const hours = Math.floor(safeSeconds / 3600);
@@ -93,7 +279,7 @@ export function buildShortsPlan({
   overlapSeconds = 5,
   minimumClipSeconds = 8,
   minimumSegmentSeconds = 1,
-  maximumSegmentSeconds = 30,
+  maximumSegmentSeconds = 60,
 }: BuildShortsPlanOptions): ShortsWindow[] {
   const safeDuration = Math.max(0, Math.floor(durationSeconds));
   const safeMinimumSegmentSeconds = Math.max(
@@ -171,6 +357,10 @@ export function buildGeneratedShortCopy({
     originalDescription || "Auto-generated short clip for Instagram Reels.",
     280,
   );
+  const partLabel = `Part ${segment.index + 1}`;
+  const partSummary = `${partLabel}/${totalSegments}`;
+  const headlineLines = buildHeadlineLinesFromTitle(originalTitle || baseTitle);
+  const highlightedLineIndex = getHeadlineHighlightLineIndex(headlineLines);
   const derivedKeywords = uniqueKeywords([
     ...(originalKeywords || []),
     ...baseTitle.split(/\s+/),
@@ -186,7 +376,7 @@ export function buildGeneratedShortCopy({
     .slice(0, 8)
     .map((keyword) => `#${keyword}`)
     .join(" ");
-  const clipPrefix = `Clip ${segment.index + 1}/${totalSegments}`;
+  const clipPrefix = `${partLabel} of ${totalSegments}`;
   const rangeLine = `${clipPrefix} | ${formatSeconds(segment.startSeconds)} - ${formatSeconds(
     segment.endSeconds,
   )}`;
@@ -194,7 +384,7 @@ export function buildGeneratedShortCopy({
   const description = [normalizedDescription, rangeLine, hashtagLine]
     .filter(Boolean)
     .join("\n\n");
-  const caption = [baseTitle, rangeLine, normalizedDescription, hashtagLine]
+  const caption = [`${baseTitle} • ${partSummary}`, rangeLine, normalizedDescription, hashtagLine]
     .filter(Boolean)
     .join("\n\n");
 
@@ -203,6 +393,9 @@ export function buildGeneratedShortCopy({
     description,
     keywords: derivedKeywords,
     caption,
+    partLabel,
+    headlineLines,
+    highlightedLineIndex,
   };
 }
 

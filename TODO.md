@@ -1,7 +1,25 @@
-# YouTube Confirmation & Cookie Setup Improvements
+# Shorts Render Speed Optimization - TODO
 
-## Steps
+## Status: IN PROGRESS
 
-- [x] 1. Update `YOUTUBE_SETUP.md` — Add "Handling YouTube Bot Checks & Cookie Setup" section
-- [x] 2. Create `.env.example` — New root file with all relevant environment variables
-- [x] 3. Fix UX in `app/youtube-shorts/page.tsx` — Reset stale error progress states on file select after bot-check failure
+### Step 1: Create TODO & confirm plan ✅
+
+### Step 2: Edit `lib/server/youtube-shorts.ts` - Hardware accel + fast profiles + pipelining ✅
+
+- Hardware acceleration auto-detect (h264_videotoolbox, nvenc, vaapi, qsv)
+- Fast render profiles: veryfast preset, crf 22/23, lower bitrates
+- gblur sigma reduced 28 → 12 (huge CPU save)
+- Render-Upload pipelining (upload starts while next render runs)
+- Higher concurrency limits
+
+### Step 3: Edit API routes - maxDuration 300 → 600 ✅
+
+- `app/api/youtube/shorts/create/route.ts`
+- `app/api/youtube/shorts/create-stream/route.ts`
+- `app/api/youtube/shorts/create-upload/route.ts`
+- `app/api/youtube/shorts/create-upload-stream/route.ts`
+- `app/api/youtube/shorts/source/route.ts`
+
+### Step 4: Test build ✅
+
+- `npx tsc --noEmit` passed with 0 errors

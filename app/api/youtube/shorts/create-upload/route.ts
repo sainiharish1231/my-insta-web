@@ -3,9 +3,13 @@ import {
   buildRemoteVideoShortAssets,
   buildUploadedVideoShortAssets,
 } from "@/lib/server/youtube-shorts";
+import type {
+  ShortsFramingMode,
+  ShortsQualityPreset,
+} from "@/lib/youtube-shorts";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+export const maxDuration = 600;
 
 function parseNumber(value: FormDataEntryValue | null, fallback: number) {
   if (typeof value !== "string") {
@@ -24,7 +28,9 @@ function parseKeywords(value: FormDataEntryValue | null) {
   try {
     const parsed = JSON.parse(value);
     if (Array.isArray(parsed)) {
-      return parsed.filter((keyword): keyword is string => typeof keyword === "string");
+      return parsed.filter(
+        (keyword): keyword is string => typeof keyword === "string",
+      );
     }
   } catch {
     return value
@@ -34,6 +40,39 @@ function parseKeywords(value: FormDataEntryValue | null) {
   }
 
   return [];
+}
+
+function parseFramingMode(
+  value: FormDataEntryValue | null,
+): ShortsFramingMode | undefined {
+  return value === "fill" || value === "show-full" ? value : undefined;
+}
+
+function parseQualityPreset(
+  value: FormDataEntryValue | null,
+): ShortsQualityPreset | undefined {
+  return value === "auto" ||
+    value === "1080p" ||
+    value === "1440p" ||
+    value === "2160p"
+    ? value
+    : undefined;
+}
+
+function parseBoolean(value: FormDataEntryValue | null) {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  if (value === "true") {
+    return true;
+  }
+
+  if (value === "false") {
+    return false;
+  }
+
+  return undefined;
 }
 
 export async function POST(request: NextRequest) {
@@ -67,8 +106,16 @@ export async function POST(request: NextRequest) {
             ),
             overlapSeconds: parseNumber(formData.get("overlapSeconds"), 0),
             title: typeof title === "string" ? title : undefined,
-            description: typeof description === "string" ? description : undefined,
+            description:
+              typeof description === "string" ? description : undefined,
             keywords: parseKeywords(formData.get("keywords")),
+            renderSettings: {
+              framingMode: parseFramingMode(formData.get("framingMode")),
+              qualityPreset: parseQualityPreset(formData.get("qualityPreset")),
+              includeLogoOverlay: parseBoolean(
+                formData.get("includeLogoOverlay"),
+              ),
+            },
           })
         : await buildRemoteVideoShortAssets({
             sourceUrl: sourceUrl!,
@@ -87,8 +134,16 @@ export async function POST(request: NextRequest) {
             ),
             overlapSeconds: parseNumber(formData.get("overlapSeconds"), 0),
             title: typeof title === "string" ? title : undefined,
-            description: typeof description === "string" ? description : undefined,
+            description:
+              typeof description === "string" ? description : undefined,
             keywords: parseKeywords(formData.get("keywords")),
+            renderSettings: {
+              framingMode: parseFramingMode(formData.get("framingMode")),
+              qualityPreset: parseQualityPreset(formData.get("qualityPreset")),
+              includeLogoOverlay: parseBoolean(
+                formData.get("includeLogoOverlay"),
+              ),
+            },
           });
 
     return NextResponse.json({
@@ -98,7 +153,9 @@ export async function POST(request: NextRequest) {
   } catch (error: any) {
     console.error("[v0] Failed to create uploaded-video shorts:", error);
     return NextResponse.json(
-      { error: error.message || "Failed to create shorts from uploaded video." },
+      {
+        error: error.message || "Failed to create shorts from uploaded video.",
+      },
       { status: 500 },
     );
   }

@@ -15,6 +15,31 @@ interface FacebookPageAccount {
   };
 }
 
+function isUnsupportedAccountsEdgeError(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const candidate = error as Record<string, unknown>;
+  const message =
+    typeof candidate.message === "string"
+      ? candidate.message.toLowerCase()
+      : "";
+  const code =
+    typeof candidate.code === "number"
+      ? candidate.code
+      : typeof candidate.code === "string"
+        ? Number(candidate.code)
+        : NaN;
+
+  return (
+    Number.isFinite(code) &&
+    code === 100 &&
+    (message.includes("nonexisting field (accounts)") ||
+      message.includes("unsupported get request"))
+  );
+}
+
 function normalizeStoredInstagramAccount(
   value: unknown,
 ): StoredInstagramAccount | null {
@@ -134,12 +159,20 @@ async function fetchInstagramAccountProfile(
 }
 
 export async function fetchInstagramAccountsFromFacebook(accessToken: string) {
+  if (!accessToken.trim()) {
+    return [];
+  }
+
   const pagesRes = await fetch(
     `https://graph.facebook.com/v21.0/me/accounts?fields=id,access_token,instagram_business_account&access_token=${encodeURIComponent(accessToken)}`,
   );
   const pagesData = await pagesRes.json();
 
   if (pagesData?.error) {
+    if (isUnsupportedAccountsEdgeError(pagesData.error)) {
+      return [];
+    }
+
     throw new Error(
       pagesData.error.message || "Failed to load Facebook Pages for this account.",
     );

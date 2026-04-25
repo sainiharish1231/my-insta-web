@@ -1,8 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
 import { buildYouTubeShortAssets } from "@/lib/server/youtube-shorts";
+import type {
+  ShortsFramingMode,
+  ShortsQualityPreset,
+} from "@/lib/youtube-shorts";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+export const maxDuration = 600;
+
+function parseFramingMode(value: unknown): ShortsFramingMode | undefined {
+  return value === "fill" || value === "show-full" ? value : undefined;
+}
+
+function parseQualityPreset(value: unknown): ShortsQualityPreset | undefined {
+  return value === "auto" ||
+    value === "1080p" ||
+    value === "1440p" ||
+    value === "2160p"
+    ? value
+    : undefined;
+}
+
+function parseBoolean(value: unknown) {
+  return typeof value === "boolean" ? value : undefined;
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -13,6 +34,9 @@ export async function POST(request: NextRequest) {
       title,
       description,
       keywords = [],
+      framingMode,
+      qualityPreset,
+      includeLogoOverlay,
     } = await request.json();
 
     if (!url || typeof url !== "string") {
@@ -33,6 +57,11 @@ export async function POST(request: NextRequest) {
       title: typeof title === "string" ? title : undefined,
       description: typeof description === "string" ? description : undefined,
       keywords: normalizedKeywords,
+      renderSettings: {
+        framingMode: parseFramingMode(framingMode),
+        qualityPreset: parseQualityPreset(qualityPreset),
+        includeLogoOverlay: parseBoolean(includeLogoOverlay),
+      },
     });
 
     return NextResponse.json({

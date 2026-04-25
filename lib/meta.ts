@@ -233,7 +233,22 @@ export function buildInstagramReadyCloudinaryVideoUrl(publicId: string) {
     .map((part) => encodeURIComponent(part))
     .join("/");
 
-  return `https://res.cloudinary.com/${cloudName}/video/upload/f_mp4,q_auto:good,so_0/${encodedPublicId}.mp4`;
+  return `https://res.cloudinary.com/${cloudName}/video/upload/f_mp4,q_auto:best,so_0/${encodedPublicId}.mp4`;
+}
+
+export function buildCloudinaryVideoDownloadUrl(publicId: string) {
+  const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
+
+  if (!cloudName || !publicId) {
+    return "";
+  }
+
+  const encodedPublicId = publicId
+    .split("/")
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+
+  return `https://res.cloudinary.com/${cloudName}/video/upload/fl_attachment/${encodedPublicId}.mp4`;
 }
 
 function getCloudinaryResourceType(file: File): "image" | "video" | "raw" {

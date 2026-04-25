@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { downloadYouTubeSourceVideoLocally } from "@/lib/server/youtube-shorts";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+export const maxDuration = 600;
 
 export async function POST(request: NextRequest) {
   try {
