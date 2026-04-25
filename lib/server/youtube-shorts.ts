@@ -39,7 +39,12 @@ function resolveBundledFfmpegPath() {
     typeof ffmpegPath === "string"
       ? ffmpegPath.replace(/^\/ROOT\//, "/root/")
       : null,
-    path.join(process.cwd(), "node_modules", "ffmpeg-static", "ffmpeg"),
+    path.join(
+      /*turbopackIgnore: true*/ process.cwd(),
+      "node_modules",
+      "ffmpeg-static",
+      "ffmpeg",
+    ),
   ].filter((candidate): candidate is string => Boolean(candidate));
 
   for (const candidate of candidates) {
@@ -283,10 +288,26 @@ function resolveShortsLogoOverlayPath() {
   const configuredLogoPath = process.env.YOUTUBE_SHORTS_LOGO_PATH?.trim();
   const candidates = [
     configuredLogoPath,
-    path.join(process.cwd(), "public", "logo-overlay.png"),
-    path.join(process.cwd(), "public", "logo-overlay.webp"),
-    path.join(process.cwd(), "public", "logo-overlay.jpg"),
-    path.join(process.cwd(), "public", "logo-overlay.jpeg"),
+    path.join(
+      /*turbopackIgnore: true*/ process.cwd(),
+      "public",
+      "logo-overlay.png",
+    ),
+    path.join(
+      /*turbopackIgnore: true*/ process.cwd(),
+      "public",
+      "logo-overlay.webp",
+    ),
+    path.join(
+      /*turbopackIgnore: true*/ process.cwd(),
+      "public",
+      "logo-overlay.jpg",
+    ),
+    path.join(
+      /*turbopackIgnore: true*/ process.cwd(),
+      "public",
+      "logo-overlay.jpeg",
+    ),
   ].filter((candidate): candidate is string => Boolean(candidate));
 
   for (const candidate of candidates) {
@@ -302,9 +323,24 @@ function resolveShortsFontPath() {
   const configuredFontPath = process.env.YOUTUBE_SHORTS_FONT_PATH?.trim();
   const candidates = [
     configuredFontPath,
-    path.join(process.cwd(), "public", "fonts", "NotoSansDevanagari-Bold.ttf"),
-    path.join(process.cwd(), "public", "fonts", "NotoSans-Bold.ttf"),
-    path.join(process.cwd(), "public", "fonts", "Inter-Bold.ttf"),
+    path.join(
+      /*turbopackIgnore: true*/ process.cwd(),
+      "public",
+      "fonts",
+      "NotoSansDevanagari-Bold.ttf",
+    ),
+    path.join(
+      /*turbopackIgnore: true*/ process.cwd(),
+      "public",
+      "fonts",
+      "NotoSans-Bold.ttf",
+    ),
+    path.join(
+      /*turbopackIgnore: true*/ process.cwd(),
+      "public",
+      "fonts",
+      "Inter-Bold.ttf",
+    ),
     "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
     "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
     "/System/Library/Fonts/Supplemental/NotoSansDevanagari.ttc",
@@ -1154,7 +1190,12 @@ async function getYouTubeJsClient() {
 }
 
 async function resolveYtDlpCommand() {
-  const localBinary = path.join(process.cwd(), ".venv-ytdlp", "bin", "yt-dlp");
+  const localBinary = path.join(
+    /*turbopackIgnore: true*/ process.cwd(),
+    ".venv-ytdlp",
+    "bin",
+    "yt-dlp",
+  );
   if (await pathExists(localBinary)) {
     return {
       command: localBinary,
