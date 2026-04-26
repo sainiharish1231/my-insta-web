@@ -26,6 +26,10 @@ function parseBoolean(value: unknown) {
   return typeof value === "boolean" ? value : undefined;
 }
 
+function parseString(value: unknown) {
+  return typeof value === "string" ? value : undefined;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const {
@@ -38,6 +42,9 @@ export async function POST(request: NextRequest) {
       framingMode,
       qualityPreset,
       includeLogoOverlay,
+      includeHeadlineOverlay,
+      includeCopyrightOverlay,
+      copyrightText,
     } = await request.json();
 
     if (!url || typeof url !== "string") {
@@ -63,6 +70,9 @@ export async function POST(request: NextRequest) {
           framingMode: parseFramingMode(framingMode),
           qualityPreset: parseQualityPreset(qualityPreset),
           includeLogoOverlay: parseBoolean(includeLogoOverlay),
+          includeHeadlineOverlay: parseBoolean(includeHeadlineOverlay),
+          includeCopyrightOverlay: parseBoolean(includeCopyrightOverlay),
+          copyrightText: parseString(copyrightText),
         },
         callbacks: {
           onPlanReady: async ({
@@ -94,6 +104,15 @@ export async function POST(request: NextRequest) {
               item: asset,
               index,
               total,
+            });
+          },
+          onClipProgress: async ({ clipIndex, total, progress, stage }) => {
+            await emit({
+              type: "clip-progress",
+              clipIndex,
+              total,
+              progress,
+              stage,
             });
           },
         },

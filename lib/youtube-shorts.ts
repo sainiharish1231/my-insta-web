@@ -26,12 +26,14 @@ export const SHORTS_FRAMING_MODE_OPTIONS = [
   {
     value: "show-full",
     label: "Show Full Video",
-    description: "Keep the whole video visible with a blurred vertical background.",
+    description:
+      "Keep the whole video visible with a blurred vertical background.",
   },
   {
     value: "fill",
     label: "Fill Frame",
-    description: "Zoom and crop the source so the full 9:16 frame stays filled.",
+    description:
+      "Zoom and crop the source so the full 9:16 frame stays filled.",
   },
 ] as const;
 
@@ -58,10 +60,15 @@ export const SHORTS_QUALITY_PRESET_OPTIONS = [
   },
 ] as const;
 
+export const DEFAULT_SHORTS_COPYRIGHT_TEXT = "©timesnews.in";
+
 export interface ShortsRenderSettings {
   framingMode?: ShortsFramingMode;
   qualityPreset?: ShortsQualityPreset;
   includeLogoOverlay?: boolean;
+  includeHeadlineOverlay?: boolean;
+  includeCopyrightOverlay?: boolean;
+  copyrightText?: string;
 }
 
 export interface ShortsRenderMetadata {
@@ -83,9 +90,7 @@ export interface GeneratedShortCopy {
 }
 
 export interface GeneratedShortAsset
-  extends ShortsWindow,
-    GeneratedShortCopy,
-    ShortsRenderMetadata {
+  extends ShortsWindow, GeneratedShortCopy, ShortsRenderMetadata {
   assetUrl: string;
   cloudinaryPublicId: string;
   cloudinaryResourceType: string;
@@ -103,7 +108,10 @@ export interface BuildShortsPlanOptions {
 const YOUTUBE_VIDEO_ID_PATTERN = /^[a-zA-Z0-9_-]{6,}$/;
 
 function sanitizeKeyword(value: string) {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, "").trim();
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "")
+    .trim();
 }
 
 function uniqueKeywords(values: string[]) {
@@ -134,7 +142,10 @@ function trimText(value: string, maxLength: number) {
 
 function cleanHeadlineSourceText(value: string) {
   return value
-    .replace(/\b(official|video|shorts?|reels?|instagram|youtube|viral|clip)\b/gi, " ")
+    .replace(
+      /\b(official|video|shorts?|reels?|instagram|youtube|viral|clip)\b/gi,
+      " ",
+    )
     .replace(/[#|]+/g, " ")
     .replace(/[^\p{L}\p{N}\s!?.,&'/-]+/gu, " ")
     .replace(/\s+/g, " ")
@@ -192,7 +203,11 @@ function splitHeadlineWords(
     }
   };
 
-  const search = (startIndex: number, remainingBreaks: number, indices: number[]) => {
+  const search = (
+    startIndex: number,
+    remainingBreaks: number,
+    indices: number[],
+  ) => {
     if (remainingBreaks === 0) {
       considerLines(indices);
       return;
@@ -282,6 +297,7 @@ export function buildShortsPlan({
   maximumSegmentSeconds = 60,
 }: BuildShortsPlanOptions): ShortsWindow[] {
   const safeDuration = Math.max(0, Math.floor(durationSeconds));
+  const safeMinimumClipSeconds = Math.max(1, Math.floor(minimumClipSeconds));
   const safeMinimumSegmentSeconds = Math.max(
     1,
     Math.floor(minimumSegmentSeconds),
@@ -294,7 +310,10 @@ export function buildShortsPlan({
     safeMinimumSegmentSeconds,
     Math.min(safeMaximumSegmentSeconds, Math.floor(segmentDurationSeconds)),
   );
-  const safeOverlap = Math.max(0, Math.min(safeSegmentDuration - 1, Math.floor(overlapSeconds)));
+  const safeOverlap = Math.max(
+    0,
+    Math.min(safeSegmentDuration - 1, Math.floor(overlapSeconds)),
+  );
   const stepSeconds = Math.max(1, safeSegmentDuration - safeOverlap);
 
   if (safeDuration <= 0) {
@@ -306,26 +325,38 @@ export function buildShortsPlan({
   let index = 0;
 
   while (startSeconds < safeDuration) {
-    const endSeconds = Math.min(startSeconds + safeSegmentDuration, safeDuration);
-    const clipDuration = endSeconds - startSeconds;
+    let nextStartSeconds = startSeconds;
+    const endSeconds = Math.min(
+      nextStartSeconds + safeSegmentDuration,
+      safeDuration,
+    );
+    let clipDuration = endSeconds - nextStartSeconds;
 
-    if (clipDuration < minimumClipSeconds && windows.length > 0) {
-      const lastWindow = windows[windows.length - 1];
-      lastWindow.endSeconds = safeDuration;
-      lastWindow.durationSeconds = lastWindow.endSeconds - lastWindow.startSeconds;
-      lastWindow.label = `${formatSeconds(lastWindow.startSeconds)}-${formatSeconds(
-        lastWindow.endSeconds,
-      )}`;
-      break;
+    if (clipDuration < safeMinimumClipSeconds && windows.length > 0) {
+      const minimumStartSeconds = Math.max(
+        0,
+        safeDuration - safeMinimumClipSeconds,
+      );
+      const previousStartSeconds =
+        windows[windows.length - 1]?.startSeconds ?? -1;
+      const adjustedStartSeconds = Math.max(
+        previousStartSeconds + 1,
+        minimumStartSeconds,
+      );
+
+      if (adjustedStartSeconds < endSeconds) {
+        nextStartSeconds = adjustedStartSeconds;
+        clipDuration = endSeconds - nextStartSeconds;
+      }
     }
 
     windows.push({
-      id: `short-${index + 1}-${startSeconds}-${endSeconds}`,
+      id: `short-${index + 1}-${nextStartSeconds}-${endSeconds}`,
       index,
-      startSeconds,
+      startSeconds: nextStartSeconds,
       endSeconds,
       durationSeconds: clipDuration,
-      label: `${formatSeconds(startSeconds)}-${formatSeconds(endSeconds)}`,
+      label: `${formatSeconds(nextStartSeconds)}-${formatSeconds(endSeconds)}`,
     });
 
     if (endSeconds >= safeDuration) {
@@ -384,7 +415,12 @@ export function buildGeneratedShortCopy({
   const description = [normalizedDescription, rangeLine, hashtagLine]
     .filter(Boolean)
     .join("\n\n");
-  const caption = [`${baseTitle} • ${partSummary}`, rangeLine, normalizedDescription, hashtagLine]
+  const caption = [
+    `${baseTitle} • ${partSummary}`,
+    rangeLine,
+    normalizedDescription,
+    hashtagLine,
+  ]
     .filter(Boolean)
     .join("\n\n");
 
@@ -410,7 +446,10 @@ function getParsableYouTubeUrl(url: string) {
     return trimmed;
   }
 
-  if (/^(?:www\.|m\.|music\.)?youtube(?:-nocookie)?\.com/i.test(trimmed) || /^youtu\.be/i.test(trimmed)) {
+  if (
+    /^(?:www\.|m\.|music\.)?youtube(?:-nocookie)?\.com/i.test(trimmed) ||
+    /^youtu\.be/i.test(trimmed)
+  ) {
     return `https://${trimmed}`;
   }
 
@@ -445,11 +484,16 @@ export function extractYouTubeVideoId(url: string) {
       return extractYouTubeVideoId(nestedUrl);
     }
 
-    if (!hostname.includes("youtube.com") && !hostname.includes("youtube-nocookie.com")) {
+    if (
+      !hostname.includes("youtube.com") &&
+      !hostname.includes("youtube-nocookie.com")
+    ) {
       return undefined;
     }
 
-    const directVideoId = normalizeExtractedVideoId(parsed.searchParams.get("v"));
+    const directVideoId = normalizeExtractedVideoId(
+      parsed.searchParams.get("v"),
+    );
     if (directVideoId) {
       return directVideoId;
     }

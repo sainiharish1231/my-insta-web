@@ -76,6 +76,10 @@ function parseBoolean(value: FormDataEntryValue | null) {
   return undefined;
 }
 
+function parseString(value: FormDataEntryValue | null) {
+  return typeof value === "string" ? value : undefined;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
@@ -119,6 +123,13 @@ export async function POST(request: NextRequest) {
                 includeLogoOverlay: parseBoolean(
                   formData.get("includeLogoOverlay"),
                 ),
+                includeHeadlineOverlay: parseBoolean(
+                  formData.get("includeHeadlineOverlay"),
+                ),
+                includeCopyrightOverlay: parseBoolean(
+                  formData.get("includeCopyrightOverlay"),
+                ),
+                copyrightText: parseString(formData.get("copyrightText")),
               },
               callbacks: {
                 onPlanReady: async ({
@@ -150,6 +161,20 @@ export async function POST(request: NextRequest) {
                     item: asset,
                     index,
                     total,
+                  });
+                },
+                onClipProgress: async ({
+                  clipIndex,
+                  total,
+                  progress,
+                  stage,
+                }) => {
+                  await emit({
+                    type: "clip-progress",
+                    clipIndex,
+                    total,
+                    progress,
+                    stage,
                   });
                 },
               },
@@ -182,6 +207,13 @@ export async function POST(request: NextRequest) {
                 includeLogoOverlay: parseBoolean(
                   formData.get("includeLogoOverlay"),
                 ),
+                includeHeadlineOverlay: parseBoolean(
+                  formData.get("includeHeadlineOverlay"),
+                ),
+                includeCopyrightOverlay: parseBoolean(
+                  formData.get("includeCopyrightOverlay"),
+                ),
+                copyrightText: parseString(formData.get("copyrightText")),
               },
               callbacks: {
                 onPlanReady: async ({
@@ -213,6 +245,20 @@ export async function POST(request: NextRequest) {
                     item: asset,
                     index,
                     total,
+                  });
+                },
+                onClipProgress: async ({
+                  clipIndex,
+                  total,
+                  progress,
+                  stage,
+                }) => {
+                  await emit({
+                    type: "clip-progress",
+                    clipIndex,
+                    total,
+                    progress,
+                    stage,
                   });
                 },
               },

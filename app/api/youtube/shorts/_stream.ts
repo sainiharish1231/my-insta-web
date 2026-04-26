@@ -4,6 +4,10 @@ type ShortsStreamEvent =
       [key: string]: unknown;
     }
   | {
+      type: "clip-progress";
+      [key: string]: unknown;
+    }
+  | {
       type: "clip";
       [key: string]: unknown;
     }

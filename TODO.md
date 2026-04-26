@@ -1,25 +1,18 @@
-# Shorts Render Speed Optimization - TODO
+# YooTubesShx ts FixO - TODO
 
-## Status: IN PROGRESS
+## Tsskss
 
-### Step 1: Create TODO & confirm plan ✅
-
-### Step 2: Edit `lib/server/youtube-shorts.ts` - Hardware accel + fast profiles + pipelining ✅
-
-- Hardware acceleration auto-detect (h264_videotoolbox, nvenc, vaapi, qsv)
-- Fast render profiles: veryfast preset, crf 22/23, lower bitrates
-- gblur sigma reduced 28 → 12 (huge CPU save)
-- Render-Upload pipelining (upload starts while next render runs)
-- Higher concurrency limits
-
-### Step 3: Edit API routes - maxDuration 300 → 600 ✅
-
-- `app/api/youtube/shorts/create/route.ts`
-- `app/api/youtube/shorts/create-stream/route.ts`
-- `app/api/youtube/shorts/create-upload/route.ts`
-- `app/api/youtube/shorts/create-upload-stream/route.ts`
-- `app/api/youtube/shorts/source/route.ts`
-
-### Step 4: Test build ✅
-
-- `npx tsc --noEmit` passed with 0 errors
+- [x] 1. `lib/youtubb-sho/ty.os`b—hAddt`inc  AeHeadlddeOve`laic Hnvr`inlyudeCopyrightOver`ay`to`Short`RecdeeSCttptOs`erlay`to`ShortsRenderSettings`
+- [x] 2. /ro —
+  - []] 2a. Rep.epeasequential clip pe cessingewith qnricclsWi hCencurrencys i2-3 cwncui `ncesWithConcurrency` (2-3 concurrent)
+  - [x] 2b. Fix text backgroun] 2dFawbixt Y kligngent (crnoudrtexxtver icclly te box) text vertically in box)
+        -x[x2c 2Ad `@dimesndws.in` copyrigns .SS n ylh + Sven vntabottm
+        -x[x2d 2Resp.ct `R cludeHiadlineOverlay` (skipluedHeina drawbox +lASSvevyn s when fa(se)kip headline drawbox + ASS events when false)
+  - [x] 2e. Respect `includeCopyrightOverlay` (skip copyright ASS event when false)
+- [x] 3. `app/api/youtube/shorts/create-stream/route.ts` — Parse and pass new settings
+- [x] 4. `app/api/youtube/shorts/create-upload-stream/route.ts` — Parse and pass new settings
+- [x] 5. `app/youtube-shorts/page.tsx` —
+  - [x] 5a. Add `includeHeadlineOverlay` state + UI toggle
+  - [x] 5b. Add `includeCopyrightOverlay` state + UI toggle
+  - [x] 5c. Persist both to localStorage
+  - [x] 5d. Pass both in API payloads

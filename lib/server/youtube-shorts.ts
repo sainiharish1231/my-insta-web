@@ -19,6 +19,7 @@ import ffmpegPath from "ffmpeg-static";
 import ytdl from "@distube/ytdl-core";
 import { v2 as cloudinary } from "cloudinary";
 import {
+  DEFAULT_SHORTS_COPYRIGHT_TEXT,
   buildGeneratedShortCopy,
   buildShortsPlan,
   extractYouTubeVideoId,
@@ -148,6 +149,8 @@ const GENERATED_SHORTS_UPLOAD_ROOT = "shorts-videos";
 const DEFAULT_SHORTS_FRAMING_MODE: ShortsFramingMode = "show-full";
 const DEFAULT_SHORTS_QUALITY_PRESET: ShortsQualityPreset = "1080p";
 const DEFAULT_INCLUDE_LOGO_OVERLAY = true;
+const DEFAULT_INCLUDE_HEADLINE_OVERLAY = true;
+const DEFAULT_INCLUDE_COPYRIGHT_OVERLAY = true;
 const CLOUDINARY_VIDEO_UPLOAD_CHUNK_SIZE = 20_000_000;
 
 type ShortsRenderProfile = {
@@ -170,6 +173,9 @@ type ShortsRenderOptions = {
   framingMode: ShortsFramingMode;
   qualityPreset: ShortsQualityPreset;
   includeLogoOverlay: boolean;
+  includeHeadlineOverlay: boolean;
+  includeCopyrightOverlay: boolean;
+  copyrightText: string;
 };
 
 type ProbedVideoStream = {
@@ -191,6 +197,9 @@ type ResolvedShortsRenderContext = {
   framingMode: ShortsFramingMode;
   logoOverlayPath: string | null;
   fontPath: string | null;
+  includeHeadlineOverlay: boolean;
+  includeCopyrightOverlay: boolean;
+  copyrightText: string;
 };
 
 const SHORTS_RENDER_PROFILES: Record<
@@ -279,8 +288,16 @@ type ShortAssetCreatedPayload = ShortsBuildProgressPayload & {
   total: number;
 };
 
+type ShortAssetProgressPayload = ShortsBuildProgressPayload & {
+  clipIndex: number;
+  total: number;
+  progress: number;
+  stage: "render" | "upload";
+};
+
 type ShortBuildCallbacks = {
   onPlanReady?: (payload: ShortsBuildProgressPayload) => Promise<void> | void;
+  onClipProgress?: (payload: ShortAssetProgressPayload) => Promise<void> | void;
   onClipCreated?: (payload: ShortAssetCreatedPayload) => Promise<void> | void;
 };
 
@@ -378,6 +395,18 @@ function normalizeShortsRenderOptions(
       typeof options?.includeLogoOverlay === "boolean"
         ? options.includeLogoOverlay
         : DEFAULT_INCLUDE_LOGO_OVERLAY,
+    includeHeadlineOverlay:
+      typeof options?.includeHeadlineOverlay === "boolean"
+        ? options.includeHeadlineOverlay
+        : DEFAULT_INCLUDE_HEADLINE_OVERLAY,
+    includeCopyrightOverlay:
+      typeof options?.includeCopyrightOverlay === "boolean"
+        ? options.includeCopyrightOverlay
+        : DEFAULT_INCLUDE_COPYRIGHT_OVERLAY,
+    copyrightText:
+      typeof options?.copyrightText === "string" && options.copyrightText.trim()
+        ? options.copyrightText.trim()
+        : DEFAULT_SHORTS_COPYRIGHT_TEXT,
   };
 }
 
@@ -548,6 +577,9 @@ async function resolveShortsRenderContext(
         ? SHORTS_LOGO_OVERLAY_PATH
         : null,
     fontPath: SHORTS_FONT_PATH,
+    includeHeadlineOverlay: normalizedOptions.includeHeadlineOverlay,
+    includeCopyrightOverlay: normalizedOptions.includeCopyrightOverlay,
+    copyrightText: normalizedOptions.copyrightText,
   };
 }
 
@@ -608,7 +640,12 @@ function buildShortsAssScript({
   overlayText: ShortsTextOverlay;
 }) {
   const fontName = resolveAssFontName(renderContext.fontPath);
-  const { profile } = renderContext;
+  const {
+    profile,
+    includeHeadlineOverlay,
+    includeCopyrightOverlay,
+    copyrightText,
+  } = renderContext;
   const headlineLines = overlayText.headlineLines.filter(Boolean).slice(0, 3);
   const headlineFontSize = Math.max(44, Math.round(profile.width * 0.058));
   const headlineLineGap = Math.max(
@@ -627,21 +664,33 @@ function buildShortsAssScript({
   const centerX = Math.round(profile.width / 2);
   const events: string[] = [];
 
-  headlineLines.forEach((line, index) => {
-    const lineY = headlineStartY + index * headlineLineGap;
-    const styleName =
-      index === overlayText.highlightedLineIndex
-        ? "HeadlineDark"
-        : "HeadlineLight";
+  if (includeHeadlineOverlay) {
+    headlineLines.forEach((line, index) => {
+      const lineY = headlineStartY + index * headlineLineGap;
+      const styleName =
+        index === overlayText.highlightedLineIndex
+          ? "HeadlineDark"
+          : "HeadlineLight";
 
-    events.push(
-      `Dialogue: 0,0:00:00.00,9:59:59.00,${styleName},,0,0,0,,{\\an8\\pos(${centerX},${lineY})}${escapeAssText(line)}`,
-    );
-  });
+      events.push(
+        `Dialogue: 0,0:00:00.00,9:59:59.00,${styleName},,0,0,0,,{\\an8\\pos(${centerX},${lineY})}${escapeAssText(line)}`,
+      );
+    });
+  }
 
   events.push(
     `Dialogue: 0,0:00:00.00,9:59:59.00,PartLabel,,0,0,0,,{\\an8\\pos(${centerX},${partBoxY + Math.round(partBoxHeight * 0.22)})}${escapeAssText(overlayText.partLabel)}`,
   );
+
+  if (includeCopyrightOverlay) {
+    const copyrightFontSize = Math.max(18, Math.round(profile.width * 0.022));
+    const copyrightX =
+      profile.width - Math.max(42, Math.round(profile.width * 0.05));
+    const copyrightY = Math.max(42, Math.round(profile.height * 0.06));
+    events.push(
+      `Dialogue: 0,0:00:00.00,9:59:59.00,Copyright,,0,0,0,,{\\an9\\pos(${copyrightX},${copyrightY})}${escapeAssText(copyrightText)}`,
+    );
+  }
 
   return [
     "[Script Info]",
@@ -653,9 +702,14 @@ function buildShortsAssScript({
     "",
     "[V4+ Styles]",
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-    `Style: HeadlineLight,${fontName},${headlineFontSize},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,0,${shadowOffset},8,0,0,0,1`,
-    `Style: HeadlineDark,${fontName},${headlineFontSize},&H00000000,&H00000000,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,0,${Math.max(1, Math.round(shadowOffset * 0.7))},8,0,0,0,1`,
-    `Style: PartLabel,${fontName},${partFontSize},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,0,${shadowOffset},8,0,0,0,1`,
+    `Style: HeadlineLight,${fontName},${headlineFontSize},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,${Math.max(3, Math.round(profile.width * 0.005))},${shadowOffset},8,0,0,0,1`,
+    `Style: HeadlineDark,${fontName},${headlineFontSize},&H00000000,&H00000000,&H00FFFFFF,&H00000000,-1,0,0,0,100,100,0,0,1,${Math.max(2, Math.round(profile.width * 0.004))},${Math.max(1, Math.round(shadowOffset * 0.7))},8,0,0,0,1`,
+    `Style: PartLabel,${fontName},${partFontSize},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,${Math.max(2, Math.round(profile.width * 0.003))},${shadowOffset},8,0,0,0,1`,
+    ...(includeCopyrightOverlay
+      ? [
+          `Style: Copyright,${fontName},${Math.max(18, Math.round(profile.width * 0.022))},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,${Math.max(1, Math.round(profile.width * 0.002))},${Math.max(1, Math.round(shadowOffset * 0.5))},8,0,0,0,1`,
+        ]
+      : []),
     "",
     "[Events]",
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -724,36 +778,38 @@ function buildShortsFilterGraph({
     currentOutputLabel = "shorts_logo_applied";
   }
 
-  const headlineLines = overlayText.headlineLines.filter(Boolean).slice(0, 3);
-  const headlineFontSize = Math.max(44, Math.round(profile.width * 0.058));
-  const headlineLineGap = Math.max(
-    Math.round(headlineFontSize * 1.18),
-    headlineFontSize + 18,
-  );
-  const headlineStartY = Math.max(
-    Math.round(profile.height * 0.17),
-    Math.round(profile.height * 0.15),
-  );
+  if (renderContext.includeHeadlineOverlay) {
+    const headlineLines = overlayText.headlineLines.filter(Boolean).slice(0, 3);
+    const headlineFontSize = Math.max(44, Math.round(profile.width * 0.058));
+    const headlineLineGap = Math.max(
+      Math.round(headlineFontSize * 1.18),
+      headlineFontSize + 18,
+    );
+    const headlineStartY = Math.max(
+      Math.round(profile.height * 0.17),
+      Math.round(profile.height * 0.15),
+    );
 
-  headlineLines.forEach((line, index) => {
-    const lineY = headlineStartY + index * headlineLineGap;
+    headlineLines.forEach((line, index) => {
+      const lineY = headlineStartY + index * headlineLineGap;
 
-    if (index === overlayText.highlightedLineIndex) {
-      const boxWidth = estimateHeadlineBoxWidth(
-        line,
-        headlineFontSize,
-        profile.width,
-      );
-      const boxHeight = Math.round(headlineFontSize * 1.45);
-      const boxX = Math.round((profile.width - boxWidth) / 2);
-      const boxY = lineY - Math.round(headlineFontSize * 0.42);
+      if (index === overlayText.highlightedLineIndex) {
+        const boxWidth = estimateHeadlineBoxWidth(
+          line,
+          headlineFontSize,
+          profile.width,
+        );
+        const boxHeight = Math.round(headlineFontSize * 1.5);
+        const boxX = Math.round((profile.width - boxWidth) / 2);
+        const boxY = lineY - Math.round(headlineFontSize * 0.25);
 
-      filters.push(
-        `[${currentOutputLabel}]drawbox=x=${boxX}:y=${boxY}:w=${boxWidth}:h=${boxHeight}:color=0xFFF4D6@0.96:t=fill[shorts_text_box_${index}]`,
-      );
-      currentOutputLabel = `shorts_text_box_${index}`;
-    }
-  });
+        filters.push(
+          `[${currentOutputLabel}]drawbox=x=${boxX}:y=${boxY}:w=${boxWidth}:h=${boxHeight}:color=0xFFF4D6@0.96:t=fill[shorts_text_box_${index}]`,
+        );
+        currentOutputLabel = `shorts_text_box_${index}`;
+      }
+    });
+  }
 
   const partFontSize = Math.max(30, Math.round(profile.width * 0.038));
   const partBoxWidth = Math.max(230, Math.round(profile.width * 0.28));
@@ -763,10 +819,6 @@ function buildShortsFilterGraph({
     profile.height - Math.max(120, Math.round(profile.height * 0.09));
 
   if (subtitlePath) {
-    filters.push(
-      `[${currentOutputLabel}]drawbox=x=${partBoxX}:y=${partBoxY}:w=${partBoxWidth}:h=${partBoxHeight}:color=0x0A0F1E@0.48:t=fill[shorts_part_box]`,
-    );
-
     const subtitleOptions = [
       `filename='${escapeFfmpegFilterValue(subtitlePath)}'`,
     ];
@@ -778,12 +830,10 @@ function buildShortsFilterGraph({
     }
 
     filters.push(
-      `[shorts_part_box]subtitles=${subtitleOptions.join(":")}[shorts_video]`,
+      `[${currentOutputLabel}]subtitles=${subtitleOptions.join(":")}[shorts_video]`,
     );
   } else {
-    filters.push(
-      `[${currentOutputLabel}]drawbox=x=${partBoxX}:y=${partBoxY}:w=${partBoxWidth}:h=${partBoxHeight}:color=0x0A0F1E@0.48:t=fill[shorts_video]`,
-    );
+    filters.push(`[${currentOutputLabel}]format=yuv420p[shorts_video]`);
   }
 
   return filters;
@@ -1600,6 +1650,24 @@ async function mergeDownloadedTracks({
   });
 }
 
+function parseFfmpegTimemarkToSeconds(value?: string) {
+  if (!value) {
+    return 0;
+  }
+
+  const [timePart, fractionPart = "0"] = value.split(".", 2);
+  const parts = timePart.split(":").map((segment) => Number(segment));
+
+  if (parts.some((part) => !Number.isFinite(part))) {
+    return 0;
+  }
+
+  const [hours = 0, minutes = 0, seconds = 0] = parts;
+  const fractionalSeconds = Number(`0.${fractionPart.replace(/[^\d]/g, "")}`);
+
+  return hours * 3600 + minutes * 60 + seconds + fractionalSeconds;
+}
+
 async function renderVerticalShort({
   inputPath,
   outputPath,
@@ -1608,6 +1676,7 @@ async function renderVerticalShort({
   renderContext,
   overlayText,
   threadCount,
+  onProgress,
 }: {
   inputPath: string;
   outputPath: string;
@@ -1616,6 +1685,7 @@ async function renderVerticalShort({
   renderContext: ResolvedShortsRenderContext;
   overlayText: ShortsTextOverlay;
   threadCount: number;
+  onProgress?: (progress: number) => Promise<void> | void;
 }) {
   await mkdir(path.dirname(outputPath), { recursive: true });
   const subtitlePath = `${outputPath}.ass`;
@@ -1680,6 +1750,22 @@ async function renderVerticalShort({
           "-ar 48000",
           "-ac 2",
         ])
+        .on("progress", (progress) => {
+          const timemarkSeconds = parseFfmpegTimemarkToSeconds(
+            progress.timemark,
+          );
+          const normalizedProgress = durationSeconds
+            ? Math.max(
+                0,
+                Math.min(
+                  95,
+                  Math.round((timemarkSeconds / durationSeconds) * 95),
+                ),
+              )
+            : 0;
+
+          void onProgress?.(normalizedProgress);
+        })
         .on("end", () => resolve())
         .on("error", (error) => reject(error))
         .save(outputPath);
@@ -1694,19 +1780,24 @@ function resolveShortsRenderConcurrency(
   clipCount: number,
 ) {
   const availableCores = Math.max(1, os.cpus().length || 1);
-  // Allow more concurrency with faster presets and hardware accel
-  const cpuBoundLimit =
-    availableCores >= 12
-      ? 6
-      : availableCores >= 8
-        ? 4
-        : availableCores >= 4
-          ? 3
-          : 2;
-  const qualityBoundLimit =
-    profile.key === "2160p" ? 2 : profile.key === "1080p" ? 5 : 3;
 
-  return Math.max(1, Math.min(clipCount, cpuBoundLimit, qualityBoundLimit));
+  if (clipCount <= 1 || availableCores < 4) {
+    return 1;
+  }
+
+  if (profile.key === "2160p") {
+    return 1;
+  }
+
+  if (profile.key === "1440p") {
+    return Math.min(availableCores >= 8 ? 2 : 1, clipCount);
+  }
+
+  if (availableCores >= 8) {
+    return Math.min(3, clipCount);
+  }
+
+  return Math.min(2, clipCount);
 }
 
 function resolveShortsRenderThreadCount(renderConcurrency: number) {
@@ -1744,12 +1835,15 @@ async function uploadClipToCloudinary({
   filePath,
   folder,
   publicId,
+  onProgress,
 }: {
   filePath: string;
   folder: string;
   publicId: string;
+  onProgress?: (progress: number) => void;
 }) {
   getCloudinaryConfig();
+  const fileSize = (await readFile(filePath)).length;
 
   const result = await new Promise<any>((resolve, reject) => {
     cloudinary.uploader.upload_chunked(
@@ -1763,21 +1857,28 @@ async function uploadClipToCloudinary({
         chunk_size: CLOUDINARY_VIDEO_UPLOAD_CHUNK_SIZE,
         timeout: 600_000,
       },
-      (uploadResult: any) => {
-        if (!uploadResult) {
+      (error: any, result: any) => {
+        if (error) {
+          reject(error);
           return;
         }
 
-        if (uploadResult.error) {
-          reject(uploadResult.error);
+        if (!result) {
           return;
         }
 
-        if (uploadResult.done === false) {
+        if (result.done === false) {
+          if (result.bytes && fileSize > 0) {
+            const percent = Math.min(
+              99,
+              Math.max(0, Math.round((result.bytes / fileSize) * 100)),
+            );
+            onProgress?.(percent);
+          }
           return;
         }
 
-        resolve(uploadResult);
+        resolve(result);
       },
     );
   });
@@ -1858,77 +1959,40 @@ async function buildShortAssetsFromPreparedSource({
 
   const tempRoot = path.dirname(sourcePath);
   const generatedAssets = new Array<GeneratedShortAsset>(plan.length);
-  let completedUploads = 0;
   const renderConcurrency = resolveShortsRenderConcurrency(
     renderContext.profile,
     plan.length,
   );
   const renderThreadCount = resolveShortsRenderThreadCount(renderConcurrency);
+  let nextEmitIndex = 0;
+  let emittedClipCount = 0;
+  let emitChain = Promise.resolve();
 
-  // Pipeline: render workers produce clips, upload happens as soon as each render finishes
-  // while other renders continue in parallel.
-  const uploadQueue: Array<{
-    segment: ShortsWindow;
-    clipPath: string;
-    generatedCopy: GeneratedShortCopy;
-  }> = [];
-  let uploadIndex = 0;
-  let renderDoneCount = 0;
-  let allRendersDone = false;
-
-  const processUploadQueue = async () => {
-    while (true) {
-      if (uploadIndex >= uploadQueue.length) {
-        if (allRendersDone) break;
-        // Wait a bit for more renders to finish
-        await new Promise((r) => setTimeout(r, 100));
-        continue;
+  const flushCompletedClipsInOrder = async () => {
+    while (nextEmitIndex < generatedAssets.length) {
+      const nextAsset = generatedAssets[nextEmitIndex];
+      if (!nextAsset) {
+        break;
       }
-      const { segment, clipPath, generatedCopy } = uploadQueue[uploadIndex];
-      uploadIndex += 1;
 
-      try {
-        const uploadedAsset = await uploadClipToCloudinary({
-          filePath: clipPath,
-          folder: uploadFolder,
-          publicId: sanitizePathPart(segment.id),
-        });
+      emittedClipCount += 1;
+      nextEmitIndex += 1;
 
-        const nextAsset: GeneratedShortAsset = {
-          ...segment,
-          ...generatedCopy,
-          renderWidth: renderContext.profile.width,
-          renderHeight: renderContext.profile.height,
-          renderLabel: renderContext.profile.label,
-          framingMode: renderContext.framingMode,
-          hasLogoOverlay: Boolean(renderContext.logoOverlayPath),
-          ...uploadedAsset,
-        };
-
-        generatedAssets[segment.index] = nextAsset;
-        completedUploads += 1;
-
-        await callbacks?.onClipCreated?.({
-          video,
-          plan,
-          uploadFolder,
-          renderWidth: renderContext.profile.width,
-          renderHeight: renderContext.profile.height,
-          renderLabel: renderContext.profile.label,
-          framingMode: renderContext.framingMode,
-          hasLogoOverlay: Boolean(renderContext.logoOverlayPath),
-          asset: nextAsset,
-          index: completedUploads,
-          total: plan.length,
-        });
-      } finally {
-        await unlink(clipPath).catch(() => undefined);
-      }
+      await callbacks?.onClipCreated?.({
+        video,
+        plan,
+        uploadFolder,
+        renderWidth: renderContext.profile.width,
+        renderHeight: renderContext.profile.height,
+        renderLabel: renderContext.profile.label,
+        framingMode: renderContext.framingMode,
+        hasLogoOverlay: Boolean(renderContext.logoOverlayPath),
+        asset: nextAsset,
+        index: emittedClipCount,
+        total: plan.length,
+      });
     }
   };
-
-  // Start upload consumer(s)
-  const uploadPromise = processUploadQueue();
 
   await processWithConcurrency(plan, renderConcurrency, async (segment) => {
     const clipFilename = `${sanitizePathPart(segment.id)}.mp4`;
@@ -1940,6 +2004,7 @@ async function buildShortAssetsFromPreparedSource({
       segment,
       totalSegments: plan.length,
     });
+    let lastProgress = -1;
 
     try {
       await renderVerticalShort({
@@ -1950,23 +2015,100 @@ async function buildShortAssetsFromPreparedSource({
         renderContext,
         overlayText: generatedCopy,
         threadCount: renderThreadCount,
+        onProgress: async (progress) => {
+          if (progress <= lastProgress) {
+            return;
+          }
+
+          lastProgress = progress;
+          await callbacks?.onClipProgress?.({
+            video,
+            plan,
+            uploadFolder,
+            renderWidth: renderContext.profile.width,
+            renderHeight: renderContext.profile.height,
+            renderLabel: renderContext.profile.label,
+            framingMode: renderContext.framingMode,
+            hasLogoOverlay: Boolean(renderContext.logoOverlayPath),
+            clipIndex: segment.index + 1,
+            total: plan.length,
+            progress,
+            stage: "render",
+          });
+        },
       });
 
-      uploadQueue.push({ segment, clipPath, generatedCopy });
-    } catch (error) {
-      // If render fails, clean up
-      await unlink(clipPath).catch(() => undefined);
-      throw error;
+      await callbacks?.onClipProgress?.({
+        video,
+        plan,
+        uploadFolder,
+        renderWidth: renderContext.profile.width,
+        renderHeight: renderContext.profile.height,
+        renderLabel: renderContext.profile.label,
+        framingMode: renderContext.framingMode,
+        hasLogoOverlay: Boolean(renderContext.logoOverlayPath),
+        clipIndex: segment.index + 1,
+        total: plan.length,
+        progress: 97,
+        stage: "upload",
+      });
+
+      const uploadedAsset = await uploadClipToCloudinary({
+        filePath: clipPath,
+        folder: uploadFolder,
+        publicId: sanitizePathPart(segment.id),
+        onProgress: (uploadPercent) => {
+          void callbacks?.onClipProgress?.({
+            video,
+            plan,
+            uploadFolder,
+            renderWidth: renderContext.profile.width,
+            renderHeight: renderContext.profile.height,
+            renderLabel: renderContext.profile.label,
+            framingMode: renderContext.framingMode,
+            hasLogoOverlay: Boolean(renderContext.logoOverlayPath),
+            clipIndex: segment.index + 1,
+            total: plan.length,
+            progress: Math.min(99, Math.max(97, uploadPercent)),
+            stage: "upload",
+          });
+        },
+      });
+
+      const nextAsset: GeneratedShortAsset = {
+        ...segment,
+        ...generatedCopy,
+        renderWidth: renderContext.profile.width,
+        renderHeight: renderContext.profile.height,
+        renderLabel: renderContext.profile.label,
+        framingMode: renderContext.framingMode,
+        hasLogoOverlay: Boolean(renderContext.logoOverlayPath),
+        ...uploadedAsset,
+      };
+
+      generatedAssets[segment.index] = nextAsset;
+      await callbacks?.onClipProgress?.({
+        video,
+        plan,
+        uploadFolder,
+        renderWidth: renderContext.profile.width,
+        renderHeight: renderContext.profile.height,
+        renderLabel: renderContext.profile.label,
+        framingMode: renderContext.framingMode,
+        hasLogoOverlay: Boolean(renderContext.logoOverlayPath),
+        clipIndex: segment.index + 1,
+        total: plan.length,
+        progress: 100,
+        stage: "upload",
+      });
+
+      emitChain = emitChain.then(() => flushCompletedClipsInOrder());
+      await emitChain;
     } finally {
-      renderDoneCount += 1;
-      if (renderDoneCount >= plan.length) {
-        allRendersDone = true;
-      }
+      await unlink(clipPath).catch(() => undefined);
     }
   });
-
-  allRendersDone = true;
-  await uploadPromise;
+  await emitChain;
 
   return {
     video,
