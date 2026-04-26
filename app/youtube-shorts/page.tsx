@@ -60,6 +60,7 @@ import {
   SHORTS_FRAMING_MODE_OPTIONS,
   SHORTS_QUALITY_PRESET_OPTIONS,
   type GeneratedShortAsset,
+  type StoredGeneratedShortMetadata,
   type ShortsFramingMode,
   type ShortsQualityPreset,
   type ShortsVideoMetadata,
@@ -121,6 +122,7 @@ interface CloudinarySourceResource {
   createdAt?: string;
   folder?: string;
   originalFilename?: string;
+  generatedShortMetadata?: StoredGeneratedShortMetadata | null;
 }
 
 interface PersistedState {
@@ -134,12 +136,17 @@ interface PersistedState {
   sourceVideo: ShortsVideoMetadata | null;
   sourceMode?: "youtube" | "file" | "cloudinary";
   cloudinarySourceFolder?: string;
+  segmentDurationSeconds?: number;
+  overlapSeconds?: number;
   qualityPreset?: ShortsQualityPreset;
   framingMode?: ShortsFramingMode;
   includeLogoOverlay?: boolean;
   includeHeadlineOverlay?: boolean;
   includeCopyrightOverlay?: boolean;
   copyrightText?: string;
+  titleDraft?: string;
+  descriptionDraft?: string;
+  keywordsDraft?: string;
   recentUploads: Array<{
     id: string;
     title: string;
@@ -149,6 +156,7 @@ interface PersistedState {
 }
 
 interface ActiveBuildSession {
+  buildId: number;
   uploadFolder: string | null;
   queueStartIndex: number;
   total: number;
@@ -161,6 +169,11 @@ interface ActiveBuildSession {
   sourceTitle: string;
   sourceDescription: string;
   sourceKeywords: string[];
+}
+
+interface FailedBuildState {
+  uploadFolder: string | null;
+  message: string;
 }
 
 interface SourceDownloadProgressState {
@@ -579,19 +592,24 @@ function getRemoteContentType(format?: string, secureUrl?: string) {
 }
 
 function buildCloudinarySourceMetadata(resource: CloudinarySourceResource) {
+  const storedMetadata = resource.generatedShortMetadata;
   const sourceTitle = stripFileExtension(
-    resource.originalFilename ||
+    storedMetadata?.sourceTitle ||
+      resource.originalFilename ||
       resource.publicId.split("/").filter(Boolean).pop() ||
       "Cloudinary Video",
   )
     .replace(/[_-]+/g, " ")
     .trim();
-  const sourceDescription = resource.folder
-    ? `Cloudinary folder ${resource.folder} se imported source video.`
-    : "Cloudinary se imported source video.";
-  const keywords = deriveKeywordsFromText(
-    `${sourceTitle} ${resource.folder || ""}`,
-  );
+  const sourceDescription =
+    storedMetadata?.sourceDescription ||
+    (resource.folder
+      ? `Cloudinary folder ${resource.folder} se imported source video.`
+      : "Cloudinary se imported source video.");
+  const keywords =
+    storedMetadata?.sourceKeywords?.length
+      ? storedMetadata.sourceKeywords
+      : deriveKeywordsFromText(`${sourceTitle} ${resource.folder || ""}`);
 
   return {
     title: sourceTitle || "Cloudinary Video",
@@ -649,6 +667,7 @@ function createQueueItemFromCloudinaryResource({
   index: number;
   targetAccounts: QueueTargetAccount[];
 }): QueueItem {
+  const storedMetadata = resource.generatedShortMetadata;
   const metadata = buildCloudinarySourceMetadata(resource);
   const seoDraft = buildSeoDraftForSource({
     rawName: metadata.title,
@@ -661,9 +680,14 @@ function createQueueItemFromCloudinaryResource({
     0,
     Math.floor(resource.durationSeconds || 0),
   );
-  const headlineLines = buildHeadlineLinesFromTitle(seoDraft.title);
+  const headlineLines =
+    storedMetadata?.headlineLines?.length
+      ? storedMetadata.headlineLines
+      : buildHeadlineLinesFromTitle(seoDraft.title);
   const detectedPartLabel =
-    seoDraft.title.match(/\bpart\s*\d+\b/i)?.[0] || "Imported Clip";
+    storedMetadata?.partLabel ||
+    seoDraft.title.match(/\bpart\s*\d+\b/i)?.[0] ||
+    "Imported Clip";
 
   return {
     id: resource.assetId || resource.publicId,
@@ -672,23 +696,25 @@ function createQueueItemFromCloudinaryResource({
     endSeconds: durationSeconds,
     durationSeconds,
     label: detectedPartLabel,
-    title: seoDraft.title,
-    description: seoDraft.description,
-    keywords: seoDraft.keywords,
-    caption: buildCaptionFromSeoDraft(seoDraft),
+    title: storedMetadata?.title || seoDraft.title,
+    description: storedMetadata?.description || seoDraft.description,
+    keywords: storedMetadata?.keywords?.length
+      ? storedMetadata.keywords
+      : seoDraft.keywords,
+    caption: storedMetadata?.caption || buildCaptionFromSeoDraft(seoDraft),
     partLabel: detectedPartLabel,
     headlineLines,
-    highlightedLineIndex: 0,
-    renderWidth: 0,
-    renderHeight: 0,
-    renderLabel: "Cloudinary Import",
-    framingMode: "show-full",
-    hasLogoOverlay: false,
+    highlightedLineIndex: storedMetadata?.highlightedLineIndex ?? 0,
+    renderWidth: storedMetadata?.renderWidth ?? 0,
+    renderHeight: storedMetadata?.renderHeight ?? 0,
+    renderLabel: storedMetadata?.renderLabel || "Cloudinary Import",
+    framingMode: storedMetadata?.framingMode || "show-full",
+    hasLogoOverlay: storedMetadata?.hasLogoOverlay ?? false,
     assetUrl: resource.secureUrl,
     cloudinaryPublicId: resource.publicId,
     cloudinaryResourceType: resource.resourceType || "video",
-    sourceUrl: resource.secureUrl,
-    sourceTitle: seoDraft.title,
+    sourceUrl: storedMetadata?.sourceUrl || resource.secureUrl,
+    sourceTitle: storedMetadata?.sourceTitle || seoDraft.title,
     status: "queued",
     createdAt: resource.createdAt || new Date().toISOString(),
     targetAccounts,
@@ -790,29 +816,40 @@ function createQueueItemFromGeneratedCloudinaryResource({
   }
 
   const totalSegments = Math.max(session.total, segment.index + 1);
-  const generatedCopy = buildGeneratedShortCopy({
-    originalTitle: session.sourceTitle,
-    originalDescription: session.sourceDescription,
-    originalKeywords: session.sourceKeywords,
-    segment,
-    totalSegments,
-  });
+  const storedMetadata = resource.generatedShortMetadata;
+  const generatedCopy = storedMetadata
+    ? {
+        title: storedMetadata.title,
+        description: storedMetadata.description,
+        keywords: storedMetadata.keywords,
+        caption: storedMetadata.caption,
+        partLabel: storedMetadata.partLabel,
+        headlineLines: storedMetadata.headlineLines,
+        highlightedLineIndex: storedMetadata.highlightedLineIndex,
+      }
+    : buildGeneratedShortCopy({
+        originalTitle: session.sourceTitle,
+        originalDescription: session.sourceDescription,
+        originalKeywords: session.sourceKeywords,
+        segment,
+        totalSegments,
+      });
 
   return {
     ...segment,
     ...generatedCopy,
     id: resource.publicId,
     index: session.queueStartIndex + segment.index,
-    renderWidth: session.renderWidth,
-    renderHeight: session.renderHeight,
-    renderLabel: session.renderLabel,
-    framingMode: session.framingMode,
-    hasLogoOverlay: session.hasLogoOverlay,
+    renderWidth: storedMetadata?.renderWidth ?? session.renderWidth,
+    renderHeight: storedMetadata?.renderHeight ?? session.renderHeight,
+    renderLabel: storedMetadata?.renderLabel ?? session.renderLabel,
+    framingMode: storedMetadata?.framingMode ?? session.framingMode,
+    hasLogoOverlay: storedMetadata?.hasLogoOverlay ?? session.hasLogoOverlay,
     assetUrl: resource.secureUrl,
     cloudinaryPublicId: resource.publicId,
     cloudinaryResourceType: resource.resourceType || "video",
-    sourceUrl: session.sourceUrl,
-    sourceTitle: session.sourceTitle,
+    sourceUrl: storedMetadata?.sourceUrl || session.sourceUrl,
+    sourceTitle: storedMetadata?.sourceTitle || session.sourceTitle,
     status: "queued",
     createdAt: resource.createdAt || new Date().toISOString(),
     targetAccounts,
@@ -1062,6 +1099,7 @@ export default function YouTubeShortsPage() {
   const isMobile = useIsMobile();
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const buildSyncTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const buildRunIdRef = useRef(0);
   const processingRef = useRef(false);
   const selectedPublishAccountsRef = useRef<PublishAccount[]>([]);
   const activeBuildSessionRef = useRef<ActiveBuildSession | null>(null);
@@ -1165,6 +1203,9 @@ export default function YouTubeShortsPage() {
     useState<YouTubeGuideDialogMode>("mobile-guide");
   const [autoGenerateAfterFilePick, setAutoGenerateAfterFilePick] =
     useState(false);
+  const [failedBuild, setFailedBuild] = useState<FailedBuildState | null>(
+    null,
+  );
 
   const allPublishAccounts = useMemo<PublishAccount[]>(
     () => [
@@ -1277,6 +1318,12 @@ export default function YouTubeShortsPage() {
     }
   };
 
+  const isBuildLocked = isCreatingQueue;
+
+  const notifyBuildLocked = useEffectEvent(() => {
+    toast.info("Current shorts build finish hone do, phir source ya settings change karo.");
+  });
+
   useEffect(() => {
     selectedPublishAccountsRef.current = selectedPublishAccounts;
   }, [selectedPublishAccounts]);
@@ -1298,8 +1345,16 @@ export default function YouTubeShortsPage() {
 
       try {
         const parsed = JSON.parse(storedState) as PersistedState;
+        const restoredSegmentDuration = Math.max(
+          10,
+          Math.min(60, parsed.segmentDurationSeconds || 60),
+        );
+        const restoredOverlap = Math.max(
+          0,
+          Math.min(15, parsed.overlapSeconds || 0),
+        );
+
         setQueue(Array.isArray(parsed.queue) ? parsed.queue : []);
-        setPlanPreview(Array.isArray(parsed.queue) ? parsed.queue : []);
         setSelectedAccountId(
           resolvePreferredInstagramAccountId(
             accounts,
@@ -1325,6 +1380,8 @@ export default function YouTubeShortsPage() {
         setCloudinarySourceFolder(
           parsed.cloudinarySourceFolder || DEFAULT_CLOUDINARY_SOURCE_FOLDER,
         );
+        setSegmentDurationSeconds(restoredSegmentDuration);
+        setOverlapSeconds(restoredOverlap);
         setQualityPreset(parseQualityPreset(parsed.qualityPreset) || "1080p");
         setFramingMode(parseFramingMode(parsed.framingMode) || "show-full");
         setIncludeLogoOverlay(parsed.includeLogoOverlay ?? true);
@@ -1337,9 +1394,28 @@ export default function YouTubeShortsPage() {
 
         if (parsed.sourceVideo) {
           setSourceUrl(parsed.sourceVideo.sourceUrl || "");
-          setTitleDraft(parsed.sourceVideo.title || "");
-          setDescriptionDraft(parsed.sourceVideo.description || "");
-          setKeywordsDraft((parsed.sourceVideo.keywords || []).join(", "));
+          setTitleDraft(
+            parsed.titleDraft?.trim() || parsed.sourceVideo.title || "",
+          );
+          setDescriptionDraft(
+            parsed.descriptionDraft || parsed.sourceVideo.description || "",
+          );
+          setKeywordsDraft(
+            parsed.keywordsDraft ||
+              (parsed.sourceVideo.keywords || []).join(", "),
+          );
+          setPlanPreview(
+            buildShortsPlan({
+              durationSeconds: parsed.sourceVideo.durationSeconds,
+              segmentDurationSeconds: restoredSegmentDuration,
+              overlapSeconds: restoredOverlap,
+            }),
+          );
+        } else {
+          setPlanPreview([]);
+          setTitleDraft(parsed.titleDraft || "");
+          setDescriptionDraft(parsed.descriptionDraft || "");
+          setKeywordsDraft(parsed.keywordsDraft || "");
         }
       } catch (error) {
         console.error("[v0] Failed to restore shorts state:", error);
@@ -1484,12 +1560,17 @@ export default function YouTubeShortsPage() {
       sourceVideo,
       sourceMode,
       cloudinarySourceFolder,
+      segmentDurationSeconds,
+      overlapSeconds,
       qualityPreset,
       framingMode,
       includeLogoOverlay,
       includeHeadlineOverlay,
       includeCopyrightOverlay,
       copyrightText,
+      titleDraft,
+      descriptionDraft,
+      keywordsDraft,
       recentUploads,
     };
 
@@ -1505,12 +1586,17 @@ export default function YouTubeShortsPage() {
     sourceVideo,
     sourceMode,
     cloudinarySourceFolder,
+    segmentDurationSeconds,
+    overlapSeconds,
     qualityPreset,
     framingMode,
     includeLogoOverlay,
     includeHeadlineOverlay,
     includeCopyrightOverlay,
     copyrightText,
+    titleDraft,
+    descriptionDraft,
+    keywordsDraft,
   ]);
 
   useEffect(() => {
@@ -2094,6 +2180,11 @@ export default function YouTubeShortsPage() {
   });
 
   const clearSelectedSourceFile = () => {
+    if (isBuildLocked) {
+      notifyBuildLocked();
+      return;
+    }
+
     setAutoGenerateAfterFilePick(false);
     setUploadedSourceUrl(null);
     setSourceFile(null);
@@ -2136,6 +2227,11 @@ export default function YouTubeShortsPage() {
   );
 
   const handleRefreshMetadata = useEffectEvent(() => {
+    if (isBuildLocked) {
+      notifyBuildLocked();
+      return;
+    }
+
     if (!sourceVideo) {
       toast.error("Pehle source metadata load karo.");
       return;
@@ -2156,6 +2252,12 @@ export default function YouTubeShortsPage() {
 
   const handleSourceFileSelected = useEffectEvent(
     async (event: React.ChangeEvent<HTMLInputElement>) => {
+      if (isBuildLocked) {
+        notifyBuildLocked();
+        event.target.value = "";
+        return;
+      }
+
       const nextFile = event.target.files?.[0];
       event.target.value = "";
 
@@ -2232,6 +2334,11 @@ export default function YouTubeShortsPage() {
 
   const addCloudinaryResourcesToQueue = useEffectEvent(
     (resources: CloudinarySourceResource[]) => {
+      if (isBuildLocked) {
+        notifyBuildLocked();
+        return 0;
+      }
+
       if (resources.length === 0) {
         toast.error(
           "Queue me add karne ke liye koi Cloudinary video nahi mili.",
@@ -2286,6 +2393,11 @@ export default function YouTubeShortsPage() {
       overrideFolder?: string;
       addToQueue?: boolean;
     } = {}) => {
+      if (isBuildLocked) {
+        notifyBuildLocked();
+        return;
+      }
+
       const targetFolder =
         overrideFolder?.trim() || cloudinarySourceFolder.trim();
 
@@ -2334,6 +2446,11 @@ export default function YouTubeShortsPage() {
 
   const handleCloudinarySourceSelected = useEffectEvent(
     (resource: CloudinarySourceResource) => {
+      if (isBuildLocked) {
+        notifyBuildLocked();
+        return;
+      }
+
       const durationSeconds = Math.max(
         0,
         Math.floor(resource.durationSeconds || 0),
@@ -2385,6 +2502,11 @@ export default function YouTubeShortsPage() {
   );
 
   const handleAnalyze = useEffectEvent(async () => {
+    if (isBuildLocked) {
+      notifyBuildLocked();
+      return;
+    }
+
     if (sourceMode === "file" && !sourceFile) {
       toast.error("Pehle video file select karo.");
       return;
@@ -2765,7 +2887,14 @@ export default function YouTubeShortsPage() {
     planPreview.length,
   ]);
 
-  const handleGenerateQueue = useEffectEvent(async () => {
+  const handleGenerateQueue = useEffectEvent(
+    async ({
+      overrideQueueStartIndex,
+    }: {
+      overrideQueueStartIndex?: number;
+    } = {}) => {
+    const currentBuildId = buildRunIdRef.current + 1;
+    buildRunIdRef.current = currentBuildId;
     const normalizedSourceUrl = normalizeYouTubeUrl(sourceUrl);
     const sourceKeywords =
       parseKeywords(keywordsDraft).length > 0
@@ -2798,7 +2927,9 @@ export default function YouTubeShortsPage() {
     const renderSummaryLabel =
       qualityPreset === "auto" ? "Auto up to 4K" : qualityPreset;
     const queueStartIndex =
-      queue.reduce((maxIndex, item) => Math.max(maxIndex, item.index), -1) + 1;
+      overrideQueueStartIndex ??
+      (queue.reduce((maxIndex, item) => Math.max(maxIndex, item.index), -1) +
+        1);
 
     if (sourceMode === "cloudinary" && !isCloudinarySource) {
       toast.error("Pehle Cloudinary source video select karo.");
@@ -2822,10 +2953,12 @@ export default function YouTubeShortsPage() {
     }
 
     setIsCreatingQueue(true);
+    setFailedBuild(null);
     clearBuildSyncTimer();
     resetBuildTracking();
     setPublishProgress(null);
     activeBuildSessionRef.current = {
+      buildId: currentBuildId,
       uploadFolder: null,
       queueStartIndex,
       total: expectedShortCount,
@@ -2888,6 +3021,7 @@ export default function YouTubeShortsPage() {
     setSourceUrl(
       isCloudinarySource ? cloudinarySourceUrl : normalizedSourceUrl,
     );
+    let didReceiveReadyEvent = false;
 
     try {
       let streamedCount = 0;
@@ -3011,11 +3145,16 @@ export default function YouTubeShortsPage() {
       }
 
       await readShortsCreateStream(response, async (event) => {
+        if (currentBuildId !== buildRunIdRef.current) {
+          return;
+        }
+
         if (event.type === "error") {
           throw new Error(event.error || "Shorts queue create nahi hui");
         }
 
         if (event.type === "ready") {
+          didReceiveReadyEvent = true;
           latestVideo = event.video;
           const total = event.plan?.length || expectedShortCount;
           if (activeBuildSessionRef.current) {
@@ -3278,23 +3417,38 @@ export default function YouTubeShortsPage() {
             saved: total,
             status: `Sab ${total} shorts ready ho gayi.`,
           });
+          setFailedBuild(null);
           setQueueBuildStatus("High-quality shorts ready hain aur queue synced hai.");
           toast.success(`${total} shorts queue me add ho gayi.`);
         }
       });
     } catch (error: any) {
-      setDownloadProgress((prev) => ({
-        ...prev,
-        phase: "error",
-        status: error.message || "Source video download fail ho gaya.",
-      }));
+      if (currentBuildId !== buildRunIdRef.current) {
+        return;
+      }
+
+      const failureMessage = isYouTubeBotCheckMessage(error?.message)
+        ? getFriendlyBotCheckStatus()
+        : error.message || "Shorts creation fail ho gayi.";
+      const failedUploadFolder =
+        activeBuildSessionRef.current?.buildId === currentBuildId
+          ? activeBuildSessionRef.current.uploadFolder
+          : null;
+
+      setDownloadProgress((prev) =>
+        didReceiveReadyEvent || prev.phase === "complete"
+          ? prev
+          : {
+              ...prev,
+              phase: "error",
+              status: failureMessage,
+            },
+      );
       setCreationProgress((prev) => ({
         ...prev,
         phase: "error",
         total: prev.total || expectedShortCount,
-        status: isYouTubeBotCheckMessage(error?.message)
-          ? getFriendlyBotCheckStatus()
-          : error.message || "Shorts creation fail ho gayi.",
+        status: failureMessage,
       }));
       setClipProgressMap((prev) => {
         const nextProgressMap = { ...prev };
@@ -3311,6 +3465,10 @@ export default function YouTubeShortsPage() {
 
         return nextProgressMap;
       });
+      setFailedBuild({
+        uploadFolder: failedUploadFolder,
+        message: failureMessage,
+      });
 
       if (isYouTubeBotCheckMessage(error?.message)) {
         setDownloadProgress((prev) => ({
@@ -3323,13 +3481,69 @@ export default function YouTubeShortsPage() {
         return;
       }
 
-      setQueueBuildStatus(error.message || "Queue create nahi hui.");
-      toast.error(error.message || "Queue create nahi hui.");
+      setQueueBuildStatus(failureMessage);
+      toast.error(failureMessage);
     } finally {
+      if (currentBuildId !== buildRunIdRef.current) {
+        return;
+      }
+
       clearBuildSyncTimer();
       activeBuildSessionRef.current = null;
       setIsCreatingQueue(false);
     }
+    },
+  );
+
+  const cleanupQueueItemsForUploadFolder = useEffectEvent(
+    async (uploadFolder: string | null) => {
+      if (!uploadFolder) {
+        return queue;
+      }
+
+      const uploadFolderPrefix = uploadFolder.endsWith("/")
+        ? uploadFolder
+        : `${uploadFolder}/`;
+      const removableItems = queue.filter((item) =>
+        item.cloudinaryPublicId?.startsWith(uploadFolderPrefix),
+      );
+
+      if (removableItems.length === 0) {
+        return queue;
+      }
+
+      const removableIds = new Set(removableItems.map((item) => item.id));
+      const remainingQueue = queue.filter((item) => !removableIds.has(item.id));
+      setQueue(remainingQueue);
+      await Promise.allSettled(
+        removableItems.map((item) => cleanupQueuedAsset(item)),
+      );
+      return remainingQueue;
+    },
+  );
+
+  const handleRetryFailedBuild = useEffectEvent(async () => {
+    if (isCreatingQueue) {
+      return;
+    }
+
+    if (!failedBuild) {
+      toast.error("Retry karne ke liye koi failed build nahi hai.");
+      return;
+    }
+
+    const remainingQueue = await cleanupQueueItemsForUploadFolder(
+      failedBuild.uploadFolder,
+    );
+    const nextQueueStartIndex =
+      remainingQueue.reduce(
+        (maxIndex, item) => Math.max(maxIndex, item.index),
+        -1,
+      ) + 1;
+    setFailedBuild(null);
+    await handleGenerateQueue({
+      overrideQueueStartIndex: nextQueueStartIndex,
+    });
   });
 
   const handleClearQueue = async () => {
@@ -4028,6 +4242,29 @@ export default function YouTubeShortsPage() {
                 <span>Planned: {plannedShortsCount}</span>
               </div>
 
+              {creationProgress.phase === "error" && failedBuild ? (
+                <div className="mt-4 flex flex-col gap-3 rounded-2xl border border-red-400/20 bg-red-500/10 p-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-red-100">
+                      Build failed
+                    </p>
+                    <p className="mt-1 text-xs text-red-100/80">
+                      Retry se failed batch ke partial shorts clean hoke same
+                      source/settings ke saath dubara build start ho jayegi.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleRetryFailedBuild()}
+                    disabled={isCreatingQueue}
+                    className="inline-flex items-center justify-center gap-2 rounded-2xl border border-red-300/20 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                    Retry Failed Build
+                  </button>
+                </div>
+              ) : null}
+
               {perShortBuildProgress.length > 0 ? (
                 <div className="mt-5 grid gap-3 sm:grid-cols-2">
                   {perShortBuildProgress.map((item) => (
@@ -4199,6 +4436,7 @@ export default function YouTubeShortsPage() {
                   id={SOURCE_FILE_INPUT_ID}
                   type="file"
                   accept="video/*"
+                  disabled={isBuildLocked}
                   onChange={(event) => {
                     void handleSourceFileSelected(event);
                   }}
@@ -4208,20 +4446,30 @@ export default function YouTubeShortsPage() {
                 <div className="grid gap-3 sm:grid-cols-3">
                   <button
                     type="button"
+                    disabled={isBuildLocked}
                     onClick={() => {
+                      if (isBuildLocked) {
+                        notifyBuildLocked();
+                        return;
+                      }
                       setSourceMode("youtube");
                     }}
                     className={`inline-flex items-center justify-center rounded-2xl px-4 py-3 text-sm font-semibold transition-colors ${
                       sourceMode === "youtube"
                         ? "bg-cyan-400 text-slate-950"
                         : "border border-white/10 bg-white/5 text-white/75 hover:bg-white/10"
-                    }`}
+                    } disabled:cursor-not-allowed disabled:opacity-60`}
                   >
                     Use YouTube Link
                   </button>
                   <label
                     htmlFor={SOURCE_FILE_INPUT_ID}
-                    onClick={() => {
+                    onClick={(event) => {
+                      if (isBuildLocked) {
+                        event.preventDefault();
+                        notifyBuildLocked();
+                        return;
+                      }
                       setAutoGenerateAfterFilePick(false);
                       setSourceMode("file");
                     }}
@@ -4229,21 +4477,26 @@ export default function YouTubeShortsPage() {
                       sourceMode === "file"
                         ? "bg-cyan-400 text-slate-950"
                         : "border border-white/10 bg-white/5 text-white/75 hover:bg-white/10"
-                    }`}
+                    } ${isBuildLocked ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}
                   >
                     <Upload className="h-4 w-4" />
                     Use Video File
                   </label>
                   <button
                     type="button"
+                    disabled={isBuildLocked}
                     onClick={() => {
+                      if (isBuildLocked) {
+                        notifyBuildLocked();
+                        return;
+                      }
                       setSourceMode("cloudinary");
                     }}
                     className={`inline-flex items-center justify-center gap-2 rounded-2xl px-4 py-3 text-sm font-semibold transition-colors ${
                       sourceMode === "cloudinary"
                         ? "bg-cyan-400 text-slate-950"
                         : "border border-white/10 bg-white/5 text-white/75 hover:bg-white/10"
-                    }`}
+                    } disabled:cursor-not-allowed disabled:opacity-60`}
                   >
                     <Cloud className="h-4 w-4" />
                     Import From Cloudinary
@@ -4254,13 +4507,14 @@ export default function YouTubeShortsPage() {
                   <>
                     <input
                       type="url"
+                      disabled={isBuildLocked}
                       value={sourceUrl}
                       onChange={(event) => {
                         setSourceMode("youtube");
                         setSourceUrl(event.target.value);
                       }}
                       placeholder="https://youtu.be/... ya https://youtube.com/shorts/..."
-                      className="w-full rounded-2xl border border-white/10 bg-slate-950/50 px-4 py-3 text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-cyan-400"
+                      className="w-full rounded-2xl border border-white/10 bg-slate-950/50 px-4 py-3 text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-cyan-400 disabled:cursor-not-allowed disabled:opacity-60"
                     />
 
                     <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-4 text-sm text-white/55">
@@ -4287,17 +4541,23 @@ export default function YouTubeShortsPage() {
                         <div className="flex flex-wrap gap-2">
                           <button
                             type="button"
+                            disabled={isBuildLocked}
                             onClick={() => {
+                              if (isBuildLocked) {
+                                notifyBuildLocked();
+                                return;
+                              }
                               setSourceMode("file");
                             }}
-                            className="rounded-xl border border-violet-300/20 bg-white/5 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-white/10"
+                            className="rounded-xl border border-violet-300/20 bg-white/5 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
                           >
                             Use This File
                           </button>
                           <button
                             type="button"
+                            disabled={isBuildLocked}
                             onClick={clearSelectedSourceFile}
-                            className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-white/80 transition-colors hover:bg-white/10"
+                            className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-white/80 transition-colors hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
                           >
                             Remove File
                           </button>
@@ -4318,12 +4578,13 @@ export default function YouTubeShortsPage() {
                     <div className="grid gap-3 sm:grid-cols-[1fr_auto_auto]">
                       <input
                         type="text"
+                        disabled={isBuildLocked}
                         value={cloudinarySourceFolder}
                         onChange={(event) =>
                           setCloudinarySourceFolder(event.target.value)
                         }
                         placeholder="Cloudinary source folder"
-                        className="w-full rounded-2xl border border-white/10 bg-slate-950/50 px-4 py-3 text-white placeholder:text-white/35 outline-none transition-colors focus:border-cyan-400/40"
+                        className="w-full rounded-2xl border border-white/10 bg-slate-950/50 px-4 py-3 text-white placeholder:text-white/35 outline-none transition-colors focus:border-cyan-400/40 disabled:cursor-not-allowed disabled:opacity-60"
                       />
                       <button
                         type="button"
@@ -4332,7 +4593,7 @@ export default function YouTubeShortsPage() {
                             addToQueue: true,
                           })
                         }
-                        disabled={isLoadingCloudinarySources}
+                        disabled={isLoadingCloudinarySources || isBuildLocked}
                         className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-cyan-400 px-4 py-3 text-sm font-semibold text-slate-950 transition-colors hover:bg-cyan-300 disabled:opacity-60 sm:w-auto"
                       >
                         {isLoadingCloudinarySources ? (
@@ -4349,7 +4610,7 @@ export default function YouTubeShortsPage() {
                             addToQueue: false,
                           })
                         }
-                        disabled={isLoadingCloudinarySources}
+                        disabled={isLoadingCloudinarySources || isBuildLocked}
                         className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-cyan-300/20 bg-white/5 px-4 py-3 text-sm font-semibold text-cyan-100 transition-colors hover:bg-white/10 disabled:opacity-60 sm:w-auto"
                       >
                         <Cloud className="h-4 w-4" />
@@ -4420,7 +4681,8 @@ export default function YouTubeShortsPage() {
                                     onClick={() =>
                                       addCloudinaryResourcesToQueue([resource])
                                     }
-                                    className="rounded-full bg-cyan-400 px-3 py-1 text-xs font-semibold text-slate-950 transition-colors hover:bg-cyan-300"
+                                    disabled={isBuildLocked}
+                                    className="rounded-full bg-cyan-400 px-3 py-1 text-xs font-semibold text-slate-950 transition-colors hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-60"
                                   >
                                     Add To Queue
                                   </button>
@@ -4429,7 +4691,8 @@ export default function YouTubeShortsPage() {
                                     onClick={() =>
                                       handleCloudinarySourceSelected(resource)
                                     }
-                                    className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-cyan-100 transition-colors hover:bg-white/10"
+                                    disabled={isBuildLocked}
+                                    className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-cyan-100 transition-colors hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
                                   >
                                     {isSelected
                                       ? "Selected As Source"
@@ -4462,6 +4725,7 @@ export default function YouTubeShortsPage() {
                       type="number"
                       min="10"
                       max="60"
+                      disabled={isBuildLocked}
                       value={segmentDurationSeconds}
                       onChange={(event) =>
                         setSegmentDurationSeconds(
@@ -4474,7 +4738,7 @@ export default function YouTubeShortsPage() {
                           ),
                         )
                       }
-                      className="mt-3 w-full bg-transparent text-2xl font-semibold text-white outline-none"
+                      className="mt-3 w-full bg-transparent text-2xl font-semibold text-white outline-none disabled:cursor-not-allowed disabled:opacity-60"
                     />
                   </label>
 
@@ -4486,6 +4750,7 @@ export default function YouTubeShortsPage() {
                       type="number"
                       min="0"
                       max="15"
+                      disabled={isBuildLocked}
                       value={overlapSeconds}
                       onChange={(event) =>
                         setOverlapSeconds(
@@ -4498,7 +4763,7 @@ export default function YouTubeShortsPage() {
                           ),
                         )
                       }
-                      className="mt-3 w-full bg-transparent text-2xl font-semibold text-white outline-none"
+                      className="mt-3 w-full bg-transparent text-2xl font-semibold text-white outline-none disabled:cursor-not-allowed disabled:opacity-60"
                     />
                   </label>
                 </div>
@@ -4512,6 +4777,7 @@ export default function YouTubeShortsPage() {
                         <input
                           type="checkbox"
                           checked={includeCopyrightOverlay}
+                          disabled={isBuildLocked}
                           onChange={(event) =>
                             setIncludeCopyrightOverlay(event.target.checked)
                           }
@@ -4528,12 +4794,13 @@ export default function YouTubeShortsPage() {
                         </span>
                         <input
                           type="text"
+                          disabled={isBuildLocked}
                           value={copyrightText}
                           onChange={(event) =>
                             setCopyrightText(event.target.value)
                           }
                           placeholder={DEFAULT_SHORTS_COPYRIGHT_TEXT}
-                          className="w-full rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-cyan-400"
+                          className="w-full rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-cyan-400 disabled:cursor-not-allowed disabled:opacity-60"
                         />
                         <p className="text-xs text-white/45">
                           Preview: {copyrightPreviewText}
@@ -4547,12 +4814,13 @@ export default function YouTubeShortsPage() {
                     </div>
                     <select
                       value={qualityPreset}
+                      disabled={isBuildLocked}
                       onChange={(event) =>
                         setQualityPreset(
                           parseQualityPreset(event.target.value) || "auto",
                         )
                       }
-                      className="mt-3 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-3 text-white outline-none"
+                      className="mt-3 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-3 text-white outline-none disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       {SHORTS_QUALITY_PRESET_OPTIONS.map((option) => (
                         <option
@@ -4582,12 +4850,13 @@ export default function YouTubeShortsPage() {
                         <button
                           key={option.value}
                           type="button"
+                          disabled={isBuildLocked}
                           onClick={() => setFramingMode(option.value)}
                           className={`rounded-2xl border px-4 py-3 text-left transition-colors ${
                             framingMode === option.value
                               ? "border-cyan-300/30 bg-cyan-400/10 text-white"
                               : "border-white/10 bg-white/5 text-white/70 hover:bg-white/10"
-                          }`}
+                          } disabled:cursor-not-allowed disabled:opacity-60`}
                         >
                           <div className="text-sm font-semibold">
                             {option.label}
@@ -4604,6 +4873,7 @@ export default function YouTubeShortsPage() {
                     <input
                       type="checkbox"
                       checked={includeLogoOverlay}
+                      disabled={isBuildLocked}
                       onChange={(event) =>
                         setIncludeLogoOverlay(event.target.checked)
                       }
@@ -4620,6 +4890,7 @@ export default function YouTubeShortsPage() {
                     <input
                       type="checkbox"
                       checked={includeHeadlineOverlay}
+                      disabled={isBuildLocked}
                       onChange={(event) =>
                         setIncludeHeadlineOverlay(event.target.checked)
                       }
@@ -4635,7 +4906,7 @@ export default function YouTubeShortsPage() {
                 <div className="grid gap-3 sm:grid-cols-3">
                   <button
                     onClick={handleAnalyze}
-                    disabled={isAnalyzing}
+                    disabled={isAnalyzing || isBuildLocked}
                     className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-cyan-300/20 bg-cyan-400/10 px-4 py-3 text-sm font-semibold text-cyan-50 transition-colors hover:bg-cyan-400/15 disabled:opacity-60"
                   >
                     {isAnalyzing ? (
@@ -4652,7 +4923,7 @@ export default function YouTubeShortsPage() {
                   {sourceMode === "youtube" ? (
                     <button
                       onClick={handleDownloadSourceVideo}
-                      disabled={isDownloadingSource}
+                      disabled={isDownloadingSource || isBuildLocked}
                       className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-white/10 disabled:opacity-60"
                     >
                       {isDownloadingSource ? (
@@ -4664,7 +4935,7 @@ export default function YouTubeShortsPage() {
                     </button>
                   ) : null}
                   <button
-                    onClick={handleGenerateQueue}
+                    onClick={() => void handleGenerateQueue()}
                     disabled={isCreatingQueue}
                     className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-cyan-400 via-sky-500 to-emerald-400 px-4 py-3 text-sm font-semibold text-slate-950 transition-opacity hover:opacity-90 disabled:opacity-60"
                   >
@@ -4681,8 +4952,22 @@ export default function YouTubeShortsPage() {
                   </button>
                 </div>
 
+                {isBuildLocked ? (
+                  <div className="rounded-2xl border border-amber-300/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+                    Current build live hai, isliye source tabs, metadata, aur
+                    render settings abhi locked hain.
+                  </div>
+                ) : null}
+
                 {queueBuildStatus ? (
-                  <div className="rounded-2xl border border-cyan-300/20 bg-cyan-400/10 px-4 py-3 text-sm text-cyan-100">
+                  <div
+                    className={`rounded-2xl px-4 py-3 text-sm ${
+                      creationProgress.phase === "error" ||
+                      downloadProgress.phase === "error"
+                        ? "border border-red-400/20 bg-red-500/10 text-red-100"
+                        : "border border-cyan-300/20 bg-cyan-400/10 text-cyan-100"
+                    }`}
+                  >
                     {queueBuildStatus}
                   </div>
                 ) : null}
@@ -4700,7 +4985,7 @@ export default function YouTubeShortsPage() {
                 </div>
                 <button
                   onClick={handleRefreshMetadata}
-                  disabled={!sourceVideo}
+                  disabled={!sourceVideo || isBuildLocked}
                   className="inline-flex items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-white/10 disabled:opacity-50"
                 >
                   <RefreshCw className="h-4 w-4" />
@@ -4746,28 +5031,31 @@ export default function YouTubeShortsPage() {
 
                   <input
                     type="text"
+                    disabled={isBuildLocked}
                     value={titleDraft}
                     onChange={(event) => setTitleDraft(event.target.value)}
                     placeholder="Shorts title base"
-                    className="w-full rounded-2xl border border-white/10 bg-slate-950/50 px-4 py-3 text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-violet-400"
+                    className="w-full rounded-2xl border border-white/10 bg-slate-950/50 px-4 py-3 text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-violet-400 disabled:cursor-not-allowed disabled:opacity-60"
                   />
 
                   <textarea
+                    disabled={isBuildLocked}
                     value={descriptionDraft}
                     onChange={(event) =>
                       setDescriptionDraft(event.target.value)
                     }
                     rows={5}
                     placeholder="Shorts description base"
-                    className="w-full rounded-2xl border border-white/10 bg-slate-950/50 px-4 py-3 text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-violet-400"
+                    className="w-full rounded-2xl border border-white/10 bg-slate-950/50 px-4 py-3 text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-violet-400 disabled:cursor-not-allowed disabled:opacity-60"
                   />
 
                   <textarea
+                    disabled={isBuildLocked}
                     value={keywordsDraft}
                     onChange={(event) => setKeywordsDraft(event.target.value)}
                     rows={3}
                     placeholder="keyword1, keyword2, keyword3"
-                    className="w-full rounded-2xl border border-white/10 bg-slate-950/50 px-4 py-3 text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-violet-400"
+                    className="w-full rounded-2xl border border-white/10 bg-slate-950/50 px-4 py-3 text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-violet-400 disabled:cursor-not-allowed disabled:opacity-60"
                   />
 
                   <div className="rounded-2xl border border-violet-300/15 bg-violet-500/10 p-4">

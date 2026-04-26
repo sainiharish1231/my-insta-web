@@ -89,6 +89,15 @@ export interface GeneratedShortCopy {
   highlightedLineIndex: number;
 }
 
+export interface StoredGeneratedShortMetadata
+  extends GeneratedShortCopy,
+    ShortsRenderMetadata {
+  sourceUrl?: string;
+  sourceTitle?: string;
+  sourceDescription?: string;
+  sourceKeywords?: string[];
+}
+
 export interface GeneratedShortAsset
   extends ShortsWindow, GeneratedShortCopy, ShortsRenderMetadata {
   assetUrl: string;

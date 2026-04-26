@@ -6,6 +6,8 @@ import {
   readFile,
   readdir,
   rm,
+  stat,
+  statfs,
   unlink,
   writeFile,
 } from "fs/promises";
@@ -26,6 +28,7 @@ import {
   normalizeYouTubeUrl,
   type GeneratedShortCopy,
   type GeneratedShortAsset,
+  type StoredGeneratedShortMetadata,
   type ShortsFramingMode,
   type ShortsQualityPreset,
   type ShortsRenderSettings,
@@ -71,6 +74,16 @@ if (resolvedFfmpegPath) {
   ffmpeg.setFfmpegPath(resolvedFfmpegPath);
 }
 
+type HardwareAccelerationConfig = {
+  encoder: string | null;
+  hwaccel: string | null;
+};
+
+const NO_HARDWARE_ACCELERATION: HardwareAccelerationConfig = {
+  encoder: null,
+  hwaccel: null,
+};
+
 async function detectHardwareAcceleration(): Promise<{
   encoder: string | null;
   hwaccel: string | null;
@@ -83,49 +96,244 @@ async function detectHardwareAcceleration(): Promise<{
     { encoder: "h264_qsv", hwaccel: "qsv" }, // Intel QuickSync
   ];
 
-  for (const { encoder } of encodersToTry) {
-    try {
-      const result = await new Promise<string>((resolve, reject) => {
-        const child = spawn(ffmpegBinaryPath, ["-hide_banner", "-encoders"], {
-          cwd: process.cwd(),
-          env: process.env,
-        });
-        let stdout = "";
-        let stderr = "";
-        child.stdout.on("data", (chunk) => {
-          stdout += chunk.toString();
-        });
-        child.stderr.on("data", (chunk) => {
-          stderr += chunk.toString();
-        });
-        child.on("error", reject);
-        child.on("close", () => resolve(stdout + stderr));
+  try {
+    const result = await new Promise<string>((resolve, reject) => {
+      const child = spawn(ffmpegBinaryPath, ["-hide_banner", "-encoders"], {
+        cwd: process.cwd(),
+        env: process.env,
       });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk.toString();
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk.toString();
+      });
+      child.on("error", reject);
+      child.on("close", () => resolve(stdout + stderr));
+    });
+
+    for (const { encoder, hwaccel } of encodersToTry) {
       if (result.includes(encoder)) {
         console.log(`[v0] Hardware acceleration detected: ${encoder}`);
         return {
           encoder,
-          hwaccel:
-            encodersToTry.find((e) => e.encoder === encoder)?.hwaccel || null,
+          hwaccel,
         };
       }
-    } catch {
-      // ignore
     }
+  } catch {
+    // ignore
   }
 
-  return { encoder: null, hwaccel: null };
+  return NO_HARDWARE_ACCELERATION;
 }
 
-let cachedHwAccelPromise: Promise<{
-  encoder: string | null;
-  hwaccel: string | null;
-}> | null = null;
+let cachedHwAccelPromise: Promise<HardwareAccelerationConfig> | null = null;
+let hardwareAccelerationDisabled = false;
+
+function disableHardwareAcceleration(reason: string) {
+  if (hardwareAccelerationDisabled) {
+    return;
+  }
+
+  hardwareAccelerationDisabled = true;
+  cachedHwAccelPromise = Promise.resolve(NO_HARDWARE_ACCELERATION);
+  console.warn(
+    `[v0] Disabling Shorts hardware acceleration and falling back to software encoding. ${reason}`,
+  );
+}
+
 function getHardwareAcceleration() {
+  if (
+    hardwareAccelerationDisabled ||
+    process.env.YOUTUBE_SHORTS_DISABLE_HW_ACCEL === "1"
+  ) {
+    return Promise.resolve(NO_HARDWARE_ACCELERATION);
+  }
+
   if (!cachedHwAccelPromise) {
     cachedHwAccelPromise = detectHardwareAcceleration();
   }
   return cachedHwAccelPromise;
+}
+
+function summarizeFfmpegFailure(stderrLines: string[]) {
+  return stderrLines
+    .filter((line) =>
+      /(error|failed|cannot|unsupported|busy|nothing was written|conversion failed|allow_sw)/i.test(
+        line,
+      ),
+    )
+    .slice(-6)
+    .join(" ");
+}
+
+function isNoSpaceLeftErrorMessage(message?: string | null) {
+  return /no space left on device|enospc/i.test(message || "");
+}
+
+function formatStorageBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "0 MB";
+  }
+
+  const megabytes = value / (1024 * 1024);
+  if (megabytes >= 1024) {
+    return `${(megabytes / 1024).toFixed(2)} GB`;
+  }
+
+  return `${megabytes.toFixed(0)} MB`;
+}
+
+function getFriendlyShortsTempSpaceMessage(availableBytes?: number | null) {
+  const remainingSpaceLabel =
+    typeof availableBytes === "number" && availableBytes >= 0
+      ? ` Server temp storage me abhi sirf ${formatStorageBytes(availableBytes)} free hai.`
+      : "";
+
+  return `Server temporary storage full ho gaya, isliye shorts render complete nahi hui.${remainingSpaceLabel} Thodi der baad retry karo ya lower render quality choose karo.`;
+}
+
+function normalizeShortsRenderErrorMessage(
+  message: string,
+  availableBytes?: number | null,
+) {
+  if (isNoSpaceLeftErrorMessage(message)) {
+    return getFriendlyShortsTempSpaceMessage(availableBytes);
+  }
+
+  return message;
+}
+
+let lastShortsTempCleanupAt = 0;
+let staleShortsTempCleanupPromise: Promise<void> | null = null;
+
+async function cleanupStaleShortsTempDirectories() {
+  const tempDir = os.tmpdir();
+  const now = Date.now();
+  const entries = await readdir(tempDir, {
+    withFileTypes: true,
+  });
+
+  await Promise.all(
+    entries.map(async (entry) => {
+      if (!entry.isDirectory()) {
+        return;
+      }
+
+      if (
+        !SHORTS_TEMP_DIR_PREFIXES.some((prefix) => entry.name.startsWith(prefix))
+      ) {
+        return;
+      }
+
+      const targetPath = path.join(tempDir, entry.name);
+
+      try {
+        const entryStats = await stat(targetPath);
+        if (now - entryStats.mtimeMs < STALE_SHORTS_TEMP_MAX_AGE_MS) {
+          return;
+        }
+
+        await rm(targetPath, { recursive: true, force: true });
+      } catch {
+        // Ignore temp cleanup failures and continue with the build.
+      }
+    }),
+  );
+}
+
+async function prepareShortsTempWorkspace() {
+  const now = Date.now();
+  if (now - lastShortsTempCleanupAt < SHORTS_TEMP_CLEANUP_INTERVAL_MS) {
+    return;
+  }
+
+  if (!staleShortsTempCleanupPromise) {
+    staleShortsTempCleanupPromise = cleanupStaleShortsTempDirectories()
+      .catch(() => undefined)
+      .finally(() => {
+        lastShortsTempCleanupAt = Date.now();
+        staleShortsTempCleanupPromise = null;
+      });
+  }
+
+  await staleShortsTempCleanupPromise;
+}
+
+async function getAvailableTempSpaceBytes() {
+  try {
+    const tempSpace = await statfs(os.tmpdir());
+    const blockSize = Number((tempSpace as any).bsize || 0);
+    const availableBlocks = Number((tempSpace as any).bavail || 0);
+    if (
+      Number.isFinite(blockSize) &&
+      Number.isFinite(availableBlocks) &&
+      blockSize > 0 &&
+      availableBlocks >= 0
+    ) {
+      return blockSize * availableBlocks;
+    }
+  } catch {
+    // Ignore platform/filesystem support issues and continue without the check.
+  }
+
+  return null;
+}
+
+function getEstimatedShortTempBytesForProfile(profile: ShortsRenderProfile) {
+  switch (profile.key) {
+    case "2160p":
+      return 3_500_000_000;
+    case "1440p":
+      return 1_800_000_000;
+    default:
+      return 900_000_000;
+  }
+}
+
+function resolveTempAwareRenderConcurrency(
+  profile: ShortsRenderProfile,
+  preferredConcurrency: number,
+  availableTempBytes: number | null,
+) {
+  if (availableTempBytes == null) {
+    return preferredConcurrency;
+  }
+
+  const estimatedBytesPerClip = getEstimatedShortTempBytesForProfile(profile);
+  let nextConcurrency = preferredConcurrency;
+
+  while (
+    nextConcurrency > 1 &&
+    availableTempBytes <
+      estimatedBytesPerClip * nextConcurrency + SHORTS_TEMP_SPACE_BUFFER_BYTES
+  ) {
+    nextConcurrency -= 1;
+  }
+
+  return nextConcurrency;
+}
+
+function ensureSufficientTempSpaceForShorts(
+  profile: ShortsRenderProfile,
+  renderConcurrency: number,
+  availableTempBytes: number | null,
+) {
+  if (availableTempBytes == null) {
+    return;
+  }
+
+  const minimumRequiredBytes =
+    getEstimatedShortTempBytesForProfile(profile) *
+      Math.max(1, renderConcurrency) +
+    SHORTS_TEMP_SPACE_BUFFER_BYTES;
+
+  if (availableTempBytes < minimumRequiredBytes) {
+    throw new Error(getFriendlyShortsTempSpaceMessage(availableTempBytes));
+  }
 }
 
 type SourceVideoMetadata = Omit<ShortsVideoMetadata, "sourceUrl">;
@@ -152,6 +360,16 @@ const DEFAULT_INCLUDE_LOGO_OVERLAY = true;
 const DEFAULT_INCLUDE_HEADLINE_OVERLAY = true;
 const DEFAULT_INCLUDE_COPYRIGHT_OVERLAY = true;
 const CLOUDINARY_VIDEO_UPLOAD_CHUNK_SIZE = 20_000_000;
+const SHORTS_TEMP_DIR_PREFIXES = [
+  "youtube-shorts-",
+  "youtube-shorts-source-",
+  "youtube-shorts-local-",
+  "uploaded-youtube-shorts-",
+  "remote-youtube-shorts-",
+] as const;
+const STALE_SHORTS_TEMP_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+const SHORTS_TEMP_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
+const SHORTS_TEMP_SPACE_BUFFER_BYTES = 256 * 1024 * 1024;
 
 type ShortsRenderProfile = {
   key: ShortsResolvedQualityPreset;
@@ -168,6 +386,8 @@ type ShortsRenderProfile = {
   videoCodec: string;
   videoCodecOptions: string[];
 };
+
+type CloudinaryUploadContextValue = string | number | string[];
 
 type ShortsRenderOptions = {
   framingMode: ShortsFramingMode;
@@ -1695,81 +1915,150 @@ async function renderVerticalShort({
   });
   await writeFile(subtitlePath, subtitleScript, "utf8");
 
-  // Detect hardware acceleration once per process
   const hwAccel = await getHardwareAcceleration();
-  const useHwAccel = Boolean(hwAccel.encoder);
-  const videoCodec = useHwAccel
-    ? hwAccel.encoder!
-    : renderContext.profile.videoCodec;
-
-  // Build codec-specific output options
-  const videoOutputOptions: string[] = useHwAccel
-    ? [
-        "-c:v " + videoCodec,
-        `-b:v ${renderContext.profile.maxRate}`,
-        ...(hwAccel.hwaccel ? [`-hwaccel ${hwAccel.hwaccel}`] : []),
-        // Hardware encoders don't use CRF/preset the same way
-      ]
-    : [
-        "-c:v " + videoCodec,
-        `-preset ${renderContext.profile.preset}`,
-        `-crf ${renderContext.profile.crf}`,
-        `-maxrate ${renderContext.profile.maxRate}`,
-        `-bufsize ${renderContext.profile.bufSize}`,
-        ...renderContext.profile.videoCodecOptions,
-      ];
 
   try {
-    await new Promise<void>((resolve, reject) => {
-      const command = ffmpeg()
-        .input(inputPath)
-        .inputOptions([`-ss ${Math.max(0, startSeconds)}`])
-        .duration(durationSeconds);
+    const runRenderAttempt = async ({
+      acceleration,
+      attemptLabel,
+    }: {
+      acceleration: HardwareAccelerationConfig;
+      attemptLabel: "hardware" | "software";
+    }) => {
+      const useHwAccel = Boolean(acceleration.encoder);
+      const videoCodec = useHwAccel
+        ? acceleration.encoder!
+        : renderContext.profile.videoCodec;
+      const inputOptions = [`-ss ${Math.max(0, startSeconds)}`];
+      const videoOutputOptions: string[] = useHwAccel
+        ? [
+            "-c:v " + videoCodec,
+            ...(videoCodec === "h264_videotoolbox" ? ["-allow_sw 1"] : []),
+            `-b:v ${renderContext.profile.maxRate}`,
+            "-pix_fmt yuv420p",
+            "-g 60",
+          ]
+        : [
+            "-c:v " + videoCodec,
+            `-preset ${renderContext.profile.preset}`,
+            `-crf ${renderContext.profile.crf}`,
+            `-maxrate ${renderContext.profile.maxRate}`,
+            `-bufsize ${renderContext.profile.bufSize}`,
+            ...renderContext.profile.videoCodecOptions,
+          ];
 
-      if (renderContext.logoOverlayPath) {
-        command.input(renderContext.logoOverlayPath).inputOptions(["-loop 1"]);
+      if (acceleration.hwaccel) {
+        inputOptions.unshift(`-hwaccel ${acceleration.hwaccel}`);
       }
 
-      command
-        .complexFilter(
-          buildShortsFilterGraph({
-            renderContext,
-            overlayText,
-            subtitlePath,
-          }),
-          "shorts_video",
-        )
-        .outputOptions([
-          "-map 0:a?",
-          `-threads ${threadCount}`,
-          ...videoOutputOptions,
-          "-movflags +faststart",
-          "-shortest",
-          "-c:a aac",
-          `-b:a ${renderContext.profile.audioBitrate}`,
-          "-ar 48000",
-          "-ac 2",
-        ])
-        .on("progress", (progress) => {
-          const timemarkSeconds = parseFfmpegTimemarkToSeconds(
-            progress.timemark,
-          );
-          const normalizedProgress = durationSeconds
-            ? Math.max(
-                0,
-                Math.min(
-                  95,
-                  Math.round((timemarkSeconds / durationSeconds) * 95),
-                ),
-              )
-            : 0;
+      await new Promise<void>((resolve, reject) => {
+        const stderrLines: string[] = [];
+        let commandLine = "";
+        const command = ffmpeg()
+          .input(inputPath)
+          .inputOptions(inputOptions)
+          .duration(durationSeconds);
 
-          void onProgress?.(normalizedProgress);
-        })
-        .on("end", () => resolve())
-        .on("error", (error) => reject(error))
-        .save(outputPath);
-    });
+        if (renderContext.logoOverlayPath) {
+          command.input(renderContext.logoOverlayPath).inputOptions(["-loop 1"]);
+        }
+
+        command
+          .complexFilter(
+            buildShortsFilterGraph({
+              renderContext,
+              overlayText,
+              subtitlePath,
+            }),
+            "shorts_video",
+          )
+          .outputOptions([
+            "-map 0:a?",
+            `-threads ${threadCount}`,
+            ...videoOutputOptions,
+            "-movflags +faststart",
+            "-shortest",
+            "-c:a aac",
+            `-b:a ${renderContext.profile.audioBitrate}`,
+            "-ar 48000",
+            "-ac 2",
+          ])
+          .on("start", (value) => {
+            commandLine = value;
+          })
+          .on("stderr", (line) => {
+            const normalizedLine = line.trim();
+            if (!normalizedLine) {
+              return;
+            }
+
+            stderrLines.push(normalizedLine);
+            if (stderrLines.length > 80) {
+              stderrLines.shift();
+            }
+          })
+          .on("progress", (progress) => {
+            const timemarkSeconds = parseFfmpegTimemarkToSeconds(
+              progress.timemark,
+            );
+            const normalizedProgress = durationSeconds
+              ? Math.max(
+                  0,
+                  Math.min(
+                    95,
+                    Math.round((timemarkSeconds / durationSeconds) * 95),
+                  ),
+                )
+              : 0;
+
+            void onProgress?.(normalizedProgress);
+          })
+          .on("end", () => resolve())
+          .on("error", (error) => {
+            const failureSummary = summarizeFfmpegFailure(stderrLines);
+            const stderrTail = stderrLines.slice(-20).join("\n");
+            const rawErrorMessage = failureSummary
+              ? `${error.message} ${failureSummary}`
+              : error.message;
+
+            console.error(`[v0] Shorts ffmpeg ${attemptLabel} render failed.`, {
+              commandLine,
+              stderrTail,
+            });
+
+            reject(
+              new Error(
+                normalizeShortsRenderErrorMessage(rawErrorMessage),
+              ),
+            );
+          })
+          .save(outputPath);
+      });
+    };
+
+    try {
+      await runRenderAttempt({
+        acceleration: hwAccel,
+        attemptLabel: hwAccel.encoder ? "hardware" : "software",
+      });
+    } catch (error) {
+      if (!hwAccel.encoder) {
+        throw error;
+      }
+
+      const reason =
+        error instanceof Error ? error.message : "Unknown ffmpeg failure.";
+      if (isNoSpaceLeftErrorMessage(reason)) {
+        throw new Error(normalizeShortsRenderErrorMessage(reason));
+      }
+
+      disableHardwareAcceleration(reason);
+      await unlink(outputPath).catch(() => undefined);
+      await runRenderAttempt({
+        acceleration: NO_HARDWARE_ACCELERATION,
+        attemptLabel: "software",
+      });
+    }
   } finally {
     await unlink(subtitlePath).catch(() => undefined);
   }
@@ -1835,15 +2124,17 @@ async function uploadClipToCloudinary({
   filePath,
   folder,
   publicId,
+  context,
   onProgress,
 }: {
   filePath: string;
   folder: string;
   publicId: string;
+  context?: Record<string, CloudinaryUploadContextValue>;
   onProgress?: (progress: number) => void;
 }) {
   getCloudinaryConfig();
-  const fileSize = (await readFile(filePath)).length;
+  const fileSize = (await stat(filePath)).size;
 
   const result = await new Promise<any>((resolve, reject) => {
     cloudinary.uploader.upload_chunked(
@@ -1856,6 +2147,7 @@ async function uploadClipToCloudinary({
         use_filename: false,
         chunk_size: CLOUDINARY_VIDEO_UPLOAD_CHUNK_SIZE,
         timeout: 600_000,
+        context,
       },
       (error: any, result: any) => {
         if (error) {
@@ -1888,6 +2180,42 @@ async function uploadClipToCloudinary({
     cloudinaryPublicId: result.public_id,
     cloudinaryResourceType: result.resource_type,
   };
+}
+
+function buildGeneratedShortUploadContext({
+  sourceUrl,
+  sourceTitle,
+  sourceDescription,
+  sourceKeywords,
+  generatedCopy,
+  renderMetadata,
+}: {
+  sourceUrl: string;
+  sourceTitle: string;
+  sourceDescription: string;
+  sourceKeywords: string[];
+  generatedCopy: GeneratedShortCopy;
+  renderMetadata: StoredGeneratedShortMetadata;
+}) {
+  return {
+    shorts_meta_version: 1,
+    shorts_title: generatedCopy.title,
+    shorts_description: generatedCopy.description,
+    shorts_caption: generatedCopy.caption,
+    shorts_keywords: generatedCopy.keywords,
+    shorts_part_label: generatedCopy.partLabel,
+    shorts_headline_lines: generatedCopy.headlineLines,
+    shorts_highlighted_line_index: generatedCopy.highlightedLineIndex,
+    shorts_render_width: renderMetadata.renderWidth,
+    shorts_render_height: renderMetadata.renderHeight,
+    shorts_render_label: renderMetadata.renderLabel,
+    shorts_framing_mode: renderMetadata.framingMode,
+    shorts_has_logo_overlay: renderMetadata.hasLogoOverlay ? 1 : 0,
+    shorts_source_url: sourceUrl,
+    shorts_source_title: sourceTitle,
+    shorts_source_description: sourceDescription,
+    shorts_source_keywords: sourceKeywords,
+  } satisfies Record<string, CloudinaryUploadContextValue>;
 }
 
 async function buildShortAssetsFromPreparedSource({
@@ -1945,6 +2273,7 @@ async function buildShortAssetsFromPreparedSource({
     sourcePath,
     renderSettings,
   );
+  const availableTempBytes = await getAvailableTempSpaceBytes();
 
   await callbacks?.onPlanReady?.({
     video,
@@ -1959,9 +2288,15 @@ async function buildShortAssetsFromPreparedSource({
 
   const tempRoot = path.dirname(sourcePath);
   const generatedAssets = new Array<GeneratedShortAsset>(plan.length);
-  const renderConcurrency = resolveShortsRenderConcurrency(
+  const renderConcurrency = resolveTempAwareRenderConcurrency(
     renderContext.profile,
-    plan.length,
+    resolveShortsRenderConcurrency(renderContext.profile, plan.length),
+    availableTempBytes,
+  );
+  ensureSufficientTempSpaceForShorts(
+    renderContext.profile,
+    renderConcurrency,
+    availableTempBytes,
   );
   const renderThreadCount = resolveShortsRenderThreadCount(renderConcurrency);
   let nextEmitIndex = 0;
@@ -2053,10 +2388,31 @@ async function buildShortAssetsFromPreparedSource({
         stage: "upload",
       });
 
+      const renderMetadata: StoredGeneratedShortMetadata = {
+        ...generatedCopy,
+        renderWidth: renderContext.profile.width,
+        renderHeight: renderContext.profile.height,
+        renderLabel: renderContext.profile.label,
+        framingMode: renderContext.framingMode,
+        hasLogoOverlay: Boolean(renderContext.logoOverlayPath),
+        sourceUrl,
+        sourceTitle,
+        sourceDescription,
+        sourceKeywords,
+      };
+
       const uploadedAsset = await uploadClipToCloudinary({
         filePath: clipPath,
         folder: uploadFolder,
         publicId: sanitizePathPart(segment.id),
+        context: buildGeneratedShortUploadContext({
+          sourceUrl,
+          sourceTitle,
+          sourceDescription,
+          sourceKeywords,
+          generatedCopy,
+          renderMetadata,
+        }),
         onProgress: (uploadPercent) => {
           void callbacks?.onClipProgress?.({
             video,
@@ -2077,12 +2433,7 @@ async function buildShortAssetsFromPreparedSource({
 
       const nextAsset: GeneratedShortAsset = {
         ...segment,
-        ...generatedCopy,
-        renderWidth: renderContext.profile.width,
-        renderHeight: renderContext.profile.height,
-        renderLabel: renderContext.profile.label,
-        framingMode: renderContext.framingMode,
-        hasLogoOverlay: Boolean(renderContext.logoOverlayPath),
+        ...renderMetadata,
         ...uploadedAsset,
       };
 
@@ -2170,6 +2521,7 @@ export async function prepareYouTubeShortsSource({
   keywords?: string[];
 }) {
   const normalizedSourceUrl = normalizeAndValidateYouTubeSourceUrl(sourceUrl);
+  await prepareShortsTempWorkspace();
 
   const tempRoot = await mkdtemp(
     path.join(os.tmpdir(), "youtube-shorts-source-"),
@@ -2233,6 +2585,7 @@ export async function downloadYouTubeSourceVideoLocally({
   sourceUrl: string;
 }) {
   const normalizedSourceUrl = normalizeAndValidateYouTubeSourceUrl(sourceUrl);
+  await prepareShortsTempWorkspace();
 
   const tempRoot = await mkdtemp(
     path.join(os.tmpdir(), "youtube-shorts-local-"),
@@ -2289,6 +2642,7 @@ export async function buildYouTubeShortAssets({
   callbacks?: ShortBuildCallbacks;
 }) {
   const normalizedSourceUrl = normalizeAndValidateYouTubeSourceUrl(sourceUrl);
+  await prepareShortsTempWorkspace();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "youtube-shorts-"));
   const sourcePathBase = path.join(tempRoot, "source-video");
   const uploadFolder = `${GENERATED_SHORTS_UPLOAD_ROOT}/${new Date().toISOString().slice(0, 10)}/${Date.now()}`;
@@ -2364,6 +2718,7 @@ export async function buildUploadedVideoShortAssets({
       "Uploaded video duration invalid hai. Dusri file try karo.",
     );
   }
+  await prepareShortsTempWorkspace();
 
   const tempRoot = await mkdtemp(
     path.join(os.tmpdir(), "uploaded-youtube-shorts-"),
@@ -2451,6 +2806,7 @@ export async function buildRemoteVideoShortAssets({
       "Uploaded video duration invalid hai. Dusri file try karo.",
     );
   }
+  await prepareShortsTempWorkspace();
 
   const tempRoot = await mkdtemp(
     path.join(os.tmpdir(), "remote-youtube-shorts-"),
