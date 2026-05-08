@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   AlertCircle,
   ArrowLeft,
+  CalendarClock,
   Check,
   CheckCircle2,
   Cloud,
@@ -129,6 +130,9 @@ interface PersistedState {
   queue: QueueItem[];
   selectedAccountId: string | null;
   selectedTargetAccountKeys?: string[];
+  publishMode?: QueuePublishMode;
+  scheduleStartDate?: string;
+  scheduleStartTime?: string;
   intervalMinutes: number;
   deleteAfterPublish: boolean;
   isRunning: boolean;
@@ -266,6 +270,7 @@ const DEFAULT_CLOUDINARY_SOURCE_FOLDER = SHORTS_LIBRARY_ROOT;
 type PendingYouTubeAction = "analyze" | "generate";
 type YouTubeGuideDialogMode = "mobile-guide" | "bot-check";
 type PerShortBuildStatus = "ready" | "processing" | "pending" | "error";
+type QueuePublishMode = "now" | "schedule";
 
 function getBrowserStorage() {
   if (typeof window === "undefined") {
@@ -475,6 +480,7 @@ function parseQualityPreset(
   value?: string | null,
 ): ShortsQualityPreset | undefined {
   return value === "auto" ||
+    value === "720p" ||
     value === "1080p" ||
     value === "1440p" ||
     value === "2160p"
@@ -509,6 +515,30 @@ function formatDateTime(value?: string | null) {
   }
 
   return parsed.toLocaleString();
+}
+
+function getLocalDateInputValue(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
+
+function getLocalTimeInputValue(date = new Date()) {
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+
+  return `${hours}:${minutes}`;
+}
+
+function parseScheduleStartDateTime(dateValue: string, timeValue: string) {
+  if (!dateValue || !timeValue) {
+    return null;
+  }
+
+  const parsed = new Date(`${dateValue}T${timeValue}`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
 function sanitizeFileName(value: string) {
@@ -1146,7 +1176,14 @@ export default function YouTubeShortsPage() {
   const [copyrightText, setCopyrightText] = useState(
     DEFAULT_SHORTS_COPYRIGHT_TEXT,
   );
-  const [intervalMinutes, setIntervalMinutes] = useState(20);
+  const [publishMode, setPublishMode] = useState<QueuePublishMode>("now");
+  const [scheduleStartDate, setScheduleStartDate] = useState(() =>
+    getLocalDateInputValue(),
+  );
+  const [scheduleStartTime, setScheduleStartTime] = useState(() =>
+    getLocalTimeInputValue(),
+  );
+  const [intervalMinutes, setIntervalMinutes] = useState(5);
   const [sourceVideo, setSourceVideo] = useState<ShortsVideoMetadata | null>(
     null,
   );
@@ -1368,7 +1405,14 @@ export default function YouTubeShortsPage() {
               )
             : [],
         );
-        setIntervalMinutes(parsed.intervalMinutes || 20);
+        setPublishMode(parsed.publishMode === "schedule" ? "schedule" : "now");
+        setScheduleStartDate(
+          parsed.scheduleStartDate || getLocalDateInputValue(),
+        );
+        setScheduleStartTime(
+          parsed.scheduleStartTime || getLocalTimeInputValue(),
+        );
+        setIntervalMinutes(Math.max(1, parsed.intervalMinutes || 5));
         setIsRunning(parsed.isRunning ?? false);
         setNextRunAt(parsed.nextRunAt || null);
         setSourceVideo(parsed.sourceVideo || null);
@@ -1553,6 +1597,9 @@ export default function YouTubeShortsPage() {
       queue,
       selectedAccountId,
       selectedTargetAccountKeys,
+      publishMode,
+      scheduleStartDate,
+      scheduleStartTime,
       intervalMinutes,
       deleteAfterPublish: true,
       isRunning,
@@ -1579,8 +1626,11 @@ export default function YouTubeShortsPage() {
     intervalMinutes,
     isRunning,
     nextRunAt,
+    publishMode,
     queue,
     recentUploads,
+    scheduleStartDate,
+    scheduleStartTime,
     selectedAccountId,
     selectedTargetAccountKeys,
     sourceVideo,
@@ -1755,14 +1805,16 @@ export default function YouTubeShortsPage() {
   );
 
   const publishQueueItemToSelectedAccounts = useEffectEvent(
-    async (nextItem: QueueItem) => {
+    async (
+      nextItem: QueueItem,
+      options: { trackProgress?: boolean } = {},
+    ) => {
       const activeAccounts = selectedPublishAccountsRef.current;
       if (activeAccounts.length === 0) {
         throw new Error("Pehle kam se kam ek target account select karo.");
       }
 
-      let successCount = 0;
-      const publishedOn: string[] = [];
+      const shouldTrackProgress = options.trackProgress !== false;
       const youtubeDescription = buildYouTubeDescriptionFromSeoDraft(
         {
           title: nextItem.title,
@@ -1773,21 +1825,29 @@ export default function YouTubeShortsPage() {
       );
       const youtubeTags = buildYouTubeTagsFromKeywords(nextItem.keywords);
 
-      setPublishProgress({
-        itemId: nextItem.id,
-        itemTitle: nextItem.title,
-        statuses: activeAccounts.map((account) => ({
-          accountKey: getPublishAccountKey(account),
-          accountLabel:
-            account.platform === "instagram"
-              ? `IG • @${account.username}`
-              : `YT • ${account.username}`,
-          status: "pending",
-        })),
-      });
+      if (shouldTrackProgress) {
+        setPublishProgress({
+          itemId: nextItem.id,
+          itemTitle: nextItem.title,
+          statuses: activeAccounts.map((account) => ({
+            accountKey: getPublishAccountKey(account),
+            accountLabel:
+              account.platform === "instagram"
+                ? `IG • @${account.username}`
+                : `YT • ${account.username}`,
+            status: "pending",
+          })),
+        });
+      }
 
-      for (const account of activeAccounts) {
-        const accountKey = getPublishAccountKey(account);
+      const updateTrackedAccountStatus = (
+        accountKey: string,
+        status: PublishAccountProgressState["status"],
+        error?: string,
+      ) => {
+        if (!shouldTrackProgress) {
+          return;
+        }
 
         setPublishProgress((current) =>
           current?.itemId === nextItem.id
@@ -1797,106 +1857,92 @@ export default function YouTubeShortsPage() {
                   statusItem.accountKey === accountKey
                     ? {
                         ...statusItem,
-                        status: "posting",
-                        error: undefined,
+                        status,
+                        error,
                       }
                     : statusItem,
                 ),
               }
             : current,
         );
+      };
 
-        try {
-          if (account.platform === "instagram") {
-            if (!account.token) {
-              throw new Error("Instagram token missing hai.");
+      const accountResults = await Promise.all(
+        activeAccounts.map(async (account) => {
+          const accountKey = getPublishAccountKey(account);
+          updateTrackedAccountStatus(accountKey, "posting");
+
+          try {
+            if (account.platform === "instagram") {
+              if (!account.token) {
+                throw new Error("Instagram token missing hai.");
+              }
+
+              const creationId = await createMedia({
+                igUserId: account.id,
+                token: account.token,
+                mediaUrl: nextItem.assetUrl,
+                caption: nextItem.caption,
+                isReel: true,
+              });
+
+              await publishMedia({
+                igUserId: account.id,
+                token: account.token,
+                creationId,
+              });
+            } else {
+              const response = await fetch("/api/youtube/upload", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  accessToken: account.accessToken || account.token,
+                  refreshToken: account.refreshToken,
+                  videoUrl: nextItem.assetUrl,
+                  title: nextItem.title,
+                  description: youtubeDescription,
+                  keywords: youtubeTags,
+                  privacy: "public",
+                  isShort: true,
+                }),
+              });
+
+              const data = await response.json().catch(() => ({}));
+              if (!response.ok) {
+                throw new Error(data.error || "YouTube upload failed");
+              }
+
+              if (typeof data.accessToken === "string" && data.accessToken) {
+                persistUpdatedYouTubeAccessToken(account.id, data.accessToken);
+              }
             }
 
-            const creationId = await createMedia({
-              igUserId: account.id,
-              token: account.token,
-              mediaUrl: nextItem.assetUrl,
-              caption: nextItem.caption,
-              isReel: true,
-            });
-
-            await publishMedia({
-              igUserId: account.id,
-              token: account.token,
-              creationId,
-            });
-          } else {
-            const response = await fetch("/api/youtube/upload", {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                accessToken: account.accessToken || account.token,
-                refreshToken: account.refreshToken,
-                videoUrl: nextItem.assetUrl,
-                title: nextItem.title,
-                description: youtubeDescription,
-                keywords: youtubeTags,
-                privacy: "public",
-                isShort: true,
-              }),
-            });
-
-            const data = await response.json().catch(() => ({}));
-            if (!response.ok) {
-              throw new Error(data.error || "YouTube upload failed");
-            }
-
-            if (typeof data.accessToken === "string" && data.accessToken) {
-              persistUpdatedYouTubeAccessToken(account.id, data.accessToken);
-            }
+            updateTrackedAccountStatus(accountKey, "posted");
+            return {
+              ok: true,
+              username: account.username,
+            };
+          } catch (accountError: any) {
+            const friendlyError = getFriendlyPublishError(
+              accountError?.message || "Publish failed",
+              account.platform,
+            );
+            updateTrackedAccountStatus(accountKey, "error", friendlyError);
+            toast.error(`${account.username}: ${friendlyError}`);
+            return {
+              ok: false,
+              username: account.username,
+            };
           }
+        }),
+      );
 
-          successCount += 1;
-          publishedOn.push(account.username);
-          setPublishProgress((current) =>
-            current?.itemId === nextItem.id
-              ? {
-                  ...current,
-                  statuses: current.statuses.map((statusItem) =>
-                    statusItem.accountKey === accountKey
-                      ? {
-                          ...statusItem,
-                          status: "posted",
-                          error: undefined,
-                        }
-                      : statusItem,
-                  ),
-                }
-              : current,
-          );
-        } catch (accountError: any) {
-          const friendlyError = getFriendlyPublishError(
-            accountError?.message || "Publish failed",
-            account.platform,
-          );
-          setPublishProgress((current) =>
-            current?.itemId === nextItem.id
-              ? {
-                  ...current,
-                  statuses: current.statuses.map((statusItem) =>
-                    statusItem.accountKey === accountKey
-                      ? {
-                          ...statusItem,
-                          status: "error",
-                          error: friendlyError,
-                        }
-                      : statusItem,
-                  ),
-                }
-              : current,
-          );
-          toast.error(
-            `${account.username}: ${friendlyError}`,
-          );
-        }
-      }
+      const publishedOn = accountResults
+        .filter((result) => result.ok)
+        .map((result) => result.username);
+      const successCount = publishedOn.length;
 
       if (successCount === 0) {
         throw new Error("Selected accounts par publish nahi ho paya.");
@@ -1976,8 +2022,14 @@ export default function YouTubeShortsPage() {
       );
 
       if (remainingQueue.length > 0) {
+        const currentRunAtMs = nextRunAt
+          ? new Date(nextRunAt).getTime()
+          : Date.now();
+        const nextScheduledAtMs =
+          (Number.isFinite(currentRunAtMs) ? currentRunAtMs : Date.now()) +
+          intervalMinutes * 60 * 1000;
         const scheduledTime = new Date(
-          Date.now() + intervalMinutes * 60 * 1000,
+          Math.max(Date.now(), nextScheduledAtMs),
         ).toISOString();
         setNextRunAt(scheduledTime);
         toast.success(
@@ -2037,6 +2089,144 @@ export default function YouTubeShortsPage() {
     syncQueueTimer();
   }, [isRunning, nextRunAt, queue.length, syncQueueTimer]);
 
+  const publishAllQueueNow = useEffectEvent(async () => {
+    if (processingRef.current) {
+      toast.info("Current publish finish hone do, phir bulk post chalao.");
+      return;
+    }
+
+    if (queue.length === 0) {
+      toast.error("Pehle queue me kam se kam ek short add karo.");
+      return;
+    }
+
+    if (selectedPublishAccounts.length === 0) {
+      toast.error("Pehle target accounts select karo.");
+      return;
+    }
+
+    clearTimer();
+    setIsRunning(false);
+    setNextRunAt(null);
+    setPublishProgress(null);
+    processingRef.current = true;
+
+    const activeQueueItems = queue.map((item) => ({
+      ...item,
+      status: "uploading" as const,
+      error: undefined,
+    }));
+
+    setQueue(activeQueueItems);
+
+    try {
+      const results = await Promise.all(
+        activeQueueItems.map(async (item) => {
+          try {
+            const publishResult = await publishQueueItemToSelectedAccounts(
+              item,
+              { trackProgress: false },
+            );
+
+            if (
+              item.cloudinaryPublicId &&
+              item.deleteFromCloudinaryOnRemove !== false &&
+              publishResult.allSelectedSucceeded
+            ) {
+              await deleteCloudinaryAsset(
+                item.cloudinaryPublicId,
+                item.cloudinaryResourceType,
+              ).catch((error) => {
+                console.error("[v0] Failed to delete processed clip:", error);
+              });
+            }
+
+            return {
+              item,
+              success: true,
+              ...publishResult,
+            };
+          } catch (error: any) {
+            return {
+              item,
+              success: false,
+              error: error.message || "Upload failed",
+            };
+          }
+        }),
+      );
+
+      const successfulResults = results.filter(
+        (
+          result,
+        ): result is (typeof results)[number] & {
+          success: true;
+          publishedOn: string[];
+        } => result.success,
+      );
+      const failedResults = results.filter(
+        (
+          result,
+        ): result is (typeof results)[number] & {
+          success: false;
+          error: string;
+        } => !result.success,
+      );
+      const successfulIds = new Set(
+        successfulResults.map((result) => result.item.id),
+      );
+      const failedErrors = new Map(
+        failedResults.map((result) => [
+          result.item.id,
+          result.error || "Upload failed",
+        ]),
+      );
+
+      setQueue((prev) =>
+        prev
+          .filter((item) => !successfulIds.has(item.id))
+          .map((item) =>
+            failedErrors.has(item.id)
+              ? {
+                  ...item,
+                  status: "error",
+                  error: failedErrors.get(item.id),
+                }
+              : item,
+          ),
+      );
+
+      if (successfulResults.length > 0) {
+        const uploadedAt = new Date().toISOString();
+        setRecentUploads((prev) =>
+          [
+            ...successfulResults.map((result) => ({
+              id: `${result.item.id}-${Date.now()}`,
+              title: result.item.title,
+              uploadedAt,
+              accountUsername:
+                result.publishedOn?.join(", ") || "Selected accounts",
+            })),
+            ...prev,
+          ].slice(0, 8),
+        );
+      }
+
+      if (failedResults.length > 0) {
+        toast.error(
+          `${failedResults.length} short post nahi hua. Error wale cards queue me reh gaye.`,
+        );
+        return;
+      }
+
+      toast.success(
+        `${successfulResults.length} shorts sab selected accounts par ek sath post ho gayi.`,
+      );
+    } finally {
+      processingRef.current = false;
+    }
+  });
+
   const startQueuePublish = useEffectEvent(() => {
     if (processingRef.current) {
       toast.info("Current publish finish hone do, phir queue start karo.");
@@ -2053,6 +2243,20 @@ export default function YouTubeShortsPage() {
       return;
     }
 
+    if (publishMode === "now") {
+      void publishAllQueueNow();
+      return;
+    }
+
+    const scheduleStart = parseScheduleStartDateTime(
+      scheduleStartDate,
+      scheduleStartTime,
+    );
+    if (!scheduleStart) {
+      toast.error("Schedule start date aur time sahi choose karo.");
+      return;
+    }
+
     setQueue((current) =>
       current.map((item) =>
         item.status === "error"
@@ -2061,9 +2265,13 @@ export default function YouTubeShortsPage() {
       ),
     );
     setIsRunning(true);
-    setNextRunAt(null);
+    setNextRunAt(
+      scheduleStart.getTime() > Date.now()
+        ? scheduleStart.toISOString()
+        : null,
+    );
     toast.success(
-      `${queue.length} queued shorts ${selectedPublishAccounts.length} selected account${selectedPublishAccounts.length > 1 ? "s" : ""} ke liye start ho gayi.`,
+      `${queue.length} queued shorts schedule ho gayi. Har short ${intervalMinutes} minute gap se ${selectedPublishAccounts.length} selected account${selectedPublishAccounts.length > 1 ? "s" : ""} par post hoga.`,
     );
   });
 
@@ -3665,6 +3873,13 @@ export default function YouTubeShortsPage() {
   const nextRunLabel = nextRunAt
     ? formatDateTime(nextRunAt)
     : "Starts immediately";
+  const scheduleStartPreview = parseScheduleStartDateTime(
+    scheduleStartDate,
+    scheduleStartTime,
+  );
+  const scheduleModeSummary = scheduleStartPreview
+    ? `First short ${scheduleStartPreview <= new Date() ? "abhi" : formatDateTime(scheduleStartPreview.toISOString())}, baaki ${intervalMinutes} min gap se.`
+    : "Schedule start date/time choose karo.";
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,#155e75_0%,#0f172a_26%,#111827_58%,#020617_100%)] text-white">
@@ -3824,17 +4039,9 @@ export default function YouTubeShortsPage() {
             <div className="rounded-2xl border border-cyan-300/15 bg-cyan-400/10 px-4 py-2 text-sm text-cyan-100">
               Output folder: {SHORTS_LIBRARY_ROOT}
             </div>
-            <button
-              onClick={() =>
-                router.push(
-                  `/bulk-upload?source=cloudinary&folder=${encodeURIComponent(SHORTS_LIBRARY_ROOT)}`,
-                )
-              }
-              className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-cyan-400 via-sky-500 to-emerald-400 px-5 py-3 text-sm font-semibold text-slate-950 transition-opacity hover:opacity-90 sm:w-auto"
-            >
-              <Upload className="h-4 w-4" />
-              Open Bulk Upload
-            </button>
+            <div className="rounded-2xl border border-emerald-300/15 bg-emerald-500/10 px-4 py-2 text-sm text-emerald-100">
+              Bulk posting yahin se chalegi
+            </div>
           </div>
         </div>
       </header>
@@ -3886,9 +4093,8 @@ export default function YouTubeShortsPage() {
               </h2>
               <p className="mt-2 text-sm text-white/55">
                 Global target selection yahin rahegi. Har post card par accounts
-                repeat nahi honge. Select/deselect karo, phir queue ko direct
-                publish chala do. Bulk-upload optional fallback ke liye
-                available rahega.
+                repeat nahi honge. Select/deselect karo, phir saari queue ek
+                sath post karo ya 5 min gap wali schedule queue chalao.
               </p>
             </div>
 
@@ -4023,30 +4229,99 @@ export default function YouTubeShortsPage() {
                 </h3>
               </div>
 
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                  <div className="text-xs uppercase tracking-[0.18em] text-white/45">
-                    Gap Minutes
-                  </div>
-                  <input
-                    type="number"
-                    min="0"
-                    max="180"
-                    value={intervalMinutes}
-                    onChange={(event) =>
-                      setIntervalMinutes(
-                        Math.max(
-                          0,
-                          Math.min(
-                            180,
-                            Number.parseInt(event.target.value, 10) || 0,
+              <div className="mb-4 grid grid-cols-2 gap-2 rounded-2xl border border-white/10 bg-black/20 p-1">
+                <button
+                  onClick={() => setPublishMode("now")}
+                  className={`inline-flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold transition-colors ${
+                    publishMode === "now"
+                      ? "bg-emerald-500 text-white"
+                      : "text-white/65 hover:bg-white/5"
+                  }`}
+                >
+                  <Upload className="h-4 w-4" />
+                  All Now
+                </button>
+                <button
+                  onClick={() => setPublishMode("schedule")}
+                  className={`inline-flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold transition-colors ${
+                    publishMode === "schedule"
+                      ? "bg-cyan-500 text-white"
+                      : "text-white/65 hover:bg-white/5"
+                  }`}
+                >
+                  <CalendarClock className="h-4 w-4" />
+                  Schedule
+                </button>
+              </div>
+
+              {publishMode === "schedule" ? (
+                <div className="mb-3 grid gap-3 sm:grid-cols-3">
+                  <label className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                    <div className="text-xs uppercase tracking-[0.18em] text-white/45">
+                      Start Date
+                    </div>
+                    <input
+                      type="date"
+                      value={scheduleStartDate}
+                      onChange={(event) =>
+                        setScheduleStartDate(event.target.value)
+                      }
+                      className="mt-3 w-full bg-transparent text-sm font-semibold text-white outline-none"
+                    />
+                  </label>
+                  <label className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                    <div className="text-xs uppercase tracking-[0.18em] text-white/45">
+                      Start Time
+                    </div>
+                    <input
+                      type="time"
+                      value={scheduleStartTime}
+                      onChange={(event) =>
+                        setScheduleStartTime(event.target.value)
+                      }
+                      className="mt-3 w-full bg-transparent text-sm font-semibold text-white outline-none"
+                    />
+                  </label>
+                  <label className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                    <div className="text-xs uppercase tracking-[0.18em] text-white/45">
+                      Gap Minutes
+                    </div>
+                    <input
+                      type="number"
+                      min="1"
+                      max="180"
+                      value={intervalMinutes}
+                      onChange={(event) =>
+                        setIntervalMinutes(
+                          Math.max(
+                            1,
+                            Math.min(
+                              180,
+                              Number.parseInt(event.target.value, 10) || 5,
+                            ),
                           ),
-                        ),
-                      )
-                    }
-                    className="mt-3 w-full bg-transparent text-2xl font-semibold text-white outline-none"
-                  />
-                </label>
+                        )
+                      }
+                      className="mt-3 w-full bg-transparent text-2xl font-semibold text-white outline-none"
+                    />
+                  </label>
+                </div>
+              ) : null}
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                  <div className="text-xs uppercase tracking-[0.18em] text-white/45">
+                    Publish Mode
+                  </div>
+                  <div className="mt-3 text-lg font-semibold text-white">
+                    {publishMode === "now" ? "All at once" : "Scheduled gap"}
+                  </div>
+                  <p className="mt-2 text-sm text-white/55">
+                    {publishMode === "now"
+                      ? "Queue ke sab shorts ek action me selected accounts par jayenge."
+                      : scheduleModeSummary}
+                  </p>
+                </div>
                 <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
                   <div className="text-xs uppercase tracking-[0.18em] text-white/45">
                     Queue Status
@@ -4084,7 +4359,7 @@ export default function YouTubeShortsPage() {
                     className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 via-cyan-500 to-sky-500 px-4 py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
                   >
                     <PlayCircle className="h-4 w-4" />
-                    Post Queue Now
+                    {publishMode === "now" ? "Post All Now" : "Start Schedule"}
                   </button>
                 )}
                 <button
@@ -4099,7 +4374,9 @@ export default function YouTubeShortsPage() {
 
               <div className="mt-4 rounded-2xl border border-emerald-300/15 bg-emerald-500/10 p-4 text-sm text-emerald-100">
                 {selectedPublishAccounts.length > 0
-                  ? `Queue ka har short ${selectedPublishAccounts.length} selected account${selectedPublishAccounts.length > 1 ? "s" : ""} par publish hoga.`
+                  ? publishMode === "now"
+                    ? `Queue ke sab shorts ${selectedPublishAccounts.length} selected account${selectedPublishAccounts.length > 1 ? "s" : ""} par abhi parallel post honge.`
+                    : `Queue ka pehla short start time par, phir har ${intervalMinutes} min baad next short ${selectedPublishAccounts.length} selected account${selectedPublishAccounts.length > 1 ? "s" : ""} par post hoga.`
                   : "Pehle accounts select karo, tabhi direct publish enable hoga."}
               </div>
 
@@ -5093,28 +5370,12 @@ export default function YouTubeShortsPage() {
                   <h2 className="text-lg font-semibold">3. Cloudinary Queue</h2>
                   <p className="text-sm text-white/55">
                     Yahan bani hui shorts ready dikhengi. Direct publish upar se
-                    chala sakte ho, ya optional fallback ke liye bulk-upload
-                    page use kar sakte ho.
+                    chala sakte ho: sab ek sath ya schedule gap ke saath.
                   </p>
                 </div>
                 <div className="rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-2 text-xs text-white/60">
                   Library folder: {SHORTS_LIBRARY_ROOT}
                 </div>
-              </div>
-
-              <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-                <button
-                  onClick={() =>
-                    router.push(
-                      `/bulk-upload?source=cloudinary&folder=${encodeURIComponent(SHORTS_LIBRARY_ROOT)}`,
-                    )
-                  }
-                  disabled={queue.length === 0}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-500 via-fuchsia-500 to-indigo-500 px-4 py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50 sm:w-auto"
-                >
-                  <Upload className="h-4 w-4" />
-                  Open Bulk Upload Fallback
-                </button>
               </div>
 
               {queue.length === 0 ? (

@@ -19,7 +19,12 @@ export interface ShortsVideoMetadata {
 }
 
 export type ShortsFramingMode = "show-full" | "fill";
-export type ShortsQualityPreset = "auto" | "1080p" | "1440p" | "2160p";
+export type ShortsQualityPreset =
+  | "auto"
+  | "720p"
+  | "1080p"
+  | "1440p"
+  | "2160p";
 export type ShortsResolvedQualityPreset = Exclude<ShortsQualityPreset, "auto">;
 
 export const SHORTS_FRAMING_MODE_OPTIONS = [
@@ -42,6 +47,11 @@ export const SHORTS_QUALITY_PRESET_OPTIONS = [
     value: "auto",
     label: "Auto Up To 4K",
     description: "Match the source quality and render as high as 2160x3840.",
+  },
+  {
+    value: "720p",
+    label: "720p Saver",
+    description: "Low-storage render at 720x1280 when server temp is tight.",
   },
   {
     value: "1080p",

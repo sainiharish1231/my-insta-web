@@ -210,7 +210,9 @@ function normalizeShortsRenderErrorMessage(
 let lastShortsTempCleanupAt = 0;
 let staleShortsTempCleanupPromise: Promise<void> | null = null;
 
-async function cleanupStaleShortsTempDirectories() {
+async function cleanupStaleShortsTempDirectories(
+  maxAgeMs = STALE_SHORTS_TEMP_MAX_AGE_MS,
+) {
   const tempDir = os.tmpdir();
   const now = Date.now();
   const entries = await readdir(tempDir, {
@@ -233,7 +235,7 @@ async function cleanupStaleShortsTempDirectories() {
 
       try {
         const entryStats = await stat(targetPath);
-        if (now - entryStats.mtimeMs < STALE_SHORTS_TEMP_MAX_AGE_MS) {
+        if (now - entryStats.mtimeMs < maxAgeMs) {
           return;
         }
 
@@ -248,6 +250,15 @@ async function cleanupStaleShortsTempDirectories() {
 async function prepareShortsTempWorkspace() {
   const now = Date.now();
   if (now - lastShortsTempCleanupAt < SHORTS_TEMP_CLEANUP_INTERVAL_MS) {
+    const availableTempBytes = await getAvailableTempSpaceBytes();
+    if (
+      availableTempBytes != null &&
+      availableTempBytes < SHORTS_TEMP_LOW_SPACE_THRESHOLD_BYTES
+    ) {
+      await cleanupStaleShortsTempDirectories(
+        LOW_SPACE_STALE_SHORTS_TEMP_MAX_AGE_MS,
+      );
+    }
     return;
   }
 
@@ -261,6 +272,16 @@ async function prepareShortsTempWorkspace() {
   }
 
   await staleShortsTempCleanupPromise;
+
+  const availableTempBytes = await getAvailableTempSpaceBytes();
+  if (
+    availableTempBytes != null &&
+    availableTempBytes < SHORTS_TEMP_LOW_SPACE_THRESHOLD_BYTES
+  ) {
+    await cleanupStaleShortsTempDirectories(
+      LOW_SPACE_STALE_SHORTS_TEMP_MAX_AGE_MS,
+    );
+  }
 }
 
 async function getAvailableTempSpaceBytes() {
@@ -289,9 +310,17 @@ function getEstimatedShortTempBytesForProfile(profile: ShortsRenderProfile) {
       return 3_500_000_000;
     case "1440p":
       return 1_800_000_000;
+    case "720p":
+      return 300_000_000;
     default:
       return 900_000_000;
   }
+}
+
+function getTempSpaceBufferBytesForProfile(profile: ShortsRenderProfile) {
+  return profile.key === "720p"
+    ? 128 * 1024 * 1024
+    : SHORTS_TEMP_SPACE_BUFFER_BYTES;
 }
 
 function resolveTempAwareRenderConcurrency(
@@ -309,7 +338,8 @@ function resolveTempAwareRenderConcurrency(
   while (
     nextConcurrency > 1 &&
     availableTempBytes <
-      estimatedBytesPerClip * nextConcurrency + SHORTS_TEMP_SPACE_BUFFER_BYTES
+      estimatedBytesPerClip * nextConcurrency +
+        getTempSpaceBufferBytesForProfile(profile)
   ) {
     nextConcurrency -= 1;
   }
@@ -329,7 +359,7 @@ function ensureSufficientTempSpaceForShorts(
   const minimumRequiredBytes =
     getEstimatedShortTempBytesForProfile(profile) *
       Math.max(1, renderConcurrency) +
-    SHORTS_TEMP_SPACE_BUFFER_BYTES;
+    getTempSpaceBufferBytesForProfile(profile);
 
   if (availableTempBytes < minimumRequiredBytes) {
     throw new Error(getFriendlyShortsTempSpaceMessage(availableTempBytes));
@@ -368,8 +398,10 @@ const SHORTS_TEMP_DIR_PREFIXES = [
   "remote-youtube-shorts-",
 ] as const;
 const STALE_SHORTS_TEMP_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+const LOW_SPACE_STALE_SHORTS_TEMP_MAX_AGE_MS = 20 * 60 * 1000;
 const SHORTS_TEMP_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 const SHORTS_TEMP_SPACE_BUFFER_BYTES = 256 * 1024 * 1024;
+const SHORTS_TEMP_LOW_SPACE_THRESHOLD_BYTES = 1_500_000_000;
 
 type ShortsRenderProfile = {
   key: ShortsResolvedQualityPreset;
@@ -426,6 +458,26 @@ const SHORTS_RENDER_PROFILES: Record<
   ShortsResolvedQualityPreset,
   ShortsRenderProfile
 > = {
+  "720p": {
+    key: "720p",
+    width: 720,
+    height: 1280,
+    label: "720x1280 (Low Storage)",
+    frameRate: 30,
+    crf: 23,
+    preset: "veryfast",
+    maxRate: "5M",
+    bufSize: "10M",
+    audioBitrate: "160k",
+    level: "4.0",
+    videoCodec: "libx264",
+    videoCodecOptions: [
+      "-profile:v high",
+      "-level 4.0",
+      "-g 60",
+      "-pix_fmt yuv420p",
+    ],
+  },
   "1080p": {
     key: "1080p",
     width: 1080,
@@ -602,6 +654,7 @@ function normalizeShortsRenderOptions(
   const framingMode =
     options?.framingMode === "fill" ? "fill" : DEFAULT_SHORTS_FRAMING_MODE;
   const qualityPreset =
+    options?.qualityPreset === "720p" ||
     options?.qualityPreset === "1080p" ||
     options?.qualityPreset === "1440p" ||
     options?.qualityPreset === "2160p"
@@ -632,7 +685,19 @@ function normalizeShortsRenderOptions(
 
 function resolveDownloadPreferences(
   options?: ShortsRenderSettings,
+  availableTempBytes?: number | null,
 ): DownloadPreferences {
+  if (
+    typeof availableTempBytes === "number" &&
+    availableTempBytes < SHORTS_TEMP_LOW_SPACE_THRESHOLD_BYTES
+  ) {
+    return { maxHeight: 720 };
+  }
+
+  if (options?.qualityPreset === "720p") {
+    return { maxHeight: 720 };
+  }
+
   if (options?.qualityPreset === "1080p") {
     return { maxHeight: 1080 };
   }
@@ -2097,6 +2162,78 @@ function resolveShortsRenderThreadCount(renderConcurrency: number) {
   );
 }
 
+function getStorageFallbackRenderProfiles(profile: ShortsRenderProfile) {
+  const orderedKeys: ShortsResolvedQualityPreset[] = [
+    "2160p",
+    "1440p",
+    "1080p",
+    "720p",
+  ];
+  const startIndex = orderedKeys.indexOf(profile.key);
+  const fallbackKeys: ShortsResolvedQualityPreset[] =
+    startIndex >= 0 ? orderedKeys.slice(startIndex) : [profile.key, "720p"];
+
+  return fallbackKeys.map((key) => SHORTS_RENDER_PROFILES[key]);
+}
+
+function hasSufficientTempSpaceForShorts(
+  profile: ShortsRenderProfile,
+  renderConcurrency: number,
+  availableTempBytes: number | null,
+) {
+  if (availableTempBytes == null) {
+    return true;
+  }
+
+  const minimumRequiredBytes =
+    getEstimatedShortTempBytesForProfile(profile) *
+      Math.max(1, renderConcurrency) +
+    getTempSpaceBufferBytesForProfile(profile);
+
+  return availableTempBytes >= minimumRequiredBytes;
+}
+
+function resolveStorageAwareRenderPlan({
+  profile,
+  clipCount,
+  availableTempBytes,
+}: {
+  profile: ShortsRenderProfile;
+  clipCount: number;
+  availableTempBytes: number | null;
+}) {
+  for (const candidateProfile of getStorageFallbackRenderProfiles(profile)) {
+    const preferredConcurrency = resolveShortsRenderConcurrency(
+      candidateProfile,
+      clipCount,
+    );
+    const renderConcurrency = resolveTempAwareRenderConcurrency(
+      candidateProfile,
+      preferredConcurrency,
+      availableTempBytes,
+    );
+
+    if (
+      hasSufficientTempSpaceForShorts(
+        candidateProfile,
+        renderConcurrency,
+        availableTempBytes,
+      )
+    ) {
+      return {
+        profile: candidateProfile,
+        renderConcurrency,
+      };
+    }
+  }
+
+  const lowestProfile = SHORTS_RENDER_PROFILES["720p"];
+  return {
+    profile: lowestProfile,
+    renderConcurrency: 1,
+  };
+}
+
 async function processWithConcurrency<T>(
   items: T[],
   concurrency: number,
@@ -2269,11 +2406,30 @@ async function buildShortAssetsFromPreparedSource({
     thumbnailUrl,
     authorName,
   };
-  const renderContext = await resolveShortsRenderContext(
+  const initialRenderContext = await resolveShortsRenderContext(
     sourcePath,
     renderSettings,
   );
   const availableTempBytes = await getAvailableTempSpaceBytes();
+  const storageAwareRenderPlan = resolveStorageAwareRenderPlan({
+    profile: initialRenderContext.profile,
+    clipCount: plan.length,
+    availableTempBytes,
+  });
+  const renderContext =
+    storageAwareRenderPlan.profile.key === initialRenderContext.profile.key
+      ? initialRenderContext
+      : {
+          ...initialRenderContext,
+          profile: storageAwareRenderPlan.profile,
+        };
+  const renderConcurrency = storageAwareRenderPlan.renderConcurrency;
+
+  ensureSufficientTempSpaceForShorts(
+    renderContext.profile,
+    renderConcurrency,
+    availableTempBytes,
+  );
 
   await callbacks?.onPlanReady?.({
     video,
@@ -2288,16 +2444,6 @@ async function buildShortAssetsFromPreparedSource({
 
   const tempRoot = path.dirname(sourcePath);
   const generatedAssets = new Array<GeneratedShortAsset>(plan.length);
-  const renderConcurrency = resolveTempAwareRenderConcurrency(
-    renderContext.profile,
-    resolveShortsRenderConcurrency(renderContext.profile, plan.length),
-    availableTempBytes,
-  );
-  ensureSufficientTempSpaceForShorts(
-    renderContext.profile,
-    renderConcurrency,
-    availableTempBytes,
-  );
   const renderThreadCount = resolveShortsRenderThreadCount(renderConcurrency);
   let nextEmitIndex = 0;
   let emittedClipCount = 0;
@@ -2648,7 +2794,11 @@ export async function buildYouTubeShortAssets({
   const uploadFolder = `${GENERATED_SHORTS_UPLOAD_ROOT}/${new Date().toISOString().slice(0, 10)}/${Date.now()}`;
 
   try {
-    const downloadPreferences = resolveDownloadPreferences(renderSettings);
+    const availableTempBytes = await getAvailableTempSpaceBytes();
+    const downloadPreferences = resolveDownloadPreferences(
+      renderSettings,
+      availableTempBytes,
+    );
     const [metadata, { outputPath: sourcePath }] = await Promise.all([
       getSourceVideoMetadata(normalizedSourceUrl),
       downloadYouTubeSourceVideo(

@@ -15,6 +15,7 @@ function parseFramingMode(value: unknown): ShortsFramingMode | undefined {
 
 function parseQualityPreset(value: unknown): ShortsQualityPreset | undefined {
   return value === "auto" ||
+    value === "720p" ||
     value === "1080p" ||
     value === "1440p" ||
     value === "2160p"
