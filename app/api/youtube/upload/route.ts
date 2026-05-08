@@ -47,6 +47,7 @@ export async function POST(request: Request) {
       title,
       description,
       privacy = "public",
+      publishAt,
       keywords = [],
       isShort = false,
     } = await request.json();
@@ -60,10 +61,25 @@ export async function POST(request: Request) {
 
     let activeAccessToken = accessToken;
 
+    const scheduledPublishAt =
+      typeof publishAt === "string" && publishAt.trim()
+        ? new Date(publishAt)
+        : null;
+    const isScheduledUpload =
+      scheduledPublishAt != null && !Number.isNaN(scheduledPublishAt.getTime());
+
+    if (scheduledPublishAt && scheduledPublishAt <= new Date()) {
+      return NextResponse.json(
+        { error: "YouTube schedule time future me hona chahiye." },
+        { status: 400 },
+      );
+    }
+
     console.log("[v0] YouTube upload starting:", {
       videoUrl,
       title,
       privacy,
+      publishAt: scheduledPublishAt?.toISOString(),
       isShort,
       keywords,
     });
@@ -108,7 +124,10 @@ export async function POST(request: Request) {
           body: JSON.stringify({
             snippet,
             status: {
-              privacyStatus: privacy,
+              privacyStatus: isScheduledUpload ? "private" : privacy,
+              ...(isScheduledUpload
+                ? { publishAt: scheduledPublishAt!.toISOString() }
+                : {}),
               selfDeclaredMadeForKids: false,
             },
           }),

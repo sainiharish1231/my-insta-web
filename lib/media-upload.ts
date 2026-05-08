@@ -11,6 +11,52 @@ const CLOUDINARY_UPLOAD_PRESET = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESE
 
 type UploadProgressCallback = (percent: number) => void;
 
+function getCloudinaryUploadError(xhr: XMLHttpRequest) {
+  let message = xhr.statusText || "Bad Request";
+
+  try {
+    const parsed = JSON.parse(xhr.responseText);
+    message =
+      parsed?.error?.message ||
+      parsed?.message ||
+      parsed?.error ||
+      xhr.responseText ||
+      message;
+  } catch {
+    if (xhr.responseText?.trim()) {
+      message = xhr.responseText.trim();
+    }
+  }
+
+  return `Cloudinary upload failed (${xhr.status}): ${message}`;
+}
+
+async function requestCloudinarySignature(params: Record<string, string | number>) {
+  const response = await fetch("/api/cloudinary/sign", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(params),
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data.error || "Cloudinary signed upload is not configured.");
+  }
+
+  if (!data.apiKey || !data.signature || !data.timestamp) {
+    throw new Error("Cloudinary signature response is incomplete.");
+  }
+
+  return {
+    apiKey: String(data.apiKey),
+    signature: String(data.signature),
+    timestamp: String(data.timestamp),
+  };
+}
+
 function sanitizeFilename(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
@@ -187,7 +233,7 @@ async function uploadToCloudinary(
   file: File,
   onProgress?: UploadProgressCallback
 ): Promise<string> {
-  // Use Cloudinary presigned URL for direct upload - NO Vercel timeout!
+  // Use Cloudinary unsigned direct upload - NO Vercel timeout!
   if (!CLOUDINARY_CLOUD_NAME || !CLOUDINARY_UPLOAD_PRESET) {
     throw new Error(
       "Cloudinary not configured. Set NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME and NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET."
@@ -199,8 +245,6 @@ async function uploadToCloudinary(
 
   formData.append("file", file);
   formData.append("upload_preset", CLOUDINARY_UPLOAD_PRESET);
-  formData.append("folder", `instagram-uploads/${new Date().toISOString().slice(0, 10)}`);
-  formData.append("resource_type", "video");
 
   onProgress?.(10); // Show immediate progress
 
@@ -215,12 +259,12 @@ async function uploadToCloudinary(
     });
 
     xhr.addEventListener("load", () => {
-      if (xhr.status === 200) {
+      if (xhr.status >= 200 && xhr.status < 300) {
         const response = JSON.parse(xhr.responseText);
         onProgress?.(100);
         resolve(response.secure_url || response.url);
       } else {
-        reject(new Error(`Cloudinary upload failed: ${xhr.statusText}`));
+        reject(new Error(getCloudinaryUploadError(xhr)));
       }
     });
 
@@ -237,6 +281,66 @@ async function uploadToCloudinary(
   });
 }
 
+async function uploadToSignedCloudinary(
+  file: File,
+  onProgress?: UploadProgressCallback
+): Promise<string> {
+  if (!CLOUDINARY_CLOUD_NAME) {
+    throw new Error(
+      "Cloudinary not configured. Set NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME."
+    );
+  }
+
+  const folder = `instagram-uploads/${new Date().toISOString().slice(0, 10)}`;
+  const timestamp = Math.floor(Date.now() / 1000);
+  const signedParams = await requestCloudinarySignature({
+    folder,
+    timestamp,
+  });
+  const uploadUrl = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/video/upload`;
+  const formData = new FormData();
+
+  formData.append("file", file);
+  formData.append("folder", folder);
+  formData.append("timestamp", signedParams.timestamp);
+  formData.append("api_key", signedParams.apiKey);
+  formData.append("signature", signedParams.signature);
+
+  onProgress?.(10);
+
+  const xhr = new XMLHttpRequest();
+
+  return new Promise((resolve, reject) => {
+    xhr.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable) {
+        const percentComplete = Math.round((event.loaded / event.total) * 100);
+        onProgress?.(Math.min(95, percentComplete));
+      }
+    });
+
+    xhr.addEventListener("load", () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        const response = JSON.parse(xhr.responseText);
+        onProgress?.(100);
+        resolve(response.secure_url || response.url);
+      } else {
+        reject(new Error(getCloudinaryUploadError(xhr)));
+      }
+    });
+
+    xhr.addEventListener("error", () => {
+      reject(new Error("Cloudinary signed upload failed - network error"));
+    });
+
+    xhr.addEventListener("abort", () => {
+      reject(new Error("Cloudinary signed upload was cancelled"));
+    });
+
+    xhr.open("POST", uploadUrl);
+    xhr.send(formData);
+  });
+}
+
 export async function uploadMediaToBlob(
   file: File,
   onProgress?: UploadProgressCallback
@@ -246,7 +350,17 @@ export async function uploadMediaToBlob(
     throw new Error(validationError);
   }
 
-  // Try Cloudinary first (no Vercel timeout for large files!)
+  // Try signed Cloudinary first (no Vercel timeout for large files!)
+  if (CLOUDINARY_CLOUD_NAME) {
+    try {
+      console.log("[v0] Attempting signed Cloudinary upload for large videos...");
+      return await uploadToSignedCloudinary(file, onProgress);
+    } catch (cloudinaryError: any) {
+      console.error("[v0] Signed Cloudinary upload failed:", cloudinaryError);
+    }
+  }
+
+  // Fall back to unsigned preset upload if the app only has public Cloudinary env.
   if (CLOUDINARY_CLOUD_NAME && CLOUDINARY_UPLOAD_PRESET) {
     try {
       console.log("[v0] Attempting Cloudinary upload for large videos...");

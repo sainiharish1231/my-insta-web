@@ -38,6 +38,7 @@ import {
   MAX_UPLOAD_FILE_SIZE_BYTES,
   validateMediaFile,
 } from "@/lib/media-upload";
+import { processDueScheduledPosts } from "@/lib/scheduled-posts";
 
 interface VideoItem {
   id: string;
@@ -187,6 +188,7 @@ function BulkUploadContent() {
   const videosRef = useRef<VideoItem[]>([]);
   const selectedAccountsRef = useRef<Account[]>([]);
   const settingsRef = useRef<QueueSettings | null>(null);
+  const scheduledPostProcessingRef = useRef(false);
 
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [settings, setSettings] = useState<QueueSettings>({
@@ -222,6 +224,40 @@ function BulkUploadContent() {
   useEffect(() => {
     settingsRef.current = settings;
   }, [settings]);
+
+  useEffect(() => {
+    const runScheduledWorker = async () => {
+      if (scheduledPostProcessingRef.current) {
+        return;
+      }
+
+      scheduledPostProcessingRef.current = true;
+      try {
+        const result = await processDueScheduledPosts();
+        if (result.posted > 0) {
+          toast.success(
+            `${result.posted} scheduled post due time par publish ho gaya.`,
+          );
+        }
+        if (result.failed > 0) {
+          toast.error(`${result.failed} scheduled post fail hua.`);
+        }
+      } catch (error) {
+        console.warn("[v0] Scheduled post worker failed:", error);
+      } finally {
+        scheduledPostProcessingRef.current = false;
+      }
+    };
+
+    void runScheduledWorker();
+    const intervalId = window.setInterval(runScheduledWorker, 30_000);
+    window.addEventListener("focus", runScheduledWorker);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", runScheduledWorker);
+    };
+  }, []);
 
   const buildSeoDraftForAsset = (
     rawName: string,
@@ -728,6 +764,8 @@ function BulkUploadContent() {
           username: account.username,
           platform: account.platform,
           token: account.token || account.accessToken,
+          accessToken: account.accessToken || account.token,
+          refreshToken: account.refreshToken,
         })),
         scheduledFor: scheduledFor.toISOString(),
         status: "scheduled",

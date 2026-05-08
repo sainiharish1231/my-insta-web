@@ -7,12 +7,30 @@ export const maxDuration = 30; // Quick signature generation
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    
-    const signature = await generateCloudinarySignature(body);
+    const apiKey = process.env.CLOUDINARY_API_KEY;
+
+    if (!apiKey) {
+      return NextResponse.json(
+        { error: 'CLOUDINARY_API_KEY is not configured' },
+        { status: 500 }
+      );
+    }
+
+    const timestamp =
+      Number.isFinite(Number(body?.timestamp)) && Number(body.timestamp) > 0
+        ? Number(body.timestamp)
+        : Math.floor(Date.now() / 1000);
+    const signatureParams: Record<string, string | number> = { timestamp };
+    if (typeof body?.folder === 'string' && body.folder.trim()) {
+      signatureParams.folder = body.folder.trim();
+    }
+
+    const signature = await generateCloudinarySignature(signatureParams);
     
     return NextResponse.json({
+      apiKey,
       signature,
-      timestamp: Math.floor(Date.now() / 1000),
+      timestamp,
     });
   } catch (error) {
     console.error('[v0] Signature generation error:', error);

@@ -25,6 +25,10 @@ import {
   persistInstagramAccounts,
   readStoredInstagramAccounts,
 } from "@/lib/instagram-accounts";
+import {
+  getUpcomingScheduledPosts,
+  processDueScheduledPosts,
+} from "@/lib/scheduled-posts";
 import { VideoSplitterView } from "@/components/video-splitter-view"; // added VideoSplitterView import
 
 interface InstagramProfile {
@@ -284,23 +288,43 @@ export default function Dashboard() {
       }
     }
 
+    let isProcessingScheduledPosts = false;
     const loadScheduledPosts = () => {
-      const posts = JSON.parse(localStorage.getItem("scheduled_posts") || "[]");
-      const futurePosts = posts.filter(
-        (p: any) => new Date(p.scheduledFor) > new Date()
-      );
-      setScheduledPosts(futurePosts);
+      setScheduledPosts(getUpcomingScheduledPosts());
     };
+    const runScheduledWorker = async () => {
+      if (isProcessingScheduledPosts) {
+        return;
+      }
+
+      isProcessingScheduledPosts = true;
+      try {
+        await processDueScheduledPosts();
+      } catch (error) {
+        console.warn("[v0] Scheduled post worker failed:", error);
+      } finally {
+        isProcessingScheduledPosts = false;
+        loadScheduledPosts();
+      }
+    };
+
     loadScheduledPosts();
+    void runScheduledWorker();
+
+    const intervalId = window.setInterval(runScheduledWorker, 30_000);
+    window.addEventListener("focus", runScheduledWorker);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", runScheduledWorker);
+    };
   }, [router, loadProfile, loadInstagramAccounts, loadYouTubeAccounts]);
 
   const handleDeleteScheduledPost = (postId: string) => {
     const posts = JSON.parse(localStorage.getItem("scheduled_posts") || "[]");
     const updated = posts.filter((p: any) => p.id !== postId);
     localStorage.setItem("scheduled_posts", JSON.stringify(updated));
-    setScheduledPosts(
-      updated.filter((p: any) => new Date(p.scheduledFor) > new Date())
-    );
+    setScheduledPosts(getUpcomingScheduledPosts());
   };
 
   const toggleAccountSelection = (accountId: string) => {
@@ -916,14 +940,23 @@ export default function Dashboard() {
                   >
                     <div className="flex items-start justify-between mb-3">
                       <div className="flex items-center gap-2">
-                        {post.contentType === "POST" && (
+                        {(post.contentType === "POST" ||
+                          (post.contentType === "SHORT" &&
+                            post.accounts?.some(
+                              (account: any) =>
+                                account.platform === "instagram",
+                            ))) && (
                           <Instagram className="w-4 h-4 text-pink-400" />
                         )}
                         {post.contentType === "REEL" && (
                           <Instagram className="w-4 h-4 text-purple-400" />
                         )}
                         {(post.contentType === "VIDEO" ||
-                          post.contentType === "SHORT") && (
+                          (post.contentType === "SHORT" &&
+                            !post.accounts?.some(
+                              (account: any) =>
+                                account.platform === "instagram",
+                            ))) && (
                           <Youtube className="w-4 h-4 text-red-400" />
                         )}
                         <span className="text-xs font-medium text-white/60">

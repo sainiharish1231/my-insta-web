@@ -46,6 +46,11 @@ import {
 } from "@/lib/bulk-video-seo";
 import { uploadMediaToBlob } from "@/lib/media-upload";
 import {
+  appendScheduledPosts,
+  processDueScheduledPosts,
+  type ScheduledPost,
+} from "@/lib/scheduled-posts";
+import {
   fetchInstagramAccountsFromFacebook,
   mergeInstagramAccounts,
   persistInstagramAccounts,
@@ -1131,6 +1136,7 @@ export default function YouTubeShortsPage() {
   const buildSyncTimerRef = useRef<NodeJS.Timeout | null>(null);
   const buildRunIdRef = useRef(0);
   const processingRef = useRef(false);
+  const scheduledPostProcessingRef = useRef(false);
   const selectedPublishAccountsRef = useRef<PublishAccount[]>([]);
   const activeBuildSessionRef = useRef<ActiveBuildSession | null>(null);
   const buildSyncInFlightRef = useRef(false);
@@ -1413,8 +1419,8 @@ export default function YouTubeShortsPage() {
           parsed.scheduleStartTime || getLocalTimeInputValue(),
         );
         setIntervalMinutes(Math.max(1, parsed.intervalMinutes || 5));
-        setIsRunning(parsed.isRunning ?? false);
-        setNextRunAt(parsed.nextRunAt || null);
+        setIsRunning(false);
+        setNextRunAt(null);
         setSourceVideo(parsed.sourceVideo || null);
         setSourceMode(
           parsed.sourceMode === "file" || parsed.sourceMode === "cloudinary"
@@ -1804,13 +1810,68 @@ export default function YouTubeShortsPage() {
     },
   );
 
+  const processDueLocalScheduledPosts = useEffectEvent(async () => {
+    if (scheduledPostProcessingRef.current) {
+      return;
+    }
+
+    scheduledPostProcessingRef.current = true;
+    try {
+      const result = await processDueScheduledPosts({
+        onYouTubeAccessToken: persistUpdatedYouTubeAccessToken,
+      });
+
+      if (result.posted > 0) {
+        toast.success(
+          `${result.posted} scheduled post due time par publish ho gaya.`,
+        );
+      }
+
+      if (result.failed > 0) {
+        toast.error(
+          `${result.failed} scheduled post fail hua. Dashboard me scheduled list check karo.`,
+        );
+      }
+    } catch (error) {
+      console.warn("[v0] Scheduled post worker failed:", error);
+    } finally {
+      scheduledPostProcessingRef.current = false;
+    }
+  });
+
+  useEffect(() => {
+    const runScheduledWorker = () => {
+      void processDueLocalScheduledPosts();
+    };
+
+    runScheduledWorker();
+    const intervalId = window.setInterval(runScheduledWorker, 30_000);
+    window.addEventListener("focus", runScheduledWorker);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", runScheduledWorker);
+    };
+  }, [processDueLocalScheduledPosts]);
+
   const publishQueueItemToSelectedAccounts = useEffectEvent(
     async (
       nextItem: QueueItem,
-      options: { trackProgress?: boolean } = {},
+      options: { trackProgress?: boolean; youtubePublishAt?: string } = {},
     ) => {
-      const activeAccounts = selectedPublishAccountsRef.current;
+      const activeAccounts = options.youtubePublishAt
+        ? selectedPublishAccountsRef.current.filter(
+            (account) => account.platform === "youtube",
+          )
+        : selectedPublishAccountsRef.current;
+
       if (activeAccounts.length === 0) {
+        if (options.youtubePublishAt) {
+          throw new Error(
+            "YouTube schedule ke liye kam se kam ek YouTube target select karo.",
+          );
+        }
+
         throw new Error("Pehle kam se kam ek target account select karo.");
       }
 
@@ -1904,7 +1965,8 @@ export default function YouTubeShortsPage() {
                   title: nextItem.title,
                   description: youtubeDescription,
                   keywords: youtubeTags,
-                  privacy: "public",
+                  privacy: options.youtubePublishAt ? "private" : "public",
+                  publishAt: options.youtubePublishAt,
                   isShort: true,
                 }),
               });
@@ -2227,6 +2289,247 @@ export default function YouTubeShortsPage() {
     }
   });
 
+  const scheduleQueuePosts = useEffectEvent(async () => {
+    if (processingRef.current) {
+      toast.info("Current publish finish hone do, phir schedule karo.");
+      return;
+    }
+
+    if (queue.length === 0) {
+      toast.error("Pehle queue me kam se kam ek short add karo.");
+      return;
+    }
+
+    const selectedYouTubeAccounts = selectedPublishAccounts.filter(
+      (account) => account.platform === "youtube",
+    );
+    const selectedInstagramAccounts = selectedPublishAccounts.filter(
+      (
+        account,
+      ): account is PublishAccount & { platform: "instagram" } =>
+        account.platform === "instagram",
+    );
+
+    if (
+      selectedYouTubeAccounts.length === 0 &&
+      selectedInstagramAccounts.length === 0
+    ) {
+      toast.error("Schedule ke liye Instagram ya YouTube account select karo.");
+      return;
+    }
+
+    const instagramWithoutToken = selectedInstagramAccounts.find(
+      (account) => !account.token,
+    );
+    if (instagramWithoutToken) {
+      toast.error(
+        `${instagramWithoutToken.username} ka Instagram token missing hai. Account reconnect karo.`,
+      );
+      return;
+    }
+
+    const scheduleStart = parseScheduleStartDateTime(
+      scheduleStartDate,
+      scheduleStartTime,
+    );
+    if (!scheduleStart || scheduleStart <= new Date()) {
+      toast.error("Schedule start time future me choose karo.");
+      return;
+    }
+
+    clearTimer();
+    setIsRunning(false);
+    setNextRunAt(null);
+    setPublishProgress(null);
+    processingRef.current = true;
+
+    const activeQueueItems = queue.map((item) => ({
+      ...item,
+      status: "uploading" as const,
+      error: undefined,
+    }));
+
+    setQueue(activeQueueItems);
+
+    try {
+      const results = await Promise.all(
+        activeQueueItems.map(async (item, index) => {
+          const publishAt = new Date(
+            scheduleStart.getTime() + index * intervalMinutes * 60 * 1000,
+          ).toISOString();
+
+          try {
+            const publishedOn: string[] = [];
+            let totalTargets = selectedInstagramAccounts.length;
+            let allYouTubeTargetsScheduled = true;
+
+            if (selectedYouTubeAccounts.length > 0) {
+              const publishResult = await publishQueueItemToSelectedAccounts(
+                item,
+                {
+                  trackProgress: false,
+                  youtubePublishAt: publishAt,
+                },
+              );
+              publishedOn.push(
+                ...publishResult.publishedOn.map(
+                  (username) => `YT ${username}`,
+                ),
+              );
+              totalTargets += publishResult.totalTargets;
+              allYouTubeTargetsScheduled = publishResult.allSelectedSucceeded;
+            }
+
+            const instagramPost: ScheduledPost | null =
+              selectedInstagramAccounts.length > 0
+                ? {
+                    id: `${item.id}-ig-${Date.now()}-${index}`,
+                    mediaUrl: item.assetUrl,
+                    cloudinaryPublicId: item.cloudinaryPublicId,
+                    cloudinaryResourceType: item.cloudinaryResourceType,
+                    caption: item.caption,
+                    title: item.title,
+                    description: item.description,
+                    keywords: item.keywords,
+                    contentType: "SHORT",
+                    accounts: selectedInstagramAccounts.map((account) => ({
+                      id: account.id,
+                      username: account.username,
+                      platform: "instagram",
+                      token: account.token,
+                    })),
+                    scheduledFor: publishAt,
+                    status: "scheduled",
+                    source: "youtube-shorts",
+                  }
+                : null;
+
+            if (instagramPost) {
+              publishedOn.push(`IG scheduled ${formatDateTime(publishAt)}`);
+            }
+
+            if (
+              item.cloudinaryPublicId &&
+              item.deleteFromCloudinaryOnRemove !== false &&
+              selectedInstagramAccounts.length === 0 &&
+              allYouTubeTargetsScheduled
+            ) {
+              await deleteCloudinaryAsset(
+                item.cloudinaryPublicId,
+                item.cloudinaryResourceType,
+              ).catch((error) => {
+                console.error("[v0] Failed to delete scheduled clip:", error);
+              });
+            }
+
+            return {
+              item,
+              instagramPost,
+              publishAt,
+              success: true,
+              totalTargets,
+              publishedOn,
+            };
+          } catch (error: any) {
+            return {
+              item,
+              publishAt,
+              success: false,
+              error: error.message || "Schedule failed",
+            };
+          }
+        }),
+      );
+
+      const successfulResults = results.filter(
+        (
+          result,
+        ): result is (typeof results)[number] & {
+          success: true;
+          publishedOn: string[];
+          instagramPost: ScheduledPost | null;
+          publishAt: string;
+        } => result.success,
+      );
+      const failedResults = results.filter(
+        (
+          result,
+        ): result is (typeof results)[number] & {
+          success: false;
+          error: string;
+        } => !result.success,
+      );
+      const localScheduledPosts = successfulResults
+        .map((result) => result.instagramPost)
+        .filter((post): post is ScheduledPost => Boolean(post));
+      const successfulIds = new Set(
+        successfulResults.map((result) => result.item.id),
+      );
+      const failedErrors = new Map(
+        failedResults.map((result) => [
+          result.item.id,
+          result.error || "Schedule failed",
+        ]),
+      );
+
+      setQueue((prev) =>
+        prev
+          .filter((item) => !successfulIds.has(item.id))
+          .map((item) =>
+            failedErrors.has(item.id)
+              ? {
+                  ...item,
+                  status: "error",
+                  error: failedErrors.get(item.id),
+                }
+              : item,
+          ),
+      );
+
+      if (successfulResults.length > 0) {
+        const uploadedAt = new Date().toISOString();
+        setRecentUploads((prev) =>
+          [
+            ...successfulResults.map((result) => ({
+              id: `${result.item.id}-${Date.now()}`,
+              title: result.item.title,
+              uploadedAt,
+              accountUsername:
+                result.publishedOn.join(", ") ||
+                `Scheduled ${formatDateTime(result.publishAt)}`,
+            })),
+            ...prev,
+          ].slice(0, 8),
+        );
+      }
+
+      appendScheduledPosts(localScheduledPosts);
+
+      if (failedResults.length > 0) {
+        toast.error(
+          `${failedResults.length} short schedule nahi hua. Error wale cards queue me reh gaye.`,
+        );
+        return;
+      }
+
+      if (selectedInstagramAccounts.length > 0 && selectedYouTubeAccounts.length > 0) {
+        toast.success(
+          `${successfulResults.length} shorts schedule ho gayi. YouTube native hai, Instagram app open/focus hone par due time par post hoga.`,
+        );
+      } else if (selectedInstagramAccounts.length > 0) {
+        toast.success(
+          `${successfulResults.length} Instagram shorts schedule ho gayi. Due time par ye web app open ya focus hote hi post karega.`,
+        );
+      } else {
+        toast.success(
+          `${successfulResults.length} shorts YouTube par native schedule ho gayi. Web band ho tab bhi YouTube publish karega.`,
+        );
+      }
+    } finally {
+      processingRef.current = false;
+    }
+  });
+
   const startQueuePublish = useEffectEvent(() => {
     if (processingRef.current) {
       toast.info("Current publish finish hone do, phir queue start karo.");
@@ -2248,31 +2551,7 @@ export default function YouTubeShortsPage() {
       return;
     }
 
-    const scheduleStart = parseScheduleStartDateTime(
-      scheduleStartDate,
-      scheduleStartTime,
-    );
-    if (!scheduleStart) {
-      toast.error("Schedule start date aur time sahi choose karo.");
-      return;
-    }
-
-    setQueue((current) =>
-      current.map((item) =>
-        item.status === "error"
-          ? { ...item, status: "queued", error: undefined }
-          : item,
-      ),
-    );
-    setIsRunning(true);
-    setNextRunAt(
-      scheduleStart.getTime() > Date.now()
-        ? scheduleStart.toISOString()
-        : null,
-    );
-    toast.success(
-      `${queue.length} queued shorts schedule ho gayi. Har short ${intervalMinutes} minute gap se ${selectedPublishAccounts.length} selected account${selectedPublishAccounts.length > 1 ? "s" : ""} par post hoga.`,
-    );
+    void scheduleQueuePosts();
   });
 
   const stopQueuePublish = useEffectEvent(() => {
@@ -4314,12 +4593,12 @@ export default function YouTubeShortsPage() {
                     Publish Mode
                   </div>
                   <div className="mt-3 text-lg font-semibold text-white">
-                    {publishMode === "now" ? "All at once" : "Scheduled gap"}
+                    {publishMode === "now" ? "All at once" : "YT + IG schedule"}
                   </div>
                   <p className="mt-2 text-sm text-white/55">
                     {publishMode === "now"
                       ? "Queue ke sab shorts ek action me selected accounts par jayenge."
-                      : scheduleModeSummary}
+                      : `YouTube native schedule hoga. Instagram due time par browser scheduler se post hoga. ${scheduleModeSummary}`}
                   </p>
                 </div>
                 <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
@@ -4359,7 +4638,7 @@ export default function YouTubeShortsPage() {
                     className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 via-cyan-500 to-sky-500 px-4 py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
                   >
                     <PlayCircle className="h-4 w-4" />
-                    {publishMode === "now" ? "Post All Now" : "Start Schedule"}
+                    {publishMode === "now" ? "Post All Now" : "Schedule Posts"}
                   </button>
                 )}
                 <button
@@ -4376,7 +4655,7 @@ export default function YouTubeShortsPage() {
                 {selectedPublishAccounts.length > 0
                   ? publishMode === "now"
                     ? `Queue ke sab shorts ${selectedPublishAccounts.length} selected account${selectedPublishAccounts.length > 1 ? "s" : ""} par abhi parallel post honge.`
-                    : `Queue ka pehla short start time par, phir har ${intervalMinutes} min baad next short ${selectedPublishAccounts.length} selected account${selectedPublishAccounts.length > 1 ? "s" : ""} par post hoga.`
+                    : `YouTube ke ${selectedYouTubeCount} account native schedule honge. Instagram ke ${selectedInstagramCount} account app open/focus hone par due time par post honge.`
                   : "Pehle accounts select karo, tabhi direct publish enable hoga."}
               </div>
 
