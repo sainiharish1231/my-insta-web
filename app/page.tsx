@@ -20,7 +20,7 @@ import {
 export default function LoginPage() {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState<"instagram" | "youtube" | null>(
-    null
+    null,
   );
   const [showAddAccountMessage, setShowAddAccountMessage] = useState(false);
 
@@ -43,7 +43,7 @@ export default function LoginPage() {
 
     if (!fbAppId) {
       alert(
-        "Facebook App ID not configured. Please add NEXT_PUBLIC_FACEBOOK_APP_ID to environment variables."
+        "Facebook App ID not configured. Please add NEXT_PUBLIC_FACEBOOK_APP_ID to environment variables.",
       );
       setIsLoading(null);
       return;
@@ -62,7 +62,7 @@ export default function LoginPage() {
         "instagram_basic,instagram_content_publish,instagram_manage_comments,instagram_manage_insights,pages_show_list,pages_read_engagement,pages_manage_posts,business_management";
 
       const authUrl = `https://www.facebook.com/v21.0/dialog/oauth?client_id=${fbAppId}&redirect_uri=${encodeURIComponent(
-        redirectUri
+        redirectUri,
       )}&scope=${scope}&response_type=code&code_challenge=${codeChallenge}&code_challenge_method=S256`;
 
       window.location.href = authUrl;
@@ -79,7 +79,7 @@ export default function LoginPage() {
 
     if (!googleClientId) {
       alert(
-        "Google Client ID not configured. Please add NEXT_PUBLIC_GOOGLE_CLIENT_ID to environment variables."
+        "Google Client ID not configured. Please add NEXT_PUBLIC_GOOGLE_CLIENT_ID to environment variables.",
       );
       setIsLoading(null);
       return;
@@ -91,11 +91,11 @@ export default function LoginPage() {
           ? `${window.location.origin}/auth/youtube-callback`
           : "";
       const scope = encodeURIComponent(
-        "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/youtube"
+        "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/youtube",
       );
 
       const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${googleClientId}&redirect_uri=${encodeURIComponent(
-        redirectUri
+        redirectUri,
       )}&response_type=code&scope=${scope}&access_type=offline&prompt=consent`;
 
       window.location.href = authUrl;
@@ -393,7 +393,7 @@ export default function LoginPage() {
             </p>
             <div className="flex items-center gap-6 text-sm text-white/30">
               <span className="hover:text-white/50 cursor-pointer">
-                Privacy
+                Privacy,
               </span>
               <span className="hover:text-white/50 cursor-pointer">Terms</span>
               <span className="hover:text-white/50 cursor-pointer">

@@ -12,7 +12,6 @@ import {
   Video,
 } from "lucide-react";
 import { getMediaList } from "@/lib/meta";
-
 interface InstagramAccount {
   id: string;
   username: string;
@@ -70,7 +69,7 @@ export default function MyInstaIdPage() {
   useEffect(() => {
     try {
       const storedAccounts = JSON.parse(
-        localStorage.getItem("ig_accounts") || "[]"
+        localStorage.getItem("ig_accounts") || "[]",
       ) as InstagramAccount[];
 
       setAccounts(storedAccounts);
@@ -79,7 +78,8 @@ export default function MyInstaIdPage() {
         const storedPrimaryId = localStorage.getItem("primary_ig_account_id");
         const storedSelected = localStorage.getItem("ig_user_id");
         const preferredAccount = storedAccounts.find(
-          (account) => account.id === storedPrimaryId || account.id === storedSelected
+          (account) =>
+            account.id === storedPrimaryId || account.id === storedSelected,
         );
         setPrimaryAccountId(storedPrimaryId || storedAccounts[0].id);
         setSelectedAccountId(preferredAccount?.id || storedAccounts[0].id);
@@ -94,7 +94,7 @@ export default function MyInstaIdPage() {
 
   useEffect(() => {
     const selectedAccount = accounts.find(
-      (account) => account.id === selectedAccountId
+      (account) => account.id === selectedAccountId,
     );
 
     if (!selectedAccount) {
@@ -117,7 +117,7 @@ export default function MyInstaIdPage() {
       try {
         const mediaList = await getMediaList(
           selectedAccount.id,
-          selectedAccount.token as string
+          selectedAccount.token as string,
         );
 
         if (cancelled) {
@@ -157,7 +157,7 @@ export default function MyInstaIdPage() {
 
   const selectedAccount = useMemo(
     () => accounts.find((account) => account.id === selectedAccountId) || null,
-    [accounts, selectedAccountId]
+    [accounts, selectedAccountId],
   );
   const latestPost = media[0];
 
@@ -266,7 +266,8 @@ export default function MyInstaIdPage() {
                             )}
                           </div>
                           <p className="text-xs text-white/50">
-                            {account.followers_count?.toLocaleString() || 0} followers
+                            {account.followers_count?.toLocaleString() || 0}{" "}
+                            followers
                           </p>
                         </div>
                       </div>
@@ -318,7 +319,8 @@ export default function MyInstaIdPage() {
                     @{selectedAccount.username}
                   </h2>
                   <p className="text-sm text-white/55">
-                    {selectedAccount.followers_count?.toLocaleString() || 0} followers
+                    {selectedAccount.followers_count?.toLocaleString() || 0}{" "}
+                    followers
                     {" • "}
                     {media.length} post{media.length === 1 ? "" : "s"} loaded
                   </p>
@@ -421,7 +423,8 @@ export default function MyInstaIdPage() {
                   {media.map((item) => {
                     const preview = getMediaPreview(item);
                     const isVideo =
-                      item.media_type === "VIDEO" || item.media_type === "REELS";
+                      item.media_type === "VIDEO" ||
+                      item.media_type === "REELS";
 
                     return (
                       <article
