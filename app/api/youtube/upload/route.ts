@@ -61,12 +61,18 @@ export async function POST(request: Request) {
 
     let activeAccessToken = accessToken;
 
-    const scheduledPublishAt =
-      typeof publishAt === "string" && publishAt.trim()
-        ? new Date(publishAt)
-        : null;
+    const rawPublishAt =
+      typeof publishAt === "string" ? publishAt.trim() : "";
+    const scheduledPublishAt = rawPublishAt ? new Date(rawPublishAt) : null;
     const isScheduledUpload =
       scheduledPublishAt != null && !Number.isNaN(scheduledPublishAt.getTime());
+
+    if (rawPublishAt && !isScheduledUpload) {
+      return NextResponse.json(
+        { error: "YouTube schedule time valid nahi hai." },
+        { status: 400 },
+      );
+    }
 
     if (scheduledPublishAt && scheduledPublishAt <= new Date()) {
       return NextResponse.json(

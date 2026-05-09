@@ -59,7 +59,7 @@ export default function LoginPage() {
           ? `${window.location.origin}/auth/callback`
           : "";
       const scope =
-        "instagram_basic,instagram_content_publish,instagram_manage_comments,instagram_manage_insights,pages_show_list,pages_read_engagement,business_management";
+        "instagram_basic,instagram_content_publish,instagram_manage_comments,instagram_manage_insights,pages_show_list,pages_read_engagement,pages_manage_posts,business_management";
 
       const authUrl = `https://www.facebook.com/v21.0/dialog/oauth?client_id=${fbAppId}&redirect_uri=${encodeURIComponent(
         redirectUri

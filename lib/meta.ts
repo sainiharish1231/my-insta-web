@@ -49,6 +49,50 @@ export function generateSmartCaption({
   return `${cleanTitle}\n\n${cleanDescription}\n\nSave this and share your take below.\n\n${tagLine}`;
 }
 
+const INSTAGRAM_SCHEDULE_MIN_LEAD_MS = 20 * 60 * 1000;
+const INSTAGRAM_SCHEDULE_MAX_LEAD_MS = 75 * 24 * 60 * 60 * 1000;
+
+function getUnixTimestampSeconds(value?: string | number | Date | null) {
+  if (!value) {
+    return null;
+  }
+
+  const dateValue =
+    value instanceof Date
+      ? value
+      : typeof value === "number"
+        ? new Date(value > 10_000_000_000 ? value : value * 1000)
+        : new Date(value);
+
+  const time = dateValue.getTime();
+  if (!Number.isFinite(time)) {
+    return null;
+  }
+
+  return Math.floor(time / 1000);
+}
+
+export function getInstagramScheduleValidationError(
+  value?: string | number | Date | null,
+) {
+  const timestamp = getUnixTimestampSeconds(value);
+  if (!timestamp) {
+    return "Instagram schedule time valid nahi hai.";
+  }
+
+  const now = Date.now();
+  const scheduledMs = timestamp * 1000;
+  if (scheduledMs - now < INSTAGRAM_SCHEDULE_MIN_LEAD_MS) {
+    return "Instagram schedule minimum 20 minute future me hona chahiye.";
+  }
+
+  if (scheduledMs - now > INSTAGRAM_SCHEDULE_MAX_LEAD_MS) {
+    return "Instagram schedule maximum 75 days future tak allowed hai.";
+  }
+
+  return null;
+}
+
 export async function createMedia({
   igUserId,
   token,
@@ -57,6 +101,7 @@ export async function createMedia({
   isReel,
   locationId,
   coverUrl,
+  publishTime,
 }: any) {
   console.log("[v0] Creating media container with URL:", mediaUrl);
 
@@ -77,6 +122,15 @@ export async function createMedia({
 
   if (locationId) {
     body.location_id = locationId;
+  }
+
+  if (publishTime) {
+    const scheduleError = getInstagramScheduleValidationError(publishTime);
+    if (scheduleError) {
+      throw new Error(scheduleError);
+    }
+
+    body.publish_time = getUnixTimestampSeconds(publishTime);
   }
 
   const res = await fetch(
@@ -104,6 +158,126 @@ export async function createMedia({
 
   console.log("[v0] Media container created successfully:", data.id);
   return data.id;
+}
+
+export async function publishFacebookPageVideo({
+  pageId,
+  token,
+  mediaUrl,
+  caption,
+  scheduledPublishAt,
+}: {
+  pageId?: string;
+  token?: string;
+  mediaUrl: string;
+  caption?: string;
+  scheduledPublishAt?: string | number | Date | null;
+}) {
+  if (!pageId) {
+    throw new Error("Connected Facebook Page ID missing hai.");
+  }
+
+  if (!token) {
+    throw new Error("Facebook Page token missing hai.");
+  }
+
+  const body: any = {
+    file_url: mediaUrl,
+    description: caption || "",
+    access_token: token,
+  };
+
+  if (scheduledPublishAt) {
+    const timestamp = getUnixTimestampSeconds(scheduledPublishAt);
+    if (!timestamp) {
+      throw new Error("Facebook Page schedule time valid nahi hai.");
+    }
+
+    body.published = false;
+    body.scheduled_publish_time = timestamp;
+  }
+
+  const res = await fetch(
+    `https://graph-video.facebook.com/v21.0/${pageId}/videos`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+
+  const data = await res.json();
+  if (data.error) {
+    const errorMsg = data.error.message || "Unknown error";
+    const errorCode = data.error.code || "";
+    throw new Error(`Facebook Page video failed (${errorCode}): ${errorMsg}`);
+  }
+
+  if (!res.ok || !data.id) {
+    throw new Error("Facebook Page video upload failed.");
+  }
+
+  return data;
+}
+
+export async function publishInstagramAndFacebookReel({
+  igUserId,
+  token,
+  pageId,
+  mediaUrl,
+  caption,
+  coverUrl,
+  publishTime,
+}: {
+  igUserId: string;
+  token?: string;
+  pageId?: string;
+  mediaUrl: string;
+  caption: string;
+  coverUrl?: string;
+  publishTime?: string | number | Date | null;
+}) {
+  if (!token) {
+    throw new Error("Instagram token missing hai.");
+  }
+
+  const creationId = await createMedia({
+    igUserId,
+    token,
+    mediaUrl,
+    caption,
+    isReel: true,
+    coverUrl,
+    publishTime,
+  });
+
+  const instagram = await publishMedia({
+    igUserId,
+    token,
+    creationId,
+  });
+
+  let facebookError: string | null = null;
+  if (pageId) {
+    try {
+      await publishFacebookPageVideo({
+        pageId,
+        token,
+        mediaUrl,
+        caption,
+        scheduledPublishAt: publishTime,
+      });
+    } catch (error: any) {
+      facebookError = error?.message || "Facebook Page video upload failed.";
+      console.warn("[v0] Connected Facebook Page publish failed:", error);
+    }
+  }
+
+  return {
+    creationId,
+    instagram,
+    facebookError,
+  };
 }
 
 export async function publishMedia({ igUserId, token, creationId }: any) {

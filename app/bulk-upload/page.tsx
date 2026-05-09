@@ -22,8 +22,8 @@ import {
 import { toast } from "sonner";
 import {
   buildCloudinaryVideoDownloadUrl,
-  createMedia,
-  publishMedia,
+  getInstagramScheduleValidationError,
+  publishInstagramAndFacebookReel,
   uploadMediaAssetToCloudinary,
 } from "@/lib/meta";
 import {
@@ -81,6 +81,7 @@ interface Account {
   token?: string;
   accessToken?: string;
   refreshToken?: string;
+  pageId?: string;
   name?: string;
   thumbnail?: string;
 }
@@ -738,55 +739,120 @@ function BulkUploadContent() {
       return;
     }
 
+    const hasInstagramTargets = selectedAccountsRef.current.some(
+      (account) => account.platform === "instagram",
+    );
+    if (hasInstagramTargets) {
+      const lastTime = new Date(
+        baseTime.getTime() +
+          Math.max(0, videosRef.current.length - 1) *
+            settingsSnapshot.intervalMinutes *
+            60 *
+            1000,
+      );
+      const instagramScheduleError =
+        getInstagramScheduleValidationError(baseTime) ||
+        getInstagramScheduleValidationError(lastTime);
+      if (instagramScheduleError) {
+        toast.error(instagramScheduleError);
+        return;
+      }
+    }
+
     for (let index = 0; index < videosRef.current.length; index += 1) {
       const video = videosRef.current[index];
-      const asset = await ensureCloudinaryAsset(video);
       const scheduledFor = new Date(
-        baseTime.getTime() + index * settingsSnapshot.intervalMinutes * 60 * 1000,
+        baseTime.getTime() +
+          index * settingsSnapshot.intervalMinutes * 60 * 1000,
       );
-      const caption = buildCaptionFromSeoDraft(video.seo);
-      const scheduledPosts = JSON.parse(
-        localStorage.getItem("scheduled_posts") || "[]",
-      );
-
-      scheduledPosts.push({
-        id: `${Date.now()}-${index}`,
-        mediaUrl: asset.secureUrl,
-        cloudinaryPublicId: asset.publicId,
-        cloudinaryResourceType: asset.resourceType,
-        caption,
-        title: video.seo.title,
-        description: video.seo.description,
-        keywords: video.seo.keywords,
-        contentType: "SHORT",
-        accounts: selectedAccountsRef.current.map((account) => ({
-          id: account.id,
-          username: account.username,
-          platform: account.platform,
-          token: account.token || account.accessToken,
-          accessToken: account.accessToken || account.token,
-          refreshToken: account.refreshToken,
-        })),
-        scheduledFor: scheduledFor.toISOString(),
-        status: "scheduled",
-      });
-
-      localStorage.setItem("scheduled_posts", JSON.stringify(scheduledPosts));
 
       setVideos((current) =>
         current.map((item) =>
           item.id === video.id
-            ? {
-                ...item,
-                status: "scheduled",
-                uploadedUrl: asset.secureUrl,
-              }
+            ? { ...item, status: "processing", error: undefined }
             : item,
         ),
       );
+
+      try {
+        const asset = await ensureCloudinaryAsset(video);
+        const caption = buildCaptionFromSeoDraft(video.seo);
+        const youtubeTags = buildYouTubeTagsFromKeywords(video.seo.keywords);
+        const youtubeDescription = buildYouTubeDescriptionFromSeoDraft(
+          video.seo,
+          { isShort: true },
+        );
+
+        for (const account of selectedAccountsRef.current) {
+          if (account.platform === "instagram") {
+            const publishResult = await publishInstagramAndFacebookReel({
+              igUserId: account.id,
+              token: account.token,
+              pageId: account.pageId,
+              mediaUrl: asset.secureUrl,
+              caption,
+              publishTime: scheduledFor,
+            });
+
+            if (publishResult.facebookError) {
+              throw new Error(
+                `${account.username}: Instagram schedule ho gaya, lekin connected FB Page fail hua: ${publishResult.facebookError}`,
+              );
+            }
+            continue;
+          }
+
+          const response = await fetch("/api/youtube/upload", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              accessToken: account.accessToken || account.token,
+              refreshToken: account.refreshToken,
+              videoUrl: asset.secureUrl,
+              title: video.seo.title || video.originalTitle,
+              description: youtubeDescription,
+              keywords: youtubeTags,
+              privacy: "private",
+              publishAt: scheduledFor.toISOString(),
+              isShort: true,
+            }),
+          });
+
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(data.error || "YouTube schedule failed");
+          }
+        }
+
+        setVideos((current) =>
+          current.map((item) =>
+            item.id === video.id
+              ? {
+                  ...item,
+                  status: "scheduled",
+                  uploadedUrl: asset.secureUrl,
+                }
+              : item,
+          ),
+        );
+      } catch (error: any) {
+        setVideos((current) =>
+          current.map((item) =>
+            item.id === video.id
+              ? {
+                  ...item,
+                  status: "error",
+                  error: error?.message || "Schedule failed",
+                }
+              : item,
+          ),
+        );
+      }
     }
 
-    toast.success("Bulk schedule create ho gaya");
+    toast.success("Bulk native schedule process complete ho gaya");
     setIsProcessing(false);
   };
 
@@ -831,19 +897,19 @@ function BulkUploadContent() {
       for (const account of selectedAccountsRef.current) {
         try {
           if (account.platform === "instagram") {
-            const creationId = await createMedia({
+            const publishResult = await publishInstagramAndFacebookReel({
               igUserId: account.id,
               token: account.token,
+              pageId: account.pageId,
               mediaUrl: asset.secureUrl,
               caption,
-              isReel: true,
             });
 
-            await publishMedia({
-              igUserId: account.id,
-              token: account.token,
-              creationId,
-            });
+            if (publishResult.facebookError) {
+              throw new Error(
+                `Instagram post ho gaya, lekin connected FB Page fail hua: ${publishResult.facebookError}`,
+              );
+            }
           } else {
             const response = await fetch("/api/youtube/upload", {
               method: "POST",

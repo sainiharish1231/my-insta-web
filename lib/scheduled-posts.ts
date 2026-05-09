@@ -2,7 +2,7 @@ import {
   buildYouTubeDescriptionFromSeoDraft,
   buildYouTubeTagsFromKeywords,
 } from "@/lib/bulk-video-seo";
-import { createMedia, publishMedia } from "@/lib/meta";
+import { publishInstagramAndFacebookReel } from "@/lib/meta";
 
 export const SCHEDULED_POSTS_STORAGE_KEY = "scheduled_posts";
 
@@ -13,6 +13,7 @@ export interface ScheduledPostAccount {
   token?: string;
   accessToken?: string;
   refreshToken?: string;
+  pageId?: string;
 }
 
 export interface ScheduledPost {
@@ -123,19 +124,19 @@ async function publishScheduledPostToAccount(
       throw new Error("Instagram token missing hai.");
     }
 
-    const creationId = await createMedia({
+    const result = await publishInstagramAndFacebookReel({
       igUserId: account.id,
       token: account.token,
+      pageId: account.pageId,
       mediaUrl: post.mediaUrl,
       caption: post.caption || post.title || "",
-      isReel: true,
     });
 
-    await publishMedia({
-      igUserId: account.id,
-      token: account.token,
-      creationId,
-    });
+    if (result.facebookError) {
+      throw new Error(
+        `Instagram publish ho gaya, lekin connected Facebook Page fail hua: ${result.facebookError}`,
+      );
+    }
     return;
   }
 

@@ -15,9 +15,8 @@ import {
   Youtube,
 } from "lucide-react";
 import {
-  createMedia,
   getMediaList,
-  publishMedia,
+  publishInstagramAndFacebookReel,
   uploadRemoteMediaToCloudinary,
 } from "@/lib/meta";
 
@@ -27,6 +26,7 @@ interface InstagramAccount {
   profile_picture_url?: string;
   followers_count?: number;
   token?: string;
+  pageId?: string;
 }
 
 interface YouTubeAccount {
@@ -54,6 +54,7 @@ interface TargetAccount {
   username: string;
   platform: "instagram" | "youtube";
   token?: string;
+  pageId?: string;
   accessToken?: string;
   refreshToken?: string;
   selected: boolean;
@@ -226,6 +227,7 @@ export default function InstaVideoBridgePage() {
             username: account.username,
             platform: "instagram" as const,
             token: account.token,
+            pageId: account.pageId,
             selected: true,
             status: "idle" as const,
           })),
@@ -318,19 +320,19 @@ export default function InstaVideoBridgePage() {
               throw new Error("Instagram token missing.");
             }
 
-            const creationId = await createMedia({
+            const publishResult = await publishInstagramAndFacebookReel({
               igUserId: target.id,
               token: target.token,
+              pageId: target.pageId,
               mediaUrl: uploadedAsset.secureUrl,
               caption,
-              isReel: true,
             });
 
-            await publishMedia({
-              igUserId: target.id,
-              token: target.token,
-              creationId,
-            });
+            if (publishResult.facebookError) {
+              throw new Error(
+                `Instagram post ho gaya, lekin connected FB Page fail hua: ${publishResult.facebookError}`,
+              );
+            }
           } else {
             if (!target.accessToken) {
               throw new Error("YouTube access token missing.");

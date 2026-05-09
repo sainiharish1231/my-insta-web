@@ -18,7 +18,7 @@ import {
   Youtube,
 } from "lucide-react";
 import { HashtagPicker } from "@/components/hashtag-picker";
-import { createMedia, publishMedia } from "@/lib/meta";
+import { publishInstagramAndFacebookReel } from "@/lib/meta";
 
 interface SelectedAccount {
   id: string;
@@ -27,6 +27,7 @@ interface SelectedAccount {
   status: "pending" | "uploading" | "success" | "error";
   error?: string;
   token?: string;
+  pageId?: string;
 }
 
 interface AvailableAccount {
@@ -34,6 +35,7 @@ interface AvailableAccount {
   username: string;
   platform: "instagram" | "youtube";
   token?: string;
+  pageId?: string;
 }
 
 interface CloudinaryAsset {
@@ -97,6 +99,7 @@ export default function UploadPage() {
           username: account.username,
           platform: "instagram" as const,
           token: account.token,
+          pageId: account.pageId,
         })),
         ...ytAccounts.map((account: any) => ({
           id: account.id,
@@ -285,19 +288,19 @@ export default function UploadPage() {
 
         try {
           if (account.platform === "instagram") {
-            const creationId = await createMedia({
+            const publishResult = await publishInstagramAndFacebookReel({
               igUserId: account.id,
               token: account.token,
+              pageId: account.pageId,
               mediaUrl: finalMediaUrl,
               caption: finalCaption,
-              isReel: true,
             });
 
-            await publishMedia({
-              igUserId: account.id,
-              token: account.token,
-              creationId,
-            });
+            if (publishResult.facebookError) {
+              throw new Error(
+                `Instagram post ho gaya, lekin connected FB Page fail hua: ${publishResult.facebookError}`,
+              );
+            }
           } else {
             const ytAccount = ytAccountsStored.find(
               (storedAccount: any) => storedAccount.id === account.id,

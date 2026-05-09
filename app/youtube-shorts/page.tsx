@@ -35,8 +35,8 @@ import {
 } from "@/components/ui/dialog";
 import {
   buildCloudinaryVideoDownloadUrl,
-  createMedia,
-  publishMedia,
+  getInstagramScheduleValidationError,
+  publishInstagramAndFacebookReel,
 } from "@/lib/meta";
 import {
   buildBulkVideoSeoDraft,
@@ -45,11 +45,7 @@ import {
   buildYouTubeTagsFromKeywords,
 } from "@/lib/bulk-video-seo";
 import { uploadMediaToBlob } from "@/lib/media-upload";
-import {
-  appendScheduledPosts,
-  processDueScheduledPosts,
-  type ScheduledPost,
-} from "@/lib/scheduled-posts";
+import { processDueScheduledPosts } from "@/lib/scheduled-posts";
 import {
   fetchInstagramAccountsFromFacebook,
   mergeInstagramAccounts,
@@ -78,6 +74,7 @@ interface InstagramAccount {
   username: string;
   profile_picture_url?: string;
   token?: string;
+  pageId?: string;
 }
 
 interface YouTubeAccount {
@@ -105,6 +102,7 @@ interface PublishAccount {
   refreshToken?: string;
   profile_picture_url?: string;
   thumbnail?: string;
+  pageId?: string;
 }
 
 interface QueueItem extends GeneratedShortAsset {
@@ -360,6 +358,7 @@ function getInstagramAccountSignature(accounts: InstagramAccount[]) {
         account.username,
         account.profile_picture_url || "",
         account.token || "",
+        account.pageId || "",
       ].join("|"),
     )
     .join("||");
@@ -641,10 +640,9 @@ function buildCloudinarySourceMetadata(resource: CloudinarySourceResource) {
     (resource.folder
       ? `Cloudinary folder ${resource.folder} se imported source video.`
       : "Cloudinary se imported source video.");
-  const keywords =
-    storedMetadata?.sourceKeywords?.length
-      ? storedMetadata.sourceKeywords
-      : deriveKeywordsFromText(`${sourceTitle} ${resource.folder || ""}`);
+  const keywords = storedMetadata?.sourceKeywords?.length
+    ? storedMetadata.sourceKeywords
+    : deriveKeywordsFromText(`${sourceTitle} ${resource.folder || ""}`);
 
   return {
     title: sourceTitle || "Cloudinary Video",
@@ -715,10 +713,9 @@ function createQueueItemFromCloudinaryResource({
     0,
     Math.floor(resource.durationSeconds || 0),
   );
-  const headlineLines =
-    storedMetadata?.headlineLines?.length
-      ? storedMetadata.headlineLines
-      : buildHeadlineLinesFromTitle(seoDraft.title);
+  const headlineLines = storedMetadata?.headlineLines?.length
+    ? storedMetadata.headlineLines
+    : buildHeadlineLinesFromTitle(seoDraft.title);
   const detectedPartLabel =
     storedMetadata?.partLabel ||
     seoDraft.title.match(/\bpart\s*\d+\b/i)?.[0] ||
@@ -806,7 +803,9 @@ function getShortPublicIdBase(publicId: string) {
 }
 
 function parseGeneratedShortSegment(publicId: string): ShortsWindow | null {
-  const match = getShortPublicIdBase(publicId).match(/^short-(\d+)-(\d+)-(\d+)$/);
+  const match = getShortPublicIdBase(publicId).match(
+    /^short-(\d+)-(\d+)-(\d+)$/,
+  );
   if (!match) {
     return null;
   }
@@ -1246,9 +1245,7 @@ export default function YouTubeShortsPage() {
     useState<YouTubeGuideDialogMode>("mobile-guide");
   const [autoGenerateAfterFilePick, setAutoGenerateAfterFilePick] =
     useState(false);
-  const [failedBuild, setFailedBuild] = useState<FailedBuildState | null>(
-    null,
-  );
+  const [failedBuild, setFailedBuild] = useState<FailedBuildState | null>(null);
 
   const allPublishAccounts = useMemo<PublishAccount[]>(
     () => [
@@ -1364,7 +1361,9 @@ export default function YouTubeShortsPage() {
   const isBuildLocked = isCreatingQueue;
 
   const notifyBuildLocked = useEffectEvent(() => {
-    toast.info("Current shorts build finish hone do, phir source ya settings change karo.");
+    toast.info(
+      "Current shorts build finish hone do, phir source ya settings change karo.",
+    );
   });
 
   useEffect(() => {
@@ -1939,19 +1938,19 @@ export default function YouTubeShortsPage() {
                 throw new Error("Instagram token missing hai.");
               }
 
-              const creationId = await createMedia({
+              const publishResult = await publishInstagramAndFacebookReel({
                 igUserId: account.id,
                 token: account.token,
+                pageId: account.pageId,
                 mediaUrl: nextItem.assetUrl,
                 caption: nextItem.caption,
-                isReel: true,
               });
 
-              await publishMedia({
-                igUserId: account.id,
-                token: account.token,
-                creationId,
-              });
+              if (publishResult.facebookError) {
+                throw new Error(
+                  `Instagram post ho gaya, lekin connected FB Page fail hua: ${publishResult.facebookError}`,
+                );
+              }
             } else {
               const response = await fetch("/api/youtube/upload", {
                 method: "POST",
@@ -2304,9 +2303,7 @@ export default function YouTubeShortsPage() {
       (account) => account.platform === "youtube",
     );
     const selectedInstagramAccounts = selectedPublishAccounts.filter(
-      (
-        account,
-      ): account is PublishAccount & { platform: "instagram" } =>
+      (account): account is PublishAccount & { platform: "instagram" } =>
         account.platform === "instagram",
     );
 
@@ -2335,6 +2332,21 @@ export default function YouTubeShortsPage() {
     if (!scheduleStart || scheduleStart <= new Date()) {
       toast.error("Schedule start time future me choose karo.");
       return;
+    }
+
+    if (selectedInstagramAccounts.length > 0) {
+      const instagramScheduleError =
+        getInstagramScheduleValidationError(scheduleStart) ||
+        getInstagramScheduleValidationError(
+          new Date(
+            scheduleStart.getTime() +
+              Math.max(0, queue.length - 1) * intervalMinutes * 60 * 1000,
+          ),
+        );
+      if (instagramScheduleError) {
+        toast.error(instagramScheduleError);
+        return;
+      }
     }
 
     clearTimer();
@@ -2380,32 +2392,35 @@ export default function YouTubeShortsPage() {
               allYouTubeTargetsScheduled = publishResult.allSelectedSucceeded;
             }
 
-            const instagramPost: ScheduledPost | null =
-              selectedInstagramAccounts.length > 0
-                ? {
-                    id: `${item.id}-ig-${Date.now()}-${index}`,
+            if (selectedInstagramAccounts.length > 0) {
+              const instagramResults = await Promise.all(
+                selectedInstagramAccounts.map(async (account) => {
+                  const result = await publishInstagramAndFacebookReel({
+                    igUserId: account.id,
+                    token: account.token,
+                    pageId: account.pageId,
                     mediaUrl: item.assetUrl,
-                    cloudinaryPublicId: item.cloudinaryPublicId,
-                    cloudinaryResourceType: item.cloudinaryResourceType,
                     caption: item.caption,
-                    title: item.title,
-                    description: item.description,
-                    keywords: item.keywords,
-                    contentType: "SHORT",
-                    accounts: selectedInstagramAccounts.map((account) => ({
-                      id: account.id,
-                      username: account.username,
-                      platform: "instagram",
-                      token: account.token,
-                    })),
-                    scheduledFor: publishAt,
-                    status: "scheduled",
-                    source: "youtube-shorts",
-                  }
-                : null;
+                    publishTime: publishAt,
+                  });
 
-            if (instagramPost) {
-              publishedOn.push(`IG scheduled ${formatDateTime(publishAt)}`);
+                  return {
+                    username: account.username,
+                    facebookError: result.facebookError,
+                  };
+                }),
+              );
+
+              instagramResults.forEach((result) => {
+                publishedOn.push(
+                  `IG ${result.username} scheduled ${formatDateTime(publishAt)}`,
+                );
+                if (result.facebookError) {
+                  toast.error(
+                    `${result.username}: IG schedule ho gaya, lekin FB Page schedule fail hua - ${result.facebookError}`,
+                  );
+                }
+              });
             }
 
             if (
@@ -2424,7 +2439,6 @@ export default function YouTubeShortsPage() {
 
             return {
               item,
-              instagramPost,
               publishAt,
               success: true,
               totalTargets,
@@ -2447,7 +2461,6 @@ export default function YouTubeShortsPage() {
         ): result is (typeof results)[number] & {
           success: true;
           publishedOn: string[];
-          instagramPost: ScheduledPost | null;
           publishAt: string;
         } => result.success,
       );
@@ -2459,9 +2472,6 @@ export default function YouTubeShortsPage() {
           error: string;
         } => !result.success,
       );
-      const localScheduledPosts = successfulResults
-        .map((result) => result.instagramPost)
-        .filter((post): post is ScheduledPost => Boolean(post));
       const successfulIds = new Set(
         successfulResults.map((result) => result.item.id),
       );
@@ -2503,8 +2513,6 @@ export default function YouTubeShortsPage() {
         );
       }
 
-      appendScheduledPosts(localScheduledPosts);
-
       if (failedResults.length > 0) {
         toast.error(
           `${failedResults.length} short schedule nahi hua. Error wale cards queue me reh gaye.`,
@@ -2512,13 +2520,16 @@ export default function YouTubeShortsPage() {
         return;
       }
 
-      if (selectedInstagramAccounts.length > 0 && selectedYouTubeAccounts.length > 0) {
+      if (
+        selectedInstagramAccounts.length > 0 &&
+        selectedYouTubeAccounts.length > 0
+      ) {
         toast.success(
-          `${successfulResults.length} shorts schedule ho gayi. YouTube native hai, Instagram app open/focus hone par due time par post hoga.`,
+          `${successfulResults.length} shorts native schedule ho gayi. YouTube aur Instagram dono selected time/gap par publish honge.`,
         );
       } else if (selectedInstagramAccounts.length > 0) {
         toast.success(
-          `${successfulResults.length} Instagram shorts schedule ho gayi. Due time par ye web app open ya focus hote hi post karega.`,
+          `${successfulResults.length} Instagram shorts native schedule ho gayi.`,
         );
       } else {
         toast.success(
@@ -3258,7 +3269,10 @@ export default function YouTubeShortsPage() {
 
         return addedCount;
       } catch (error) {
-        console.error("[v0] Failed to sync generated shorts from Cloudinary:", error);
+        console.error(
+          "[v0] Failed to sync generated shorts from Cloudinary:",
+          error,
+        );
         return 0;
       } finally {
         buildSyncInFlightRef.current = false;
@@ -3280,7 +3294,10 @@ export default function YouTubeShortsPage() {
   );
 
   const updateOverallCreationProgress = useEffectEvent(
-    (total: number, nextClipProgressMap: Record<number, ClipBuildProgressState>) => {
+    (
+      total: number,
+      nextClipProgressMap: Record<number, ClipBuildProgressState>,
+    ) => {
       if (total <= 0) {
         return;
       }
@@ -3296,7 +3313,10 @@ export default function YouTubeShortsPage() {
 
       setCreationProgress((prev) => {
         const nextPhase = prev.phase === "error" ? prev.phase : "processing";
-        const nextPercent = Math.min(100, Math.max(prev.percent, averageProgress));
+        const nextPercent = Math.min(
+          100,
+          Math.max(prev.percent, averageProgress),
+        );
         const nextProcessed = Math.max(prev.processed, readyCount);
         const nextSaved = Math.max(prev.saved, readyCount);
 
@@ -3380,605 +3400,608 @@ export default function YouTubeShortsPage() {
     }: {
       overrideQueueStartIndex?: number;
     } = {}) => {
-    const currentBuildId = buildRunIdRef.current + 1;
-    buildRunIdRef.current = currentBuildId;
-    const normalizedSourceUrl = normalizeYouTubeUrl(sourceUrl);
-    const sourceKeywords =
-      parseKeywords(keywordsDraft).length > 0
-        ? parseKeywords(keywordsDraft)
-        : sourceVideo?.keywords || [];
-    const baseSourceTitle =
-      titleDraft.trim() ||
-      sourceVideo?.title ||
-      selectedCloudinarySource?.originalFilename ||
-      sourceFile?.name ||
-      "YouTube Video";
-    const baseSourceDescription =
-      descriptionDraft.trim() || sourceVideo?.description || "";
-    const isFileSource =
-      sourceMode === "file" && Boolean(sourceFile && sourceVideo);
-    const cloudinarySourceUrl =
-      selectedCloudinarySource?.secureUrl || sourceVideo?.sourceUrl || "";
-    const isCloudinarySource =
-      sourceMode === "cloudinary" &&
-      Boolean(sourceVideo && cloudinarySourceUrl);
-    const expectedShortCount = planPreview.length;
-    const renderSettings = {
-      framingMode,
-      qualityPreset,
-      includeLogoOverlay,
-      includeHeadlineOverlay,
-      includeCopyrightOverlay,
-      copyrightText: copyrightText.trim() || DEFAULT_SHORTS_COPYRIGHT_TEXT,
-    };
-    const renderSummaryLabel =
-      qualityPreset === "auto" ? "Auto up to 4K" : qualityPreset;
-    const queueStartIndex =
-      overrideQueueStartIndex ??
-      (queue.reduce((maxIndex, item) => Math.max(maxIndex, item.index), -1) +
-        1);
+      const currentBuildId = buildRunIdRef.current + 1;
+      buildRunIdRef.current = currentBuildId;
+      const normalizedSourceUrl = normalizeYouTubeUrl(sourceUrl);
+      const sourceKeywords =
+        parseKeywords(keywordsDraft).length > 0
+          ? parseKeywords(keywordsDraft)
+          : sourceVideo?.keywords || [];
+      const baseSourceTitle =
+        titleDraft.trim() ||
+        sourceVideo?.title ||
+        selectedCloudinarySource?.originalFilename ||
+        sourceFile?.name ||
+        "YouTube Video";
+      const baseSourceDescription =
+        descriptionDraft.trim() || sourceVideo?.description || "";
+      const isFileSource =
+        sourceMode === "file" && Boolean(sourceFile && sourceVideo);
+      const cloudinarySourceUrl =
+        selectedCloudinarySource?.secureUrl || sourceVideo?.sourceUrl || "";
+      const isCloudinarySource =
+        sourceMode === "cloudinary" &&
+        Boolean(sourceVideo && cloudinarySourceUrl);
+      const expectedShortCount = planPreview.length;
+      const renderSettings = {
+        framingMode,
+        qualityPreset,
+        includeLogoOverlay,
+        includeHeadlineOverlay,
+        includeCopyrightOverlay,
+        copyrightText: copyrightText.trim() || DEFAULT_SHORTS_COPYRIGHT_TEXT,
+      };
+      const renderSummaryLabel =
+        qualityPreset === "auto" ? "Auto up to 4K" : qualityPreset;
+      const queueStartIndex =
+        overrideQueueStartIndex ??
+        queue.reduce((maxIndex, item) => Math.max(maxIndex, item.index), -1) +
+          1;
 
-    if (sourceMode === "cloudinary" && !isCloudinarySource) {
-      toast.error("Pehle Cloudinary source video select karo.");
-      return;
-    }
+      if (sourceMode === "cloudinary" && !isCloudinarySource) {
+        toast.error("Pehle Cloudinary source video select karo.");
+        return;
+      }
 
-    if (!isFileSource && !isCloudinarySource && !normalizedSourceUrl.trim()) {
-      toast.error("YouTube URL missing hai.");
-      return;
-    }
+      if (!isFileSource && !isCloudinarySource && !normalizedSourceUrl.trim()) {
+        toast.error("YouTube URL missing hai.");
+        return;
+      }
 
-    if (
-      !isFileSource &&
-      !isCloudinarySource &&
-      isMobile &&
-      !hasAcknowledgedMobileGuide
-    ) {
-      setSourceUrl(normalizedSourceUrl);
-      openYouTubeGuideDialog("mobile-guide", "generate");
-      return;
-    }
+      if (
+        !isFileSource &&
+        !isCloudinarySource &&
+        isMobile &&
+        !hasAcknowledgedMobileGuide
+      ) {
+        setSourceUrl(normalizedSourceUrl);
+        openYouTubeGuideDialog("mobile-guide", "generate");
+        return;
+      }
 
-    setIsCreatingQueue(true);
-    setFailedBuild(null);
-    clearBuildSyncTimer();
-    resetBuildTracking();
-    setPublishProgress(null);
-    activeBuildSessionRef.current = {
-      buildId: currentBuildId,
-      uploadFolder: null,
-      queueStartIndex,
-      total: expectedShortCount,
-      renderWidth: 0,
-      renderHeight: 0,
-      renderLabel: renderSummaryLabel,
-      framingMode: renderSettings.framingMode,
-      hasLogoOverlay: renderSettings.includeLogoOverlay,
-      sourceUrl:
-        sourceVideo?.sourceUrl ||
-        cloudinarySourceUrl ||
-        normalizedSourceUrl ||
-        "",
-      sourceTitle: baseSourceTitle,
-      sourceDescription: baseSourceDescription,
-      sourceKeywords,
-    };
-    setQueueBuildStatus(
-      isFileSource
-        ? `Selected file se ${renderSummaryLabel} shorts create ho rahi hain...`
-        : isCloudinarySource
-          ? `Cloudinary source se ${renderSummaryLabel} shorts create ho rahi hain...`
-          : `Server par ${renderSummaryLabel} shorts prepare ho rahi hain...`,
-    );
-    setDownloadProgress({
-      phase: "preparing",
-      percent: 0,
-      loadedBytes: 0,
-      totalBytes: null,
-      status: isFileSource
-        ? "Selected file source prepare ho rahi hai..."
-        : isCloudinarySource
-          ? "Cloudinary source prepare ho rahi hai..."
-          : "YouTube source best available quality me prepare ho rahi hai...",
-    });
-    setCreationProgress({
-      phase: "processing",
-      percent: 0,
-      total: expectedShortCount,
-      processed: 0,
-      saved: 0,
-      status:
-        expectedShortCount > 0
-          ? `${expectedShortCount} planned shorts ke liye ${renderSummaryLabel} render start ho raha hai...`
-          : "Metadata ka wait ho raha hai...",
-    });
-    if (expectedShortCount > 0) {
-      setClipProgressMap(
-        Object.fromEntries(
-          Array.from({ length: expectedShortCount }, (_, index) => [
-            index,
-            {
-              progress: 0,
-              status: "pending",
-            } satisfies ClipBuildProgressState,
-          ]),
-        ),
+      setIsCreatingQueue(true);
+      setFailedBuild(null);
+      clearBuildSyncTimer();
+      resetBuildTracking();
+      setPublishProgress(null);
+      activeBuildSessionRef.current = {
+        buildId: currentBuildId,
+        uploadFolder: null,
+        queueStartIndex,
+        total: expectedShortCount,
+        renderWidth: 0,
+        renderHeight: 0,
+        renderLabel: renderSummaryLabel,
+        framingMode: renderSettings.framingMode,
+        hasLogoOverlay: renderSettings.includeLogoOverlay,
+        sourceUrl:
+          sourceVideo?.sourceUrl ||
+          cloudinarySourceUrl ||
+          normalizedSourceUrl ||
+          "",
+        sourceTitle: baseSourceTitle,
+        sourceDescription: baseSourceDescription,
+        sourceKeywords,
+      };
+      setQueueBuildStatus(
+        isFileSource
+          ? `Selected file se ${renderSummaryLabel} shorts create ho rahi hain...`
+          : isCloudinarySource
+            ? `Cloudinary source se ${renderSummaryLabel} shorts create ho rahi hain...`
+            : `Server par ${renderSummaryLabel} shorts prepare ho rahi hain...`,
       );
-    }
-    setSourceUrl(
-      isCloudinarySource ? cloudinarySourceUrl : normalizedSourceUrl,
-    );
-    let didReceiveReadyEvent = false;
+      setDownloadProgress({
+        phase: "preparing",
+        percent: 0,
+        loadedBytes: 0,
+        totalBytes: null,
+        status: isFileSource
+          ? "Selected file source prepare ho rahi hai..."
+          : isCloudinarySource
+            ? "Cloudinary source prepare ho rahi hai..."
+            : "YouTube source best available quality me prepare ho rahi hai...",
+      });
+      setCreationProgress({
+        phase: "processing",
+        percent: 0,
+        total: expectedShortCount,
+        processed: 0,
+        saved: 0,
+        status:
+          expectedShortCount > 0
+            ? `${expectedShortCount} planned shorts ke liye ${renderSummaryLabel} render start ho raha hai...`
+            : "Metadata ka wait ho raha hai...",
+      });
+      if (expectedShortCount > 0) {
+        setClipProgressMap(
+          Object.fromEntries(
+            Array.from({ length: expectedShortCount }, (_, index) => [
+              index,
+              {
+                progress: 0,
+                status: "pending",
+              } satisfies ClipBuildProgressState,
+            ]),
+          ),
+        );
+      }
+      setSourceUrl(
+        isCloudinarySource ? cloudinarySourceUrl : normalizedSourceUrl,
+      );
+      let didReceiveReadyEvent = false;
 
-    try {
-      let streamedCount = 0;
-      let latestVideo = sourceVideo;
-      let uploadedSourceUrlForQueue = isCloudinarySource
-        ? cloudinarySourceUrl
-        : uploadedSourceUrl;
+      try {
+        let streamedCount = 0;
+        let latestVideo = sourceVideo;
+        let uploadedSourceUrlForQueue = isCloudinarySource
+          ? cloudinarySourceUrl
+          : uploadedSourceUrl;
 
-      if (isFileSource && !uploadedSourceUrlForQueue) {
-        setQueueBuildStatus("Selected file secure upload ho rahi hai...");
-        setDownloadProgress({
-          phase: "downloading",
-          percent: 0,
-          loadedBytes: 0,
-          totalBytes: null,
-          status: "Selected file secure upload start ho rahi hai...",
-        });
+        if (isFileSource && !uploadedSourceUrlForQueue) {
+          setQueueBuildStatus("Selected file secure upload ho rahi hai...");
+          setDownloadProgress({
+            phase: "downloading",
+            percent: 0,
+            loadedBytes: 0,
+            totalBytes: null,
+            status: "Selected file secure upload start ho rahi hai...",
+          });
 
-        uploadedSourceUrlForQueue = await uploadMediaToBlob(
-          sourceFile as File,
-          (percent) => {
+          uploadedSourceUrlForQueue = await uploadMediaToBlob(
+            sourceFile as File,
+            (percent) => {
+              setDownloadProgress({
+                phase: percent >= 100 ? "preparing" : "downloading",
+                percent,
+                loadedBytes: 0,
+                totalBytes: null,
+                status:
+                  percent >= 100
+                    ? "Source file upload complete. Server shorts bana raha hai..."
+                    : `Selected file secure upload ho rahi hai... ${percent}%`,
+              });
+            },
+          );
+
+          setUploadedSourceUrl(uploadedSourceUrlForQueue);
+          if (activeBuildSessionRef.current) {
+            activeBuildSessionRef.current.sourceUrl =
+              uploadedSourceUrlForQueue ||
+              activeBuildSessionRef.current.sourceUrl;
+          }
+          setQueueBuildStatus(
+            "Uploaded source file server par shorts me convert ho rahi hai...",
+          );
+        }
+
+        const response =
+          isFileSource || isCloudinarySource
+            ? await (async () => {
+                const formData = new FormData();
+                formData.append("sourceUrl", uploadedSourceUrlForQueue || "");
+                formData.append(
+                  "fileName",
+                  isCloudinarySource
+                    ? selectedCloudinarySource?.originalFilename ||
+                        getRemoteFileNameFromUrl(cloudinarySourceUrl)
+                    : sourceFile?.name || "uploaded-video.mp4",
+                );
+                formData.append(
+                  "contentType",
+                  isCloudinarySource
+                    ? getRemoteContentType(
+                        selectedCloudinarySource?.format,
+                        cloudinarySourceUrl,
+                      )
+                    : sourceFile?.type || "video/mp4",
+                );
+                formData.append(
+                  "durationSeconds",
+                  String(sourceVideo?.durationSeconds || 0),
+                );
+                formData.append(
+                  "segmentDurationSeconds",
+                  String(segmentDurationSeconds),
+                );
+                formData.append("overlapSeconds", String(overlapSeconds));
+                formData.append("title", titleDraft);
+                formData.append("description", descriptionDraft);
+                formData.append(
+                  "keywords",
+                  JSON.stringify(parseKeywords(keywordsDraft)),
+                );
+                formData.append("framingMode", renderSettings.framingMode);
+                formData.append("qualityPreset", renderSettings.qualityPreset);
+                formData.append(
+                  "includeLogoOverlay",
+                  String(renderSettings.includeLogoOverlay),
+                );
+                formData.append(
+                  "includeHeadlineOverlay",
+                  String(renderSettings.includeHeadlineOverlay),
+                );
+                formData.append(
+                  "includeCopyrightOverlay",
+                  String(renderSettings.includeCopyrightOverlay),
+                );
+                formData.append("copyrightText", renderSettings.copyrightText);
+
+                return fetch("/api/youtube/shorts/create-upload-stream", {
+                  method: "POST",
+                  body: formData,
+                });
+              })()
+            : await fetch("/api/youtube/shorts/create-stream", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  url: normalizedSourceUrl,
+                  segmentDurationSeconds,
+                  overlapSeconds,
+                  title: titleDraft,
+                  description: descriptionDraft,
+                  keywords: parseKeywords(keywordsDraft),
+                  ...renderSettings,
+                }),
+              });
+
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(data.error || "Shorts queue create nahi hui");
+        }
+
+        await readShortsCreateStream(response, async (event) => {
+          if (currentBuildId !== buildRunIdRef.current) {
+            return;
+          }
+
+          if (event.type === "error") {
+            throw new Error(event.error || "Shorts queue create nahi hui");
+          }
+
+          if (event.type === "ready") {
+            didReceiveReadyEvent = true;
+            latestVideo = event.video;
+            const total = event.plan?.length || expectedShortCount;
+            if (activeBuildSessionRef.current) {
+              activeBuildSessionRef.current = {
+                ...activeBuildSessionRef.current,
+                uploadFolder:
+                  event.uploadFolder ||
+                  activeBuildSessionRef.current.uploadFolder,
+                total,
+                renderWidth: event.renderWidth || 0,
+                renderHeight: event.renderHeight || 0,
+                renderLabel: event.renderLabel || renderSummaryLabel,
+                framingMode:
+                  event.framingMode ||
+                  activeBuildSessionRef.current.framingMode,
+                hasLogoOverlay:
+                  event.hasLogoOverlay ??
+                  activeBuildSessionRef.current.hasLogoOverlay,
+                sourceUrl:
+                  event.video?.sourceUrl ||
+                  activeBuildSessionRef.current.sourceUrl,
+                sourceTitle:
+                  event.video?.title ||
+                  activeBuildSessionRef.current.sourceTitle,
+                sourceDescription:
+                  event.video?.description ||
+                  activeBuildSessionRef.current.sourceDescription,
+                sourceKeywords: event.video?.keywords?.length
+                  ? event.video.keywords
+                  : activeBuildSessionRef.current.sourceKeywords,
+              };
+            }
+
+            setSourceVideo(event.video);
+            setPlanPreview(event.plan || []);
+            setSourceUrl(
+              isFileSource || isCloudinarySource
+                ? ""
+                : event.video?.sourceUrl || normalizedSourceUrl,
+            );
             setDownloadProgress({
-              phase: percent >= 100 ? "preparing" : "downloading",
-              percent,
+              phase: "complete",
+              percent: 100,
               loadedBytes: 0,
               totalBytes: null,
+              status: isFileSource
+                ? "Selected file upload complete. HQ render start ho gaya."
+                : isCloudinarySource
+                  ? "Cloudinary source ready. HQ render start ho gaya."
+                  : "YouTube source ready. HQ render start ho gaya.",
+            });
+            setCreationProgress({
+              phase: "processing",
+              percent: 0,
+              total,
+              processed: streamedCount,
+              saved: streamedCount,
               status:
-                percent >= 100
-                  ? "Source file upload complete. Server shorts bana raha hai..."
-                  : `Selected file secure upload ho rahi hai... ${percent}%`,
+                total > 0
+                  ? `0/${total} shorts create hui hain. ${event.renderLabel || renderSummaryLabel} render chal raha hai.`
+                  : `${event.renderLabel || renderSummaryLabel} render start ho gaya.`,
             });
-          },
-        );
+            if (event.plan?.length) {
+              const previewVideo = event.video || latestVideo;
+              const previewTitle =
+                previewVideo?.title || baseSourceTitle || "YouTube Video";
+              const previewDescription =
+                previewVideo?.description || baseSourceDescription;
+              const previewKeywords = previewVideo?.keywords?.length
+                ? previewVideo.keywords
+                : sourceKeywords;
 
-        setUploadedSourceUrl(uploadedSourceUrlForQueue);
-        if (activeBuildSessionRef.current) {
-          activeBuildSessionRef.current.sourceUrl =
-            uploadedSourceUrlForQueue || activeBuildSessionRef.current.sourceUrl;
-        }
-        setQueueBuildStatus(
-          "Uploaded source file server par shorts me convert ho rahi hai...",
-        );
-      }
+              setGeneratedShortPreviews(
+                Object.fromEntries(
+                  event.plan.map((segment, index) => [
+                    index,
+                    buildGeneratedShortCopy({
+                      originalTitle: previewTitle,
+                      originalDescription: previewDescription,
+                      originalKeywords: previewKeywords,
+                      segment,
+                      totalSegments: total,
+                    }),
+                  ]),
+                ),
+              );
+            }
+            setClipProgressMap(
+              Object.fromEntries(
+                Array.from({ length: total }, (_, index) => [
+                  index,
+                  {
+                    progress: 0,
+                    status: index === 0 ? "processing" : "pending",
+                  } satisfies ClipBuildProgressState,
+                ]),
+              ),
+            );
+            setQueueBuildStatus(
+              total > 0
+                ? `${total} shorts ${event.renderLabel || renderSummaryLabel} me process ho rahi hain.`
+                : "Shorts process me hain.",
+            );
+            scheduleGeneratedFolderSync(15000);
+            return;
+          }
 
-      const response =
-        isFileSource || isCloudinarySource
-          ? await (async () => {
-              const formData = new FormData();
-              formData.append("sourceUrl", uploadedSourceUrlForQueue || "");
-              formData.append(
-                "fileName",
-                isCloudinarySource
-                  ? selectedCloudinarySource?.originalFilename ||
-                      getRemoteFileNameFromUrl(cloudinarySourceUrl)
-                  : sourceFile?.name || "uploaded-video.mp4",
-              );
-              formData.append(
-                "contentType",
-                isCloudinarySource
-                  ? getRemoteContentType(
-                      selectedCloudinarySource?.format,
-                      cloudinarySourceUrl,
-                    )
-                  : sourceFile?.type || "video/mp4",
-              );
-              formData.append(
-                "durationSeconds",
-                String(sourceVideo?.durationSeconds || 0),
-              );
-              formData.append(
-                "segmentDurationSeconds",
-                String(segmentDurationSeconds),
-              );
-              formData.append("overlapSeconds", String(overlapSeconds));
-              formData.append("title", titleDraft);
-              formData.append("description", descriptionDraft);
-              formData.append(
-                "keywords",
-                JSON.stringify(parseKeywords(keywordsDraft)),
-              );
-              formData.append("framingMode", renderSettings.framingMode);
-              formData.append("qualityPreset", renderSettings.qualityPreset);
-              formData.append(
-                "includeLogoOverlay",
-                String(renderSettings.includeLogoOverlay),
-              );
-              formData.append(
-                "includeHeadlineOverlay",
-                String(renderSettings.includeHeadlineOverlay),
-              );
-              formData.append(
-                "includeCopyrightOverlay",
-                String(renderSettings.includeCopyrightOverlay),
-              );
-              formData.append("copyrightText", renderSettings.copyrightText);
+          if (event.type === "clip-progress") {
+            const total = event.total || expectedShortCount || 0;
+            const clipIndex = Math.max(0, event.clipIndex - 1);
+            const nextProgress = Math.max(
+              0,
+              Math.min(100, Math.round(event.progress)),
+            );
 
-              return fetch("/api/youtube/shorts/create-upload-stream", {
-                method: "POST",
-                body: formData,
-              });
-            })()
-          : await fetch("/api/youtube/shorts/create-stream", {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                url: normalizedSourceUrl,
-                segmentDurationSeconds,
-                overlapSeconds,
-                title: titleDraft,
-                description: descriptionDraft,
-                keywords: parseKeywords(keywordsDraft),
-                ...renderSettings,
-              }),
+            setClipBuildProgress(
+              clipIndex,
+              nextProgress,
+              nextProgress >= 100 ? "ready" : "processing",
+            );
+            setCreationProgress((prev) => ({
+              ...prev,
+              phase: prev.phase === "error" ? prev.phase : "processing",
+              total,
+              status:
+                total > 0
+                  ? `${prev.saved}/${total} ready • Short ${clipIndex + 1}/${total} ${
+                      event.stage === "upload" ? "upload" : "render"
+                    } ${nextProgress}%`
+                  : `Short ${clipIndex + 1} ${
+                      event.stage === "upload" ? "upload" : "render"
+                    } ${nextProgress}%`,
+            }));
+            scheduleGeneratedFolderSync(
+              event.stage === "upload" && nextProgress >= 97 ? 2500 : 15000,
+            );
+            return;
+          }
+
+          if (event.type === "clip") {
+            const streamVideo = event.video || latestVideo;
+            const completedCount =
+              event.index || Math.max(streamedCount, event.item.index + 1);
+            const nextItem: QueueItem = {
+              ...event.item,
+              id: event.item.cloudinaryPublicId || event.item.id,
+              index: queueStartIndex + event.item.index,
+              sourceUrl: streamVideo?.sourceUrl || normalizedSourceUrl,
+              sourceTitle: streamVideo?.title || titleDraft || "YouTube Video",
+              status: "queued",
+              createdAt: new Date().toISOString(),
+              targetAccounts: defaultQueueTargets,
+              deleteFromCloudinaryOnRemove: true,
+            };
+            const total = event.total || expectedShortCount || completedCount;
+
+            latestVideo = streamVideo || latestVideo;
+            streamedCount = completedCount;
+            storeGeneratedShortPreview(event.item.index, nextItem);
+            setClipBuildProgress(event.item.index, 100, "ready");
+            setQueue((prev) =>
+              prev.some(
+                (item) =>
+                  item.cloudinaryPublicId === nextItem.cloudinaryPublicId ||
+                  item.id === nextItem.id,
+              )
+                ? prev
+                : [...prev, nextItem].sort(
+                    (left, right) => left.index - right.index,
+                  ),
+            );
+            setCreationProgress({
+              phase: "processing",
+              percent: Math.min(
+                100,
+                Math.round((completedCount / Math.max(total, 1)) * 100),
+              ),
+              total,
+              processed: completedCount,
+              saved: completedCount,
+              status: `${completedCount}/${total} shorts create ho chuki hain aur metadata ke saath queue me ready hain.`,
             });
+            setQueueBuildStatus(
+              `Part ${event.item.index + 1}/${total} ready hai. Queue live update ho rahi hai.`,
+            );
+            if (completedCount < total) {
+              setClipBuildProgress(event.item.index + 1, 0, "processing");
+              scheduleGeneratedFolderSync(15000);
+            } else {
+              clearBuildSyncTimer();
+            }
+            return;
+          }
 
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || "Shorts queue create nahi hui");
-      }
+          if (event.type === "complete") {
+            latestVideo = event.video || latestVideo;
+            const total = event.count || streamedCount || expectedShortCount;
+            if (activeBuildSessionRef.current) {
+              activeBuildSessionRef.current = {
+                ...activeBuildSessionRef.current,
+                uploadFolder:
+                  event.uploadFolder ||
+                  activeBuildSessionRef.current.uploadFolder,
+                total,
+                sourceUrl:
+                  event.video?.sourceUrl ||
+                  activeBuildSessionRef.current.sourceUrl,
+                sourceTitle:
+                  event.video?.title ||
+                  activeBuildSessionRef.current.sourceTitle,
+                sourceDescription:
+                  event.video?.description ||
+                  activeBuildSessionRef.current.sourceDescription,
+                sourceKeywords: event.video?.keywords?.length
+                  ? event.video.keywords
+                  : activeBuildSessionRef.current.sourceKeywords,
+              };
+            }
 
-      await readShortsCreateStream(response, async (event) => {
+            if (event.video) {
+              setSourceVideo(event.video);
+              setSourceUrl(
+                isFileSource || isCloudinarySource
+                  ? ""
+                  : event.video.sourceUrl || normalizedSourceUrl,
+              );
+            }
+
+            setDownloadProgress({
+              phase: "complete",
+              percent: 100,
+              loadedBytes: 0,
+              totalBytes: null,
+              status: isFileSource
+                ? "Selected source file process complete."
+                : isCloudinarySource
+                  ? "Cloudinary source process complete."
+                  : "Source video HQ prepare complete.",
+            });
+            if (streamedCount < total) {
+              await syncGeneratedFolderToQueue({ markComplete: true });
+            }
+            setClipProgressMap((prev) =>
+              Object.fromEntries(
+                Array.from({ length: total }, (_, index) => [
+                  index,
+                  {
+                    progress: 100,
+                    status: "ready",
+                  } satisfies ClipBuildProgressState,
+                ]),
+              ),
+            );
+            setCreationProgress({
+              phase: "complete",
+              percent: 100,
+              total,
+              processed: total,
+              saved: total,
+              status: `Sab ${total} shorts ready ho gayi.`,
+            });
+            setFailedBuild(null);
+            setQueueBuildStatus(
+              "High-quality shorts ready hain aur queue synced hai.",
+            );
+            toast.success(`${total} shorts queue me add ho gayi.`);
+          }
+        });
+      } catch (error: any) {
         if (currentBuildId !== buildRunIdRef.current) {
           return;
         }
 
-        if (event.type === "error") {
-          throw new Error(event.error || "Shorts queue create nahi hui");
-        }
+        const failureMessage = isYouTubeBotCheckMessage(error?.message)
+          ? getFriendlyBotCheckStatus()
+          : error.message || "Shorts creation fail ho gayi.";
+        const failedUploadFolder =
+          activeBuildSessionRef.current?.buildId === currentBuildId
+            ? activeBuildSessionRef.current.uploadFolder
+            : null;
 
-        if (event.type === "ready") {
-          didReceiveReadyEvent = true;
-          latestVideo = event.video;
-          const total = event.plan?.length || expectedShortCount;
-          if (activeBuildSessionRef.current) {
-            activeBuildSessionRef.current = {
-              ...activeBuildSessionRef.current,
-              uploadFolder:
-                event.uploadFolder || activeBuildSessionRef.current.uploadFolder,
-              total,
-              renderWidth: event.renderWidth || 0,
-              renderHeight: event.renderHeight || 0,
-              renderLabel: event.renderLabel || renderSummaryLabel,
-              framingMode:
-                event.framingMode || activeBuildSessionRef.current.framingMode,
-              hasLogoOverlay:
-                event.hasLogoOverlay ??
-                activeBuildSessionRef.current.hasLogoOverlay,
-              sourceUrl:
-                event.video?.sourceUrl ||
-                activeBuildSessionRef.current.sourceUrl,
-              sourceTitle:
-                event.video?.title || activeBuildSessionRef.current.sourceTitle,
-              sourceDescription:
-                event.video?.description ||
-                activeBuildSessionRef.current.sourceDescription,
-              sourceKeywords:
-                event.video?.keywords?.length
-                  ? event.video.keywords
-                  : activeBuildSessionRef.current.sourceKeywords,
-            };
-          }
-
-          setSourceVideo(event.video);
-          setPlanPreview(event.plan || []);
-          setSourceUrl(
-            isFileSource || isCloudinarySource
-              ? ""
-              : event.video?.sourceUrl || normalizedSourceUrl,
-          );
-          setDownloadProgress({
-            phase: "complete",
-            percent: 100,
-            loadedBytes: 0,
-            totalBytes: null,
-            status: isFileSource
-              ? "Selected file upload complete. HQ render start ho gaya."
-              : isCloudinarySource
-                ? "Cloudinary source ready. HQ render start ho gaya."
-                : "YouTube source ready. HQ render start ho gaya.",
-          });
-          setCreationProgress({
-            phase: "processing",
-            percent: 0,
-            total,
-            processed: streamedCount,
-            saved: streamedCount,
-            status:
-              total > 0
-                ? `0/${total} shorts create hui hain. ${event.renderLabel || renderSummaryLabel} render chal raha hai.`
-                : `${event.renderLabel || renderSummaryLabel} render start ho gaya.`,
-          });
-          if (event.plan?.length) {
-            const previewVideo = event.video || latestVideo;
-            const previewTitle = previewVideo?.title || baseSourceTitle || "YouTube Video";
-            const previewDescription =
-              previewVideo?.description || baseSourceDescription;
-            const previewKeywords =
-              previewVideo?.keywords?.length
-                ? previewVideo.keywords
-                : sourceKeywords;
-
-            setGeneratedShortPreviews(
-              Object.fromEntries(
-                event.plan.map((segment, index) => [
-                  index,
-                  buildGeneratedShortCopy({
-                    originalTitle: previewTitle,
-                    originalDescription: previewDescription,
-                    originalKeywords: previewKeywords,
-                    segment,
-                    totalSegments: total,
-                  }),
-                ]),
-              ),
-            );
-          }
-          setClipProgressMap(
-            Object.fromEntries(
-              Array.from({ length: total }, (_, index) => [
-                index,
-                {
-                  progress: 0,
-                  status: index === 0 ? "processing" : "pending",
-                } satisfies ClipBuildProgressState,
-              ]),
-            ),
-          );
-          setQueueBuildStatus(
-            total > 0
-              ? `${total} shorts ${event.renderLabel || renderSummaryLabel} me process ho rahi hain.`
-              : "Shorts process me hain.",
-          );
-          scheduleGeneratedFolderSync(15000);
-          return;
-        }
-
-        if (event.type === "clip-progress") {
-          const total = event.total || expectedShortCount || 0;
-          const clipIndex = Math.max(0, event.clipIndex - 1);
-          const nextProgress = Math.max(
-            0,
-            Math.min(100, Math.round(event.progress)),
-          );
-
-          setClipBuildProgress(
-            clipIndex,
-            nextProgress,
-            nextProgress >= 100 ? "ready" : "processing",
-          );
-          setCreationProgress((prev) => ({
-            ...prev,
-            phase: prev.phase === "error" ? prev.phase : "processing",
-            total,
-            status:
-              total > 0
-                ? `${prev.saved}/${total} ready • Short ${clipIndex + 1}/${total} ${
-                    event.stage === "upload" ? "upload" : "render"
-                  } ${nextProgress}%`
-                : `Short ${clipIndex + 1} ${
-                    event.stage === "upload" ? "upload" : "render"
-                  } ${nextProgress}%`,
-          }));
-          scheduleGeneratedFolderSync(
-            event.stage === "upload" && nextProgress >= 97 ? 2500 : 15000,
-          );
-          return;
-        }
-
-        if (event.type === "clip") {
-          const streamVideo = event.video || latestVideo;
-          const completedCount =
-            event.index || Math.max(streamedCount, event.item.index + 1);
-          const nextItem: QueueItem = {
-            ...event.item,
-            id: event.item.cloudinaryPublicId || event.item.id,
-            index: queueStartIndex + event.item.index,
-            sourceUrl: streamVideo?.sourceUrl || normalizedSourceUrl,
-            sourceTitle: streamVideo?.title || titleDraft || "YouTube Video",
-            status: "queued",
-            createdAt: new Date().toISOString(),
-            targetAccounts: defaultQueueTargets,
-            deleteFromCloudinaryOnRemove: true,
-          };
-          const total = event.total || expectedShortCount || completedCount;
-
-          latestVideo = streamVideo || latestVideo;
-          streamedCount = completedCount;
-          storeGeneratedShortPreview(event.item.index, nextItem);
-          setClipBuildProgress(event.item.index, 100, "ready");
-          setQueue((prev) =>
-            prev.some(
-              (item) =>
-                item.cloudinaryPublicId === nextItem.cloudinaryPublicId ||
-                item.id === nextItem.id,
-            )
-              ? prev
-              : [...prev, nextItem].sort(
-                  (left, right) => left.index - right.index,
-                ),
-          );
-          setCreationProgress({
-            phase: "processing",
-            percent: Math.min(
-              100,
-              Math.round((completedCount / Math.max(total, 1)) * 100),
-            ),
-            total,
-            processed: completedCount,
-            saved: completedCount,
-            status: `${completedCount}/${total} shorts create ho chuki hain aur metadata ke saath queue me ready hain.`,
-          });
-          setQueueBuildStatus(
-            `Part ${event.item.index + 1}/${total} ready hai. Queue live update ho rahi hai.`,
-          );
-          if (completedCount < total) {
-            setClipBuildProgress(
-              event.item.index + 1,
-              0,
-              "processing",
-            );
-            scheduleGeneratedFolderSync(15000);
-          } else {
-            clearBuildSyncTimer();
-          }
-          return;
-        }
-
-        if (event.type === "complete") {
-          latestVideo = event.video || latestVideo;
-          const total = event.count || streamedCount || expectedShortCount;
-          if (activeBuildSessionRef.current) {
-            activeBuildSessionRef.current = {
-              ...activeBuildSessionRef.current,
-              uploadFolder:
-                event.uploadFolder || activeBuildSessionRef.current.uploadFolder,
-              total,
-              sourceUrl:
-                event.video?.sourceUrl ||
-                activeBuildSessionRef.current.sourceUrl,
-              sourceTitle:
-                event.video?.title || activeBuildSessionRef.current.sourceTitle,
-              sourceDescription:
-                event.video?.description ||
-                activeBuildSessionRef.current.sourceDescription,
-              sourceKeywords:
-                event.video?.keywords?.length
-                  ? event.video.keywords
-                  : activeBuildSessionRef.current.sourceKeywords,
-            };
-          }
-
-          if (event.video) {
-            setSourceVideo(event.video);
-            setSourceUrl(
-              isFileSource || isCloudinarySource
-                ? ""
-                : event.video.sourceUrl || normalizedSourceUrl,
-            );
-          }
-
-          setDownloadProgress({
-            phase: "complete",
-            percent: 100,
-            loadedBytes: 0,
-            totalBytes: null,
-            status: isFileSource
-              ? "Selected source file process complete."
-              : isCloudinarySource
-                ? "Cloudinary source process complete."
-                : "Source video HQ prepare complete.",
-          });
-          if (streamedCount < total) {
-            await syncGeneratedFolderToQueue({ markComplete: true });
-          }
-          setClipProgressMap((prev) =>
-            Object.fromEntries(
-              Array.from({ length: total }, (_, index) => [
-                index,
-                {
-                  progress: 100,
-                  status: "ready",
-                } satisfies ClipBuildProgressState,
-              ]),
-            ),
-          );
-          setCreationProgress({
-            phase: "complete",
-            percent: 100,
-            total,
-            processed: total,
-            saved: total,
-            status: `Sab ${total} shorts ready ho gayi.`,
-          });
-          setFailedBuild(null);
-          setQueueBuildStatus("High-quality shorts ready hain aur queue synced hai.");
-          toast.success(`${total} shorts queue me add ho gayi.`);
-        }
-      });
-    } catch (error: any) {
-      if (currentBuildId !== buildRunIdRef.current) {
-        return;
-      }
-
-      const failureMessage = isYouTubeBotCheckMessage(error?.message)
-        ? getFriendlyBotCheckStatus()
-        : error.message || "Shorts creation fail ho gayi.";
-      const failedUploadFolder =
-        activeBuildSessionRef.current?.buildId === currentBuildId
-          ? activeBuildSessionRef.current.uploadFolder
-          : null;
-
-      setDownloadProgress((prev) =>
-        didReceiveReadyEvent || prev.phase === "complete"
-          ? prev
-          : {
-              ...prev,
-              phase: "error",
-              status: failureMessage,
-            },
-      );
-      setCreationProgress((prev) => ({
-        ...prev,
-        phase: "error",
-        total: prev.total || expectedShortCount,
-        status: failureMessage,
-      }));
-      setClipProgressMap((prev) => {
-        const nextProgressMap = { ...prev };
-        const targetEntry = Object.entries(nextProgressMap).find(
-          ([, value]) => value.status === "processing" || value.status === "pending",
+        setDownloadProgress((prev) =>
+          didReceiveReadyEvent || prev.phase === "complete"
+            ? prev
+            : {
+                ...prev,
+                phase: "error",
+                status: failureMessage,
+              },
         );
-
-        if (targetEntry) {
-          nextProgressMap[Number(targetEntry[0])] = {
-            ...targetEntry[1],
-            status: "error",
-          };
-        }
-
-        return nextProgressMap;
-      });
-      setFailedBuild({
-        uploadFolder: failedUploadFolder,
-        message: failureMessage,
-      });
-
-      if (isYouTubeBotCheckMessage(error?.message)) {
-        setDownloadProgress((prev) => ({
+        setCreationProgress((prev) => ({
           ...prev,
           phase: "error",
-          status: getFriendlyBotCheckStatus(),
+          total: prev.total || expectedShortCount,
+          status: failureMessage,
         }));
-        setQueueBuildStatus(getFriendlyBotCheckStatus());
-        openYouTubeGuideDialog("bot-check", "generate");
-        return;
-      }
+        setClipProgressMap((prev) => {
+          const nextProgressMap = { ...prev };
+          const targetEntry = Object.entries(nextProgressMap).find(
+            ([, value]) =>
+              value.status === "processing" || value.status === "pending",
+          );
 
-      setQueueBuildStatus(failureMessage);
-      toast.error(failureMessage);
-    } finally {
-      if (currentBuildId !== buildRunIdRef.current) {
-        return;
-      }
+          if (targetEntry) {
+            nextProgressMap[Number(targetEntry[0])] = {
+              ...targetEntry[1],
+              status: "error",
+            };
+          }
 
-      clearBuildSyncTimer();
-      activeBuildSessionRef.current = null;
-      setIsCreatingQueue(false);
-    }
+          return nextProgressMap;
+        });
+        setFailedBuild({
+          uploadFolder: failedUploadFolder,
+          message: failureMessage,
+        });
+
+        if (isYouTubeBotCheckMessage(error?.message)) {
+          setDownloadProgress((prev) => ({
+            ...prev,
+            phase: "error",
+            status: getFriendlyBotCheckStatus(),
+          }));
+          setQueueBuildStatus(getFriendlyBotCheckStatus());
+          openYouTubeGuideDialog("bot-check", "generate");
+          return;
+        }
+
+        setQueueBuildStatus(failureMessage);
+        toast.error(failureMessage);
+      } finally {
+        if (currentBuildId !== buildRunIdRef.current) {
+          return;
+        }
+
+        clearBuildSyncTimer();
+        activeBuildSessionRef.current = null;
+        setIsCreatingQueue(false);
+      }
     },
   );
 
@@ -4124,8 +4147,7 @@ export default function YouTubeShortsPage() {
                 0,
                 Math.min(
                   100,
-                  currentProgress?.progress ||
-                    (status === "ready" ? 100 : 0),
+                  currentProgress?.progress || (status === "ready" ? 100 : 0),
                 ),
               ),
         description: preview?.description || "",
@@ -4598,7 +4620,7 @@ export default function YouTubeShortsPage() {
                   <p className="mt-2 text-sm text-white/55">
                     {publishMode === "now"
                       ? "Queue ke sab shorts ek action me selected accounts par jayenge."
-                      : `YouTube native schedule hoga. Instagram due time par browser scheduler se post hoga. ${scheduleModeSummary}`}
+                      : `YouTube aur Instagram dono native schedule honge. Instagram ke liye start time kam se kam 20 min future hona chahiye. ${scheduleModeSummary}`}
                   </p>
                 </div>
                 <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
@@ -4655,7 +4677,7 @@ export default function YouTubeShortsPage() {
                 {selectedPublishAccounts.length > 0
                   ? publishMode === "now"
                     ? `Queue ke sab shorts ${selectedPublishAccounts.length} selected account${selectedPublishAccounts.length > 1 ? "s" : ""} par abhi parallel post honge.`
-                    : `YouTube ke ${selectedYouTubeCount} account native schedule honge. Instagram ke ${selectedInstagramCount} account app open/focus hone par due time par post honge.`
+                    : `YouTube ke ${selectedYouTubeCount} account aur Instagram ke ${selectedInstagramCount} account native schedule honge.`
                   : "Pehle accounts select karo, tabhi direct publish enable hoga."}
               </div>
 
@@ -4816,7 +4838,7 @@ export default function YouTubeShortsPage() {
                     className="inline-flex items-center justify-center gap-2 rounded-2xl border border-red-300/20 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     <RefreshCw className="h-4 w-4" />
-                    Retry Failed Build
+                    Retry Failed Shorts
                   </button>
                 </div>
               ) : null}
@@ -4884,6 +4906,18 @@ export default function YouTubeShortsPage() {
                         <p className="mt-3 line-clamp-2 text-xs leading-5 text-white/55">
                           {item.description}
                         </p>
+                      ) : null}
+
+                      {item.status === "error" && failedBuild ? (
+                        <button
+                          type="button"
+                          onClick={() => void handleRetryFailedBuild()}
+                          disabled={isCreatingQueue}
+                          className="mt-3 inline-flex items-center justify-center gap-2 rounded-xl border border-red-300/20 bg-red-400/10 px-3 py-2 text-xs font-semibold text-red-100 transition-colors hover:bg-red-400/15 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          <RefreshCw className="h-3.5 w-3.5" />
+                          Retry This Short
+                        </button>
                       ) : null}
 
                       {item.keywords.length > 0 ? (
@@ -4959,7 +4993,8 @@ export default function YouTubeShortsPage() {
                 </div>
               ) : (
                 <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 p-4 text-sm text-white/55">
-                  Pending, posting, posted, aur error accounts yahin track honge.
+                  Pending, posting, posted, aur error accounts yahin track
+                  honge.
                 </div>
               )}
             </div>
@@ -5324,45 +5359,45 @@ export default function YouTubeShortsPage() {
                   </label>
                 </div>
 
-                  <div className="grid gap-3">
-                    <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
-                      <div className="text-xs uppercase tracking-[0.2em] text-white/45">
-                        Copyright Overlay
-                      </div>
-                      <label className="mt-3 flex items-start gap-3 text-sm text-white/70">
-                        <input
-                          type="checkbox"
-                          checked={includeCopyrightOverlay}
-                          disabled={isBuildLocked}
-                          onChange={(event) =>
-                            setIncludeCopyrightOverlay(event.target.checked)
-                          }
-                          className="mt-1 h-4 w-4 rounded"
-                        />
-                        <span>
-                          Copyright watermark top-right safe area me show hoga.
-                        </span>
-                      </label>
-
-                      <div className="mt-4 grid gap-2">
-                        <span className="text-xs uppercase tracking-[0.2em] text-white/45">
-                          Copyright Text
-                        </span>
-                        <input
-                          type="text"
-                          disabled={isBuildLocked}
-                          value={copyrightText}
-                          onChange={(event) =>
-                            setCopyrightText(event.target.value)
-                          }
-                          placeholder={DEFAULT_SHORTS_COPYRIGHT_TEXT}
-                          className="w-full rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-cyan-400 disabled:cursor-not-allowed disabled:opacity-60"
-                        />
-                        <p className="text-xs text-white/45">
-                          Preview: {copyrightPreviewText}
-                        </p>
-                      </div>
+                <div className="grid gap-3">
+                  <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
+                    <div className="text-xs uppercase tracking-[0.2em] text-white/45">
+                      Copyright Overlay
                     </div>
+                    <label className="mt-3 flex items-start gap-3 text-sm text-white/70">
+                      <input
+                        type="checkbox"
+                        checked={includeCopyrightOverlay}
+                        disabled={isBuildLocked}
+                        onChange={(event) =>
+                          setIncludeCopyrightOverlay(event.target.checked)
+                        }
+                        className="mt-1 h-4 w-4 rounded"
+                      />
+                      <span>
+                        Copyright watermark top-right safe area me show hoga.
+                      </span>
+                    </label>
+
+                    <div className="mt-4 grid gap-2">
+                      <span className="text-xs uppercase tracking-[0.2em] text-white/45">
+                        Copyright Text
+                      </span>
+                      <input
+                        type="text"
+                        disabled={isBuildLocked}
+                        value={copyrightText}
+                        onChange={(event) =>
+                          setCopyrightText(event.target.value)
+                        }
+                        placeholder={DEFAULT_SHORTS_COPYRIGHT_TEXT}
+                        className="w-full rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-cyan-400 disabled:cursor-not-allowed disabled:opacity-60"
+                      />
+                      <p className="text-xs text-white/45">
+                        Preview: {copyrightPreviewText}
+                      </p>
+                    </div>
+                  </div>
 
                   <label className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
                     <div className="text-xs uppercase tracking-[0.2em] text-white/45">
