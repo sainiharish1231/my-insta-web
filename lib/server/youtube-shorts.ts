@@ -1,6 +1,5 @@
-import { createWriteStream, existsSync } from "fs";
+import { createWriteStream } from "fs";
 import {
-  access,
   mkdir,
   mkdtemp,
   readFile,
@@ -16,9 +15,7 @@ import path from "path";
 import { spawn } from "child_process";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
-import ffmpeg from "fluent-ffmpeg";
 import ffmpegPath from "ffmpeg-static";
-import ytdl from "@distube/ytdl-core";
 import { v2 as cloudinary } from "cloudinary";
 import {
   DEFAULT_SHORTS_COPYRIGHT_TEXT,
@@ -37,42 +34,109 @@ import {
   type ShortsVideoMetadata,
 } from "@/lib/youtube-shorts";
 
-function resolveBundledFfmpegPath() {
-  const candidates = [
-    ffmpegPath as string | null,
-    typeof ffmpegPath === "string"
-      ? ffmpegPath.replace(/^\/ROOT\//, "/root/")
-      : null,
-    path.join(
-      /*turbopackIgnore: true*/ process.cwd(),
-      "node_modules",
-      "ffmpeg-static",
-      "ffmpeg",
-    ),
-  ].filter((candidate): candidate is string => Boolean(candidate));
+process.env.YTDL_DEBUG_PATH ||= os.tmpdir();
 
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) {
-      return candidate;
-    }
+type YtdlVideoFormat = {
+  itag?: number;
+  url?: string;
+  mimeType?: string;
+  bitrate?: number;
+  audioBitrate?: number;
+  height?: number;
+  fps?: number;
+  container?: string | null;
+  hasVideo?: boolean;
+  hasAudio?: boolean;
+  videoCodec?: string;
+  audioCodec?: string;
+};
+
+type YtdlVideoInfo = {
+  formats: YtdlVideoFormat[];
+  videoDetails: {
+    videoId?: string;
+    title?: string;
+    description?: string;
+    keywords?: string[];
+    lengthSeconds?: string | number;
+    thumbnails?: Array<{ url: string; width?: number; height?: number }>;
+    author?: { name?: string };
+  };
+};
+
+type YtdlModule = {
+  getBasicInfo(sourceUrl: string): Promise<YtdlVideoInfo>;
+  getInfo(
+    sourceUrl: string,
+    options?: { playerClients?: string[] },
+  ): Promise<YtdlVideoInfo>;
+  downloadFromInfo(
+    info: YtdlVideoInfo,
+    options?: { quality?: string | number },
+  ): Readable;
+  chooseFormat(
+    formats: YtdlVideoFormat[],
+    options?: { quality?: string; filter?: string },
+  ): YtdlVideoFormat;
+};
+
+type FfmpegCommandFactory = ((input?: string) => any) & {
+  setFfmpegPath(path: string): void;
+};
+
+function getYtdlCorePackageName() {
+  return process.env.YTDL_CORE_PACKAGE_NAME || "@distube/ytdl-core";
+}
+
+function getFfmpegPackageName() {
+  return process.env.FFMPEG_PACKAGE_NAME || "fluent-ffmpeg";
+}
+
+let ytdlModulePromise: Promise<YtdlModule> | null = null;
+
+function getYtdl() {
+  if (!ytdlModulePromise) {
+    ytdlModulePromise = import(
+      /* webpackIgnore: true */ /* turbopackIgnore: true */ getYtdlCorePackageName()
+    ).then((module) => (module.default ?? module) as YtdlModule);
   }
 
-  return null;
+  return ytdlModulePromise;
+}
+
+function resolveBundledFfmpegPath() {
+  if (typeof ffmpegPath !== "string" || !ffmpegPath) {
+    return null;
+  }
+
+  return ffmpegPath.replace(/^\/ROOT\//, "/root/");
 }
 
 const resolvedFfmpegPath = resolveBundledFfmpegPath();
-const PLAYABLE_INFO_PLAYER_CLIENTS: Array<
-  NonNullable<ytdl.getInfoOptions["playerClients"]>
-> = [
+let ffmpegModulePromise: Promise<FfmpegCommandFactory> | null = null;
+
+function getFfmpeg() {
+  if (!ffmpegModulePromise) {
+    ffmpegModulePromise = import(
+      /* webpackIgnore: true */ /* turbopackIgnore: true */ getFfmpegPackageName()
+    ).then((module) => {
+      const ffmpeg = (module.default ?? module) as FfmpegCommandFactory;
+      if (resolvedFfmpegPath) {
+        ffmpeg.setFfmpegPath(resolvedFfmpegPath);
+      }
+      return ffmpeg;
+    });
+  }
+
+  return ffmpegModulePromise;
+}
+
+const PLAYABLE_INFO_PLAYER_CLIENTS: string[][] = [
   ["WEB_EMBEDDED", "IOS", "ANDROID", "TV", "WEB"],
   ["WEB", "WEB_EMBEDDED", "IOS", "ANDROID", "TV"],
   ["IOS", "ANDROID", "TV", "WEB_EMBEDDED"],
   ["WEB"],
 ];
-
-if (resolvedFfmpegPath) {
-  ffmpeg.setFfmpegPath(resolvedFfmpegPath);
-}
 
 type HardwareAccelerationConfig = {
   encoder: string | null;
@@ -99,7 +163,7 @@ async function detectHardwareAcceleration(): Promise<{
   try {
     const result = await new Promise<string>((resolve, reject) => {
       const child = spawn(ffmpegBinaryPath, ["-hide_banner", "-encoders"], {
-        cwd: process.cwd(),
+        cwd: /*turbopackIgnore: true*/ process.cwd(),
         env: process.env,
       });
       let stdout = "";
@@ -215,7 +279,7 @@ async function cleanupStaleShortsTempDirectories(
 ) {
   const tempDir = os.tmpdir();
   const now = Date.now();
-  const entries = await readdir(tempDir, {
+  const entries = await readdir(/*turbopackIgnore: true*/ tempDir, {
     withFileTypes: true,
   });
 
@@ -234,12 +298,15 @@ async function cleanupStaleShortsTempDirectories(
       const targetPath = path.join(tempDir, entry.name);
 
       try {
-        const entryStats = await stat(targetPath);
+        const entryStats = await stat(/*turbopackIgnore: true*/ targetPath);
         if (now - entryStats.mtimeMs < maxAgeMs) {
           return;
         }
 
-        await rm(targetPath, { recursive: true, force: true });
+        await rm(/*turbopackIgnore: true*/ targetPath, {
+          recursive: true,
+          force: true,
+        });
       } catch {
         // Ignore temp cleanup failures and continue with the build.
       }
@@ -286,7 +353,7 @@ async function prepareShortsTempWorkspace() {
 
 async function getAvailableTempSpaceBytes() {
   try {
-    const tempSpace = await statfs(os.tmpdir());
+    const tempSpace = await statfs(/*turbopackIgnore: true*/ os.tmpdir());
     const blockSize = Number((tempSpace as any).bsize || 0);
     const availableBlocks = Number((tempSpace as any).bavail || 0);
     if (
@@ -540,9 +607,6 @@ const SHORTS_RENDER_PROFILES: Record<
   },
 };
 
-const SHORTS_LOGO_OVERLAY_PATH = resolveShortsLogoOverlayPath();
-const SHORTS_FONT_PATH = resolveShortsFontPath();
-
 type ShortsBuildProgressPayload = {
   video: ShortsVideoMetadata;
   plan: ShortsWindow[];
@@ -575,77 +639,19 @@ type ShortBuildCallbacks = {
 
 function resolveShortsLogoOverlayPath() {
   const configuredLogoPath = process.env.YOUTUBE_SHORTS_LOGO_PATH?.trim();
-  const candidates = [
-    configuredLogoPath,
-    path.join(
-      /*turbopackIgnore: true*/ process.cwd(),
-      "public",
-      "logo-overlay.png",
-    ),
-    path.join(
-      /*turbopackIgnore: true*/ process.cwd(),
-      "public",
-      "logo-overlay.webp",
-    ),
-    path.join(
-      /*turbopackIgnore: true*/ process.cwd(),
-      "public",
-      "logo-overlay.jpg",
-    ),
-    path.join(
-      /*turbopackIgnore: true*/ process.cwd(),
-      "public",
-      "logo-overlay.jpeg",
-    ),
-  ].filter((candidate): candidate is string => Boolean(candidate));
-
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) {
-      return candidate;
-    }
+  if (configuredLogoPath) {
+    return configuredLogoPath;
   }
 
-  return null;
+  return path.join(
+    /* turbopackIgnore: true */ process.cwd(),
+    "public",
+    "logo-overlay.jpg",
+  );
 }
 
 function resolveShortsFontPath() {
-  const configuredFontPath = process.env.YOUTUBE_SHORTS_FONT_PATH?.trim();
-  const candidates = [
-    configuredFontPath,
-    path.join(
-      /*turbopackIgnore: true*/ process.cwd(),
-      "public",
-      "fonts",
-      "NotoSansDevanagari-Bold.ttf",
-    ),
-    path.join(
-      /*turbopackIgnore: true*/ process.cwd(),
-      "public",
-      "fonts",
-      "NotoSans-Bold.ttf",
-    ),
-    path.join(
-      /*turbopackIgnore: true*/ process.cwd(),
-      "public",
-      "fonts",
-      "Inter-Bold.ttf",
-    ),
-    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-    "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-    "/System/Library/Fonts/Supplemental/NotoSansDevanagari.ttc",
-    "/System/Library/Fonts/Supplemental/Helvetica.ttc",
-    "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf",
-    "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-  ].filter((candidate): candidate is string => Boolean(candidate));
-
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) {
-      return candidate;
-    }
-  }
-
-  return null;
+  return process.env.YOUTUBE_SHORTS_FONT_PATH?.trim() || null;
 }
 
 function normalizeShortsRenderOptions(
@@ -792,7 +798,7 @@ async function probeVideoStream(inputPath: string) {
   try {
     return await new Promise<ProbedVideoStream | null>((resolve, reject) => {
       const child = spawn(ffmpegBinaryPath, ["-hide_banner", "-i", inputPath], {
-        cwd: process.cwd(),
+        cwd: /*turbopackIgnore: true*/ process.cwd(),
         env: process.env,
       });
 
@@ -853,15 +859,17 @@ async function resolveShortsRenderContext(
     normalizedOptions.qualityPreset,
     probedVideoStream,
   );
+  const logoOverlayPath = resolveShortsLogoOverlayPath();
+  const fontPath = resolveShortsFontPath();
 
   return {
     profile,
     framingMode: normalizedOptions.framingMode,
     logoOverlayPath:
-      normalizedOptions.includeLogoOverlay && SHORTS_LOGO_OVERLAY_PATH
-        ? SHORTS_LOGO_OVERLAY_PATH
+      normalizedOptions.includeLogoOverlay && logoOverlayPath
+        ? logoOverlayPath
         : null,
-    fontPath: SHORTS_FONT_PATH,
+    fontPath,
     includeHeadlineOverlay: normalizedOptions.includeHeadlineOverlay,
     includeCopyrightOverlay: normalizedOptions.includeCopyrightOverlay,
     copyrightText: normalizedOptions.copyrightText,
@@ -1131,15 +1139,6 @@ function sanitizePathPart(value: string) {
     .replace(/^-|-$/g, "");
 }
 
-async function pathExists(targetPath: string) {
-  try {
-    await access(targetPath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function hasConfiguredYouTubeCookies() {
   return Boolean(
     process.env.YOUTUBE_COOKIES_FILE ||
@@ -1153,8 +1152,7 @@ function normalizeAndValidateYouTubeSourceUrl(sourceUrl: string) {
 
   if (
     !normalizedSourceUrl ||
-    !extractYouTubeVideoId(normalizedSourceUrl) ||
-    !ytdl.validateURL(normalizedSourceUrl)
+    !extractYouTubeVideoId(normalizedSourceUrl)
   ) {
     throw new Error("Please enter a valid YouTube video URL.");
   }
@@ -1217,7 +1215,7 @@ function getCloudinaryConfig() {
 }
 
 function filterFormatsByMaxHeight(
-  formats: ytdl.videoFormat[],
+  formats: YtdlVideoFormat[],
   maxHeight?: number,
 ) {
   if (!maxHeight) {
@@ -1232,7 +1230,7 @@ function filterFormatsByMaxHeight(
 }
 
 function pickMuxedDownloadFormat(
-  formats: ytdl.videoFormat[],
+  formats: YtdlVideoFormat[],
   maxHeight?: number,
 ) {
   const preferredFormats = filterFormatsByMaxHeight(formats, maxHeight)
@@ -1269,7 +1267,7 @@ function getContainerPreferenceBonus(container?: string | null) {
 }
 
 function pickVideoOnlyDownloadFormat(
-  formats: ytdl.videoFormat[],
+  formats: YtdlVideoFormat[],
   maxHeight?: number,
 ) {
   const preferredFormats = filterFormatsByMaxHeight(formats, maxHeight)
@@ -1293,7 +1291,7 @@ function pickVideoOnlyDownloadFormat(
   return preferredFormats[0];
 }
 
-function pickAudioOnlyDownloadFormat(formats: ytdl.videoFormat[]) {
+function pickAudioOnlyDownloadFormat(formats: YtdlVideoFormat[]) {
   const preferredFormats = formats
     .filter(
       (format) => format.hasAudio && !format.hasVideo && Boolean(format.url),
@@ -1309,7 +1307,7 @@ function pickAudioOnlyDownloadFormat(formats: ytdl.videoFormat[]) {
   return preferredFormats[0];
 }
 
-function getFormatExtension(format?: ytdl.videoFormat, fallback = "mp4") {
+function getFormatExtension(format?: YtdlVideoFormat, fallback = "mp4") {
   if (format?.container) {
     return format.container;
   }
@@ -1330,8 +1328,8 @@ function getFormatExtension(format?: ytdl.videoFormat, fallback = "mp4") {
 }
 
 function resolveMergedOutputExtension(
-  videoFormat?: ytdl.videoFormat,
-  audioFormat?: ytdl.videoFormat,
+  videoFormat?: YtdlVideoFormat,
+  audioFormat?: YtdlVideoFormat,
 ) {
   const videoCodec = `${videoFormat?.videoCodec || ""}`.toLowerCase();
   const audioCodec = `${audioFormat?.audioCodec || ""}`.toLowerCase();
@@ -1357,7 +1355,7 @@ function getBestThumbnail(
 }
 
 function buildSourceVideoMetadataFromYtdlInfo(
-  info: ytdl.videoInfo,
+  info: YtdlVideoInfo,
 ): SourceVideoMetadata {
   const title = info.videoDetails.title?.trim() || "YouTube Video";
   const description = info.videoDetails.description?.trim() || "";
@@ -1488,6 +1486,7 @@ async function downloadYouTubeSourceVideo(
 
 async function getYouTubeBasicInfo(sourceUrl: string) {
   try {
+    const ytdl = await getYtdl();
     return await ytdl.getBasicInfo(sourceUrl);
   } catch (error) {
     throw new Error(normalizeYouTubeError(error, "metadata"));
@@ -1495,6 +1494,7 @@ async function getYouTubeBasicInfo(sourceUrl: string) {
 }
 
 async function getPlayableYouTubeInfo(sourceUrl: string) {
+  const ytdl = await getYtdl();
   let lastError: unknown;
 
   for (const playerClients of PLAYABLE_INFO_PLAYER_CLIENTS) {
@@ -1525,15 +1525,13 @@ async function getYouTubeJsClient() {
 }
 
 async function resolveYtDlpCommand() {
-  const localBinary = path.join(
-    /*turbopackIgnore: true*/ process.cwd(),
-    ".venv-ytdlp",
-    "bin",
-    "yt-dlp",
-  );
-  if (await pathExists(localBinary)) {
+  const configuredBinary =
+    process.env.YOUTUBE_SHORTS_YT_DLP_PATH?.trim() ||
+    process.env.YT_DLP_PATH?.trim();
+
+  if (configuredBinary) {
     return {
-      command: localBinary,
+      command: configuredBinary,
       argsPrefix: [] as string[],
     };
   }
@@ -1547,17 +1545,10 @@ async function resolveYtDlpCommand() {
 async function createYtDlpCookieContext(): Promise<YtDlpCookieContext> {
   const cookieFilePath = process.env.YOUTUBE_COOKIES_FILE?.trim();
   if (cookieFilePath) {
-    if (await pathExists(cookieFilePath)) {
-      return {
-        cookieFilePath,
-        cleanup: async () => undefined,
-      };
-    }
-
-    console.warn(
-      "[v0] YOUTUBE_COOKIES_FILE was configured but the file was not found:",
+    return {
       cookieFilePath,
-    );
+      cleanup: async () => undefined,
+    };
   }
 
   const encodedCookies = process.env.YOUTUBE_COOKIES_BASE64?.trim();
@@ -1579,14 +1570,23 @@ async function createYtDlpCookieContext(): Promise<YtDlpCookieContext> {
     };
   }
 
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "youtube-cookies-"));
+  const tempRoot = await mkdtemp(
+    path.join(/*turbopackIgnore: true*/ os.tmpdir(), "youtube-cookies-"),
+  );
   const tempCookiePath = path.join(tempRoot, "cookies.txt");
-  await writeFile(tempCookiePath, cookieContent, "utf8");
+  await writeFile(
+    /*turbopackIgnore: true*/ tempCookiePath,
+    cookieContent,
+    "utf8",
+  );
 
   return {
     cookieFilePath: tempCookiePath,
     cleanup: async () => {
-      await rm(tempRoot, { recursive: true, force: true }).catch(
+      await rm(/*turbopackIgnore: true*/ tempRoot, {
+        recursive: true,
+        force: true,
+      }).catch(
         () => undefined,
       );
     },
@@ -1631,7 +1631,7 @@ async function runYtDlp(args: string[]) {
   try {
     return await new Promise<string>((resolve, reject) => {
       const child = spawn(command, [...argsPrefix, ...cookieArgs, ...args], {
-        cwd: process.cwd(),
+        cwd: /*turbopackIgnore: true*/ process.cwd(),
         env: process.env,
       });
 
@@ -1692,6 +1692,7 @@ async function downloadYouTubeSourceVideoWithYtdl(
   outputBasePath: string,
   preferences: DownloadPreferences = {},
 ): Promise<{ engine: DownloadEngine; outputPath: string }> {
+  const ytdl = await getYtdl();
   const info = await getPlayableYouTubeInfo(sourceUrl);
   const selectedVideoFormat = pickVideoOnlyDownloadFormat(
     info.formats,
@@ -1723,13 +1724,13 @@ async function downloadYouTubeSourceVideoWithYtdl(
           ytdl.downloadFromInfo(info, {
             quality: selectedVideoFormat.itag,
           }),
-          createWriteStream(tempVideoPath),
+          createWriteStream(/*turbopackIgnore: true*/ tempVideoPath),
         ),
         pipeline(
           ytdl.downloadFromInfo(info, {
             quality: selectedAudioFormat.itag,
           }),
-          createWriteStream(tempAudioPath),
+          createWriteStream(/*turbopackIgnore: true*/ tempAudioPath),
         ),
       ]);
 
@@ -1744,7 +1745,10 @@ async function downloadYouTubeSourceVideoWithYtdl(
         outputPath,
       };
     } finally {
-      await Promise.allSettled([unlink(tempVideoPath), unlink(tempAudioPath)]);
+      await Promise.allSettled([
+        unlink(/*turbopackIgnore: true*/ tempVideoPath),
+        unlink(/*turbopackIgnore: true*/ tempAudioPath),
+      ]);
     }
   }
 
@@ -1777,7 +1781,10 @@ async function downloadYouTubeSourceVideoWithYtdl(
     quality: selectedFormat.itag,
   });
 
-  await pipeline(downloadStream, createWriteStream(outputPath));
+  await pipeline(
+    downloadStream,
+    createWriteStream(/*turbopackIgnore: true*/ outputPath),
+  );
 
   return {
     engine: "ytdl",
@@ -1815,7 +1822,7 @@ async function downloadYouTubeSourceVideoWithYtDlp(
 
   await runYtDlp(args);
 
-  const downloadedFiles = (await readdir(tempDir))
+  const downloadedFiles = (await readdir(/*turbopackIgnore: true*/ tempDir))
     .filter((file) => file.startsWith(path.basename(outputBasePath)))
     .sort();
 
@@ -1865,7 +1872,7 @@ async function downloadYouTubeSourceVideoWithYouTubeJs(
         const webStream = await innertube.download(videoId, attempt);
         await pipeline(
           Readable.fromWeb(webStream as any),
-          createWriteStream(outputPath),
+          createWriteStream(/*turbopackIgnore: true*/ outputPath),
         );
 
         return {
@@ -1905,7 +1912,7 @@ async function downloadRemoteSourceVideo(
 
   await pipeline(
     Readable.fromWeb(response.body as any),
-    createWriteStream(outputPath),
+    createWriteStream(/*turbopackIgnore: true*/ outputPath),
   );
 }
 
@@ -1920,6 +1927,7 @@ async function mergeDownloadedTracks({
 }) {
   const outputExtension = path.extname(outputPath).toLowerCase();
   const isMatroskaOutput = outputExtension === ".mkv";
+  const ffmpeg = await getFfmpeg();
 
   return new Promise<void>((resolve, reject) => {
     ffmpeg(videoPath)
@@ -1972,15 +1980,22 @@ async function renderVerticalShort({
   threadCount: number;
   onProgress?: (progress: number) => Promise<void> | void;
 }) {
-  await mkdir(path.dirname(outputPath), { recursive: true });
+  await mkdir(path.dirname(/*turbopackIgnore: true*/ outputPath), {
+    recursive: true,
+  });
   const subtitlePath = `${outputPath}.ass`;
   const subtitleScript = buildShortsAssScript({
     renderContext,
     overlayText,
   });
-  await writeFile(subtitlePath, subtitleScript, "utf8");
+  await writeFile(
+    /*turbopackIgnore: true*/ subtitlePath,
+    subtitleScript,
+    "utf8",
+  );
 
   const hwAccel = await getHardwareAcceleration();
+  const ffmpeg = await getFfmpeg();
 
   try {
     const runRenderAttempt = async ({
@@ -2118,14 +2133,18 @@ async function renderVerticalShort({
       }
 
       disableHardwareAcceleration(reason);
-      await unlink(outputPath).catch(() => undefined);
+      await unlink(/*turbopackIgnore: true*/ outputPath).catch(
+        () => undefined,
+      );
       await runRenderAttempt({
         acceleration: NO_HARDWARE_ACCELERATION,
         attemptLabel: "software",
       });
     }
   } finally {
-    await unlink(subtitlePath).catch(() => undefined);
+    await unlink(/*turbopackIgnore: true*/ subtitlePath).catch(
+      () => undefined,
+    );
   }
 }
 
@@ -2271,7 +2290,7 @@ async function uploadClipToCloudinary({
   onProgress?: (progress: number) => void;
 }) {
   getCloudinaryConfig();
-  const fileSize = (await stat(filePath)).size;
+  const fileSize = (await stat(/*turbopackIgnore: true*/ filePath)).size;
 
   const result = await new Promise<any>((resolve, reject) => {
     cloudinary.uploader.upload_chunked(
@@ -2602,7 +2621,9 @@ async function buildShortAssetsFromPreparedSource({
       emitChain = emitChain.then(() => flushCompletedClipsInOrder());
       await emitChain;
     } finally {
-      await unlink(clipPath).catch(() => undefined);
+      await unlink(/*turbopackIgnore: true*/ clipPath).catch(
+        () => undefined,
+      );
     }
   });
   await emitChain;
@@ -2670,7 +2691,10 @@ export async function prepareYouTubeShortsSource({
   await prepareShortsTempWorkspace();
 
   const tempRoot = await mkdtemp(
-    path.join(os.tmpdir(), "youtube-shorts-source-"),
+    path.join(
+      /*turbopackIgnore: true*/ os.tmpdir(),
+      "youtube-shorts-source-",
+    ),
   );
   const sourcePathBase = path.join(tempRoot, "source-video");
   const uploadFolder = `youtube-shorts/source/${new Date().toISOString().slice(0, 10)}/${Date.now()}`;
@@ -2721,7 +2745,10 @@ export async function prepareYouTubeShortsSource({
       uploadFolder,
     };
   } finally {
-    await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
+    await rm(/*turbopackIgnore: true*/ tempRoot, {
+      recursive: true,
+      force: true,
+    }).catch(() => undefined);
   }
 }
 
@@ -2734,7 +2761,7 @@ export async function downloadYouTubeSourceVideoLocally({
   await prepareShortsTempWorkspace();
 
   const tempRoot = await mkdtemp(
-    path.join(os.tmpdir(), "youtube-shorts-local-"),
+    path.join(/*turbopackIgnore: true*/ os.tmpdir(), "youtube-shorts-local-"),
   );
   const sourcePathBase = path.join(tempRoot, "source-video");
 
@@ -2743,7 +2770,7 @@ export async function downloadYouTubeSourceVideoLocally({
       normalizedSourceUrl,
       sourcePathBase,
     );
-    const fileBuffer = await readFile(outputPath);
+    const fileBuffer = await readFile(/*turbopackIgnore: true*/ outputPath);
     const extension = path.extname(outputPath) || ".mp4";
     const safeBaseName = sanitizePathPart(
       extractYouTubeVideoId(normalizedSourceUrl) ||
@@ -2764,7 +2791,10 @@ export async function downloadYouTubeSourceVideoLocally({
       downloadEngine: engine,
     };
   } finally {
-    await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
+    await rm(/*turbopackIgnore: true*/ tempRoot, {
+      recursive: true,
+      force: true,
+    }).catch(() => undefined);
   }
 }
 
@@ -2789,7 +2819,9 @@ export async function buildYouTubeShortAssets({
 }) {
   const normalizedSourceUrl = normalizeAndValidateYouTubeSourceUrl(sourceUrl);
   await prepareShortsTempWorkspace();
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "youtube-shorts-"));
+  const tempRoot = await mkdtemp(
+    path.join(/*turbopackIgnore: true*/ os.tmpdir(), "youtube-shorts-"),
+  );
   const sourcePathBase = path.join(tempRoot, "source-video");
   const uploadFolder = `${GENERATED_SHORTS_UPLOAD_ROOT}/${new Date().toISOString().slice(0, 10)}/${Date.now()}`;
 
@@ -2829,7 +2861,10 @@ export async function buildYouTubeShortAssets({
       callbacks,
     });
   } finally {
-    await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
+    await rm(/*turbopackIgnore: true*/ tempRoot, {
+      recursive: true,
+      force: true,
+    }).catch(() => undefined);
   }
 }
 
@@ -2871,7 +2906,10 @@ export async function buildUploadedVideoShortAssets({
   await prepareShortsTempWorkspace();
 
   const tempRoot = await mkdtemp(
-    path.join(os.tmpdir(), "uploaded-youtube-shorts-"),
+    path.join(
+      /*turbopackIgnore: true*/ os.tmpdir(),
+      "uploaded-youtube-shorts-",
+    ),
   );
   const extension =
     path.extname(fileName) ||
@@ -2888,7 +2926,7 @@ export async function buildUploadedVideoShortAssets({
   const uploadFolder = `${GENERATED_SHORTS_UPLOAD_ROOT}/${new Date().toISOString().slice(0, 10)}/${Date.now()}`;
 
   try {
-    await writeFile(sourcePath, fileBuffer);
+    await writeFile(/*turbopackIgnore: true*/ sourcePath, fileBuffer);
 
     const sourceTitle =
       title?.trim() ||
@@ -2917,7 +2955,10 @@ export async function buildUploadedVideoShortAssets({
       callbacks,
     });
   } finally {
-    await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
+    await rm(/*turbopackIgnore: true*/ tempRoot, {
+      recursive: true,
+      force: true,
+    }).catch(() => undefined);
   }
 }
 
@@ -2959,7 +3000,10 @@ export async function buildRemoteVideoShortAssets({
   await prepareShortsTempWorkspace();
 
   const tempRoot = await mkdtemp(
-    path.join(os.tmpdir(), "remote-youtube-shorts-"),
+    path.join(
+      /*turbopackIgnore: true*/ os.tmpdir(),
+      "remote-youtube-shorts-",
+    ),
   );
   const sourceUrlPathname = (() => {
     try {
@@ -3017,6 +3061,9 @@ export async function buildRemoteVideoShortAssets({
       callbacks,
     });
   } finally {
-    await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
+    await rm(/*turbopackIgnore: true*/ tempRoot, {
+      recursive: true,
+      force: true,
+    }).catch(() => undefined);
   }
 }
