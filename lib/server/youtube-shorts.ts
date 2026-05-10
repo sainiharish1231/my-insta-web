@@ -105,11 +105,26 @@ function getYtdl() {
 }
 
 function resolveBundledFfmpegPath() {
+  const configuredFfmpegPath =
+    process.env.FFMPEG_PATH?.trim() || process.env.FFMPEG_BIN?.trim();
+  if (configuredFfmpegPath) {
+    return configuredFfmpegPath;
+  }
+
   if (typeof ffmpegPath !== "string" || !ffmpegPath) {
     return null;
   }
 
-  return ffmpegPath.replace(/^\/ROOT\//, "/root/");
+  if (ffmpegPath.startsWith("/ROOT/")) {
+    return path.join(
+      /*turbopackIgnore: true*/ process.cwd(),
+      "node_modules",
+      "ffmpeg-static",
+      path.basename(ffmpegPath),
+    );
+  }
+
+  return ffmpegPath;
 }
 
 const resolvedFfmpegPath = resolveBundledFfmpegPath();
@@ -2897,6 +2912,97 @@ export async function buildUploadedVideoShortAssets({
     throw new Error("Uploaded video file is empty.");
   }
 
+  return buildUploadedVideoShortAssetsFromLocalSource({
+    fileName,
+    contentType,
+    durationSeconds,
+    segmentDurationSeconds,
+    overlapSeconds,
+    title,
+    description,
+    keywords,
+    renderSettings,
+    callbacks,
+    writeSourceFile: async (sourcePath) => {
+      await writeFile(/*turbopackIgnore: true*/ sourcePath, fileBuffer);
+    },
+  });
+}
+
+export async function buildUploadedVideoShortAssetsFromFile({
+  file,
+  fileName = file.name,
+  contentType = file.type,
+  durationSeconds,
+  segmentDurationSeconds = 15,
+  overlapSeconds = 5,
+  title,
+  description,
+  keywords = [],
+  renderSettings,
+  callbacks,
+}: {
+  file: File;
+  fileName?: string;
+  contentType?: string;
+  durationSeconds: number;
+  segmentDurationSeconds?: number;
+  overlapSeconds?: number;
+  title?: string;
+  description?: string;
+  keywords?: string[];
+  renderSettings?: ShortsRenderSettings;
+  callbacks?: ShortBuildCallbacks;
+}) {
+  if (file.size <= 0) {
+    throw new Error("Uploaded video file is empty.");
+  }
+
+  return buildUploadedVideoShortAssetsFromLocalSource({
+    fileName,
+    contentType,
+    durationSeconds,
+    segmentDurationSeconds,
+    overlapSeconds,
+    title,
+    description,
+    keywords,
+    renderSettings,
+    callbacks,
+    writeSourceFile: async (sourcePath) => {
+      await pipeline(
+        Readable.fromWeb(file.stream() as any),
+        createWriteStream(/*turbopackIgnore: true*/ sourcePath),
+      );
+    },
+  });
+}
+
+async function buildUploadedVideoShortAssetsFromLocalSource({
+  fileName,
+  contentType,
+  durationSeconds,
+  segmentDurationSeconds = 15,
+  overlapSeconds = 5,
+  title,
+  description,
+  keywords = [],
+  renderSettings,
+  callbacks,
+  writeSourceFile,
+}: {
+  fileName: string;
+  contentType?: string;
+  durationSeconds: number;
+  segmentDurationSeconds?: number;
+  overlapSeconds?: number;
+  title?: string;
+  description?: string;
+  keywords?: string[];
+  renderSettings?: ShortsRenderSettings;
+  callbacks?: ShortBuildCallbacks;
+  writeSourceFile: (sourcePath: string) => Promise<void>;
+}) {
   const safeDurationSeconds = Math.max(0, Math.floor(durationSeconds));
   if (safeDurationSeconds <= 0) {
     throw new Error(
@@ -2926,7 +3032,7 @@ export async function buildUploadedVideoShortAssets({
   const uploadFolder = `${GENERATED_SHORTS_UPLOAD_ROOT}/${new Date().toISOString().slice(0, 10)}/${Date.now()}`;
 
   try {
-    await writeFile(/*turbopackIgnore: true*/ sourcePath, fileBuffer);
+    await writeSourceFile(sourcePath);
 
     const sourceTitle =
       title?.trim() ||

@@ -44,7 +44,6 @@ import {
   buildYouTubeDescriptionFromSeoDraft,
   buildYouTubeTagsFromKeywords,
 } from "@/lib/bulk-video-seo";
-import { uploadMediaToBlob } from "@/lib/media-upload";
 import { processDueScheduledPosts } from "@/lib/scheduled-posts";
 import {
   fetchInstagramAccountsFromFacebook,
@@ -3443,6 +3442,11 @@ export default function YouTubeShortsPage() {
         return;
       }
 
+      if (sourceMode === "file" && !isFileSource) {
+        toast.error("Pehle video file select karke metadata ready hone do.");
+        return;
+      }
+
       if (!isFileSource && !isCloudinarySource && !normalizedSourceUrl.trim()) {
         toast.error("YouTube URL missing hai.");
         return;
@@ -3526,7 +3530,11 @@ export default function YouTubeShortsPage() {
         );
       }
       setSourceUrl(
-        isCloudinarySource ? cloudinarySourceUrl : normalizedSourceUrl,
+        isFileSource
+          ? ""
+          : isCloudinarySource
+            ? cloudinarySourceUrl
+            : normalizedSourceUrl,
       );
       let didReceiveReadyEvent = false;
 
@@ -3535,50 +3543,30 @@ export default function YouTubeShortsPage() {
         let latestVideo = sourceVideo;
         let uploadedSourceUrlForQueue = isCloudinarySource
           ? cloudinarySourceUrl
-          : uploadedSourceUrl;
+          : "";
 
-        if (isFileSource && !uploadedSourceUrlForQueue) {
-          setQueueBuildStatus("Selected file secure upload ho rahi hai...");
-          setDownloadProgress({
-            phase: "downloading",
-            percent: 0,
-            loadedBytes: 0,
-            totalBytes: null,
-            status: "Selected file secure upload start ho rahi hai...",
-          });
-
-          uploadedSourceUrlForQueue = await uploadMediaToBlob(
-            sourceFile as File,
-            (percent) => {
-              setDownloadProgress({
-                phase: percent >= 100 ? "preparing" : "downloading",
-                percent,
-                loadedBytes: 0,
-                totalBytes: null,
-                status:
-                  percent >= 100
-                    ? "Source file upload complete. Server shorts bana raha hai..."
-                    : `Selected file secure upload ho rahi hai... ${percent}%`,
-              });
-            },
-          );
-
-          setUploadedSourceUrl(uploadedSourceUrlForQueue);
-          if (activeBuildSessionRef.current) {
-            activeBuildSessionRef.current.sourceUrl =
-              uploadedSourceUrlForQueue ||
-              activeBuildSessionRef.current.sourceUrl;
-          }
+        if (isFileSource) {
           setQueueBuildStatus(
-            "Uploaded source file server par shorts me convert ho rahi hai...",
+            "Selected file local temp me render ke liye prepare ho rahi hai...",
           );
+          setDownloadProgress({
+            phase: "preparing",
+            percent: 5,
+            loadedBytes: 0,
+            totalBytes: sourceFile?.size || null,
+            status:
+              "Full video Cloudinary par upload nahi hogi. Server temp se shorts render honge...",
+          });
         }
 
         const response =
           isFileSource || isCloudinarySource
             ? await (async () => {
                 const formData = new FormData();
-                formData.append("sourceUrl", uploadedSourceUrlForQueue || "");
+                if (isFileSource && sourceFile) {
+                  formData.append("file", sourceFile);
+                }
+                formData.append("sourceUrl", uploadedSourceUrlForQueue);
                 formData.append(
                   "fileName",
                   isCloudinarySource

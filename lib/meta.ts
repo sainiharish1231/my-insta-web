@@ -386,9 +386,9 @@ function getCloudinaryConfig() {
   const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
   const uploadPreset = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET;
 
-  if (!cloudName || !uploadPreset) {
+  if (!cloudName) {
     throw new Error(
-      "Cloudinary is not configured. Add NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME and NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET to continue.",
+      "Cloudinary is not configured. Add NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME to continue.",
     );
   }
 
@@ -437,39 +437,44 @@ function getCloudinaryResourceType(file: File): "image" | "video" | "raw" {
   return "raw";
 }
 
-export async function uploadMediaAssetToCloudinary(
-  file: File,
-  options?: { folder?: string },
-): Promise<{ secureUrl: string; publicId: string; resourceType: string }> {
-  const { cloudName, uploadPreset } = getCloudinaryConfig();
-  const resourceType = getCloudinaryResourceType(file);
-  const formData = new FormData();
-  formData.append("file", file);
-  formData.append("upload_preset", uploadPreset);
-
-  if (options?.folder) {
-    formData.append("folder", options.folder);
-  }
-
-  // Cloudinary can automatically split large uploads into smaller chunks.
-  if (resourceType === "video" && file.size > 100 * 1024 * 1024) {
-    formData.append("chunk_size", "6000000");
-  }
-
-  const res = await fetch(
-    `https://api.cloudinary.com/v1_1/${cloudName}/${resourceType}/upload`,
-    {
-      method: "POST",
-      body: formData,
+async function requestCloudinarySignature(
+  params: Record<string, string | number>,
+) {
+  const response = await fetch("/api/cloudinary/sign", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
     },
-  );
+    body: JSON.stringify(params),
+  });
+  const data = await response.json().catch(() => ({}));
 
-  if (!res.ok) {
-    const errorText = await res.text();
-    throw new Error(`Cloudinary upload failed: ${errorText}`);
+  if (!response.ok) {
+    throw new Error(data.error || "Cloudinary signed upload is not configured.");
   }
 
-  const data = await res.json();
+  if (!data.apiKey || !data.signature || !data.timestamp) {
+    throw new Error("Cloudinary signature response is incomplete.");
+  }
+
+  return {
+    apiKey: String(data.apiKey),
+    signature: String(data.signature),
+    timestamp: String(data.timestamp),
+  };
+}
+
+async function parseCloudinaryUploadResponse(
+  response: Response,
+  resourceType: string,
+  errorPrefix: string,
+) {
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`${errorPrefix}: ${errorText}`);
+  }
+
+  const data = await response.json();
 
   if (!data.secure_url || !data.public_id) {
     throw new Error(
@@ -484,6 +489,141 @@ export async function uploadMediaAssetToCloudinary(
   };
 }
 
+async function uploadToSignedCloudinary({
+  cloudName,
+  file,
+  mediaUrl,
+  resourceType,
+  folder,
+}: {
+  cloudName: string;
+  file?: File;
+  mediaUrl?: string;
+  resourceType: "image" | "video" | "raw" | "auto";
+  folder?: string;
+}) {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const signatureParams: Record<string, string | number> = { timestamp };
+
+  if (folder) {
+    signatureParams.folder = folder;
+  }
+
+  const signedParams = await requestCloudinarySignature(signatureParams);
+  const formData = new FormData();
+  formData.append("file", file || mediaUrl || "");
+
+  if (folder) {
+    formData.append("folder", folder);
+  }
+
+  formData.append("timestamp", signedParams.timestamp);
+  formData.append("api_key", signedParams.apiKey);
+  formData.append("signature", signedParams.signature);
+
+  const response = await fetch(
+    `https://api.cloudinary.com/v1_1/${cloudName}/${resourceType}/upload`,
+    {
+      method: "POST",
+      body: formData,
+    },
+  );
+
+  return parseCloudinaryUploadResponse(
+    response,
+    resourceType,
+    mediaUrl
+      ? "Cloudinary signed remote upload failed"
+      : "Cloudinary signed upload failed",
+  );
+}
+
+async function uploadToUnsignedCloudinary({
+  cloudName,
+  uploadPreset,
+  file,
+  mediaUrl,
+  resourceType,
+  folder,
+}: {
+  cloudName: string;
+  uploadPreset?: string;
+  file?: File;
+  mediaUrl?: string;
+  resourceType: "image" | "video" | "raw" | "auto";
+  folder?: string;
+}) {
+  if (!uploadPreset) {
+    throw new Error(
+      "Cloudinary unsigned upload preset is not configured. Add NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET or configure CLOUDINARY_API_KEY/CLOUDINARY_API_SECRET for signed uploads.",
+    );
+  }
+
+  const formData = new FormData();
+  formData.append("file", file || mediaUrl || "");
+  formData.append("upload_preset", uploadPreset);
+
+  if (folder) {
+    formData.append("folder", folder);
+  }
+
+  const response = await fetch(
+    `https://api.cloudinary.com/v1_1/${cloudName}/${resourceType}/upload`,
+    {
+      method: "POST",
+      body: formData,
+    },
+  );
+
+  return parseCloudinaryUploadResponse(
+    response,
+    resourceType,
+    mediaUrl ? "Cloudinary remote upload failed" : "Cloudinary upload failed",
+  );
+}
+
+function isSignedCloudinarySetupError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+
+  return /signed upload is not configured|signature response is incomplete|CLOUDINARY_API_KEY|CLOUDINARY_API_SECRET/i.test(
+    message,
+  );
+}
+
+export async function uploadMediaAssetToCloudinary(
+  file: File,
+  options?: { folder?: string },
+): Promise<{ secureUrl: string; publicId: string; resourceType: string }> {
+  const { cloudName, uploadPreset } = getCloudinaryConfig();
+  const resourceType = getCloudinaryResourceType(file);
+
+  try {
+    return await uploadToSignedCloudinary({
+      cloudName,
+      file,
+      resourceType,
+      folder: options?.folder,
+    });
+  } catch (signedError) {
+    if (!isSignedCloudinarySetupError(signedError)) {
+      throw signedError;
+    }
+
+    console.warn(
+      "[v0] Signed Cloudinary upload failed, falling back to unsigned preset:",
+      signedError,
+    );
+  }
+
+  return uploadToUnsignedCloudinary({
+    cloudName,
+    uploadPreset,
+    file,
+    resourceType,
+    folder: options?.folder,
+  });
+}
+
 export async function uploadRemoteMediaToCloudinary(
   mediaUrl: string,
   options?: {
@@ -493,41 +633,32 @@ export async function uploadRemoteMediaToCloudinary(
 ): Promise<{ secureUrl: string; publicId: string; resourceType: string }> {
   const { cloudName, uploadPreset } = getCloudinaryConfig();
   const resourceType = options?.resourceType || "auto";
-  const formData = new FormData();
 
-  formData.append("file", mediaUrl);
-  formData.append("upload_preset", uploadPreset);
+  try {
+    return await uploadToSignedCloudinary({
+      cloudName,
+      mediaUrl,
+      resourceType,
+      folder: options?.folder,
+    });
+  } catch (signedError) {
+    if (!isSignedCloudinarySetupError(signedError)) {
+      throw signedError;
+    }
 
-  if (options?.folder) {
-    formData.append("folder", options.folder);
-  }
-
-  const res = await fetch(
-    `https://api.cloudinary.com/v1_1/${cloudName}/${resourceType}/upload`,
-    {
-      method: "POST",
-      body: formData,
-    },
-  );
-
-  if (!res.ok) {
-    const errorText = await res.text();
-    throw new Error(`Cloudinary remote upload failed: ${errorText}`);
-  }
-
-  const data = await res.json();
-
-  if (!data.secure_url || !data.public_id) {
-    throw new Error(
-      "Remote upload succeeded but response metadata was incomplete",
+    console.warn(
+      "[v0] Signed Cloudinary remote upload failed, falling back to unsigned preset:",
+      signedError,
     );
   }
 
-  return {
-    secureUrl: data.secure_url,
-    publicId: data.public_id,
-    resourceType: data.resource_type || resourceType,
-  };
+  return uploadToUnsignedCloudinary({
+    cloudName,
+    uploadPreset,
+    mediaUrl,
+    resourceType,
+    folder: options?.folder,
+  });
 }
 
 export async function uploadMediaToCloudinary(file: File): Promise<string> {

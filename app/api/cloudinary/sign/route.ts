@@ -8,10 +8,14 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const apiKey = process.env.CLOUDINARY_API_KEY;
+    const apiSecret = process.env.CLOUDINARY_API_SECRET;
 
-    if (!apiKey) {
+    if (!apiKey || !apiSecret) {
       return NextResponse.json(
-        { error: 'CLOUDINARY_API_KEY is not configured' },
+        {
+          error:
+            'CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET are required for signed Cloudinary uploads',
+        },
         { status: 500 }
       );
     }

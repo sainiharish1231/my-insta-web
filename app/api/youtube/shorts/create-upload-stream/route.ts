@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createShortsStreamResponse } from "../_stream";
 import {
   buildRemoteVideoShortAssets,
-  buildUploadedVideoShortAssets,
+  buildUploadedVideoShortAssetsFromFile,
 } from "@/lib/server/youtube-shorts";
 import type {
   ShortsFramingMode,
@@ -102,8 +102,8 @@ export async function POST(request: NextRequest) {
     return createShortsStreamResponse(async (emit) => {
       const data =
         file instanceof File
-          ? await buildUploadedVideoShortAssets({
-              fileBuffer: Buffer.from(await file.arrayBuffer()),
+          ? await buildUploadedVideoShortAssetsFromFile({
+              file,
               fileName: file.name,
               contentType: file.type,
               durationSeconds: parseNumber(formData.get("durationSeconds"), 0),

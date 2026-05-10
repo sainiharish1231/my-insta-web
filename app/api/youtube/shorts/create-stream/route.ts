@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createShortsStreamResponse } from "../_stream";
 import { buildYouTubeShortAssets } from "@/lib/server/youtube-shorts";
+import { extractYouTubeVideoId, normalizeYouTubeUrl } from "@/lib/youtube-shorts";
 import type {
   ShortsFramingMode,
   ShortsQualityPreset,
@@ -55,13 +56,24 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const normalizedUrl = normalizeYouTubeUrl(url);
+    if (!extractYouTubeVideoId(normalizedUrl)) {
+      return NextResponse.json(
+        {
+          error:
+            "Please enter a valid YouTube video URL. Uploaded or Cloudinary sources should use the upload stream endpoint.",
+        },
+        { status: 400 },
+      );
+    }
+
     const normalizedKeywords = Array.isArray(keywords)
       ? keywords.filter((keyword) => typeof keyword === "string")
       : [];
 
     return createShortsStreamResponse(async (emit) => {
       const data = await buildYouTubeShortAssets({
-        sourceUrl: url,
+        sourceUrl: normalizedUrl,
         segmentDurationSeconds,
         overlapSeconds,
         title: typeof title === "string" ? title : undefined,
