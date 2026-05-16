@@ -17,6 +17,8 @@ import {
   Clock,
   FolderOpen,
   Scissors,
+  Bot,
+  ImagePlus,
 } from "lucide-react";
 import { getMediaList, getMediaInsights } from "@/lib/meta";
 import {
@@ -29,6 +31,8 @@ import {
   getUpcomingScheduledPosts,
   processDueScheduledPosts,
 } from "@/lib/scheduled-posts";
+import { stopLocalAutomationForAccount } from "@/lib/local-automation-cleanup";
+import { disconnectSocialAccount } from "@/lib/social-disconnect";
 import { VideoSplitterView } from "@/components/video-splitter-view"; // added VideoSplitterView import
 
 interface InstagramProfile {
@@ -409,16 +413,39 @@ export default function Dashboard() {
     youtubeAccounts.some((a) => a.id === id)
   ).length;
 
-  const handleRemoveAccount = (
+  const handleRemoveAccount = async (
     accountId: string,
     platform: "instagram" | "youtube"
   ) => {
+    const confirmed = window.confirm(
+      "Remove this login from this browser? You can reconnect it anytime."
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      await disconnectSocialAccount(accountId);
+    } catch (disconnectError) {
+      console.warn(
+        "[v0] Server disconnect failed, clearing local session:",
+        disconnectError
+      );
+    }
+    stopLocalAutomationForAccount(accountId);
+
     if (platform === "instagram") {
       const accounts = JSON.parse(localStorage.getItem("ig_accounts") || "[]");
       const updatedAccounts = accounts.filter((a: any) => a.id !== accountId);
 
       if (updatedAccounts.length > 0) {
         localStorage.setItem("ig_accounts", JSON.stringify(updatedAccounts));
+        if (localStorage.getItem("ig_user_id") === accountId) {
+          localStorage.setItem("ig_user_id", updatedAccounts[0].id);
+        }
+        if (localStorage.getItem("primary_ig_account_id") === accountId) {
+          localStorage.setItem("primary_ig_account_id", updatedAccounts[0].id);
+        }
         setInstagramAccounts(
           updatedAccounts.map((a: any) => ({ ...a, platform: "instagram" }))
         );
@@ -427,6 +454,7 @@ export default function Dashboard() {
         localStorage.removeItem("fb_access_token");
         localStorage.removeItem("ig_user_id");
         localStorage.removeItem("fb_page_id");
+        localStorage.removeItem("primary_ig_account_id");
         setInstagramAccounts([]);
       }
     } else {
@@ -869,6 +897,24 @@ export default function Dashboard() {
           </button>
 
           <button
+            onClick={() => router.push("/text-auto-maction")}
+            className="p-6 bg-gradient-to-br from-cyan-500/20 to-emerald-500/20 hover:from-cyan-500/30 hover:to-emerald-500/30 border border-cyan-500/30 rounded-2xl transition-all group"
+          >
+            <Bot className="w-8 h-8 text-cyan-300 mb-3 group-hover:scale-110 transition-transform" />
+            <h3 className="font-semibold text-white mb-1">Text Auto</h3>
+            <p className="text-xs text-white/50">Hourly AI text drafts</p>
+          </button>
+
+          <button
+            onClick={() => router.push("/photo-with-text-auto-maction")}
+            className="p-6 bg-gradient-to-br from-pink-500/20 to-amber-500/20 hover:from-pink-500/30 hover:to-amber-500/30 border border-pink-500/30 rounded-2xl transition-all group"
+          >
+            <ImagePlus className="w-8 h-8 text-amber-300 mb-3 group-hover:scale-110 transition-transform" />
+            <h3 className="font-semibold text-white mb-1">Photo Text</h3>
+            <p className="text-xs text-white/50">AI image with headline</p>
+          </button>
+
+          <button
             onClick={() => router.push("/my-insta-id")}
             className="p-6 bg-gradient-to-br from-fuchsia-500/20 to-pink-500/20 hover:from-fuchsia-500/30 hover:to-pink-500/30 border border-fuchsia-500/30 rounded-2xl transition-all group"
           >
@@ -1051,11 +1097,14 @@ export default function Dashboard() {
                     <p className="text-sm text-white/50">Instagram Business</p>
                   </div>
                   <button
-                    onClick={() => handleRemoveAccount(account.id, "instagram")}
-                    className="p-2 text-white/40 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                    onClick={() =>
+                      void handleRemoveAccount(account.id, "instagram")
+                    }
+                    className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs text-white/45 transition-colors hover:bg-red-500/10 hover:text-red-300"
                     title="Remove account"
                   >
                     <X className="w-4 h-4" />
+                    Remove Access
                   </button>
                 </div>
                 <div className="space-y-3">
@@ -1102,11 +1151,14 @@ export default function Dashboard() {
                     <p className="text-sm text-white/50">YouTube Channel</p>
                   </div>
                   <button
-                    onClick={() => handleRemoveAccount(account.id, "youtube")}
-                    className="p-2 text-white/40 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                    onClick={() =>
+                      void handleRemoveAccount(account.id, "youtube")
+                    }
+                    className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs text-white/45 transition-colors hover:bg-red-500/10 hover:text-red-300"
                     title="Remove account"
                   >
                     <X className="w-4 h-4" />
+                    Remove Access
                   </button>
                 </div>
                 <div className="flex items-center justify-between text-sm">

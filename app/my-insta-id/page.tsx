@@ -8,10 +8,14 @@ import {
   ImageIcon,
   Instagram,
   Loader2,
+  LogOut,
   RefreshCw,
+  Trash2,
   Video,
 } from "lucide-react";
 import { getMediaList } from "@/lib/meta";
+import { stopLocalAutomationForAccount } from "@/lib/local-automation-cleanup";
+import { disconnectSocialAccount } from "@/lib/social-disconnect";
 interface InstagramAccount {
   id: string;
   username: string;
@@ -166,6 +170,83 @@ export default function MyInstaIdPage() {
     localStorage.setItem("primary_ig_account_id", accountId);
   };
 
+  const removeInstagramLogin = async (accountId: string) => {
+    const confirmed = window.confirm(
+      "Remove this Instagram login from this browser? You can reconnect it anytime.",
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      await disconnectSocialAccount(accountId);
+    } catch (disconnectError) {
+      console.warn(
+        "[v0] Server disconnect failed, clearing local Instagram session:",
+        disconnectError,
+      );
+    }
+    stopLocalAutomationForAccount(accountId);
+
+    const nextAccounts = accounts.filter((account) => account.id !== accountId);
+
+    if (nextAccounts.length === 0) {
+      localStorage.removeItem("ig_accounts");
+      localStorage.removeItem("fb_access_token");
+      localStorage.removeItem("ig_user_id");
+      localStorage.removeItem("fb_page_id");
+      localStorage.removeItem("primary_ig_account_id");
+      setAccounts([]);
+      setSelectedAccountId("");
+      setPrimaryAccountId("");
+      setMedia([]);
+      return;
+    }
+
+    const fallbackAccount = nextAccounts[0];
+    localStorage.setItem("ig_accounts", JSON.stringify(nextAccounts));
+
+    if (selectedAccountId === accountId) {
+      setSelectedAccountId(fallbackAccount.id);
+      localStorage.setItem("ig_user_id", fallbackAccount.id);
+    }
+
+    if (primaryAccountId === accountId) {
+      setPrimaryAccountId(fallbackAccount.id);
+      localStorage.setItem("primary_ig_account_id", fallbackAccount.id);
+    }
+
+    setAccounts(nextAccounts);
+  };
+
+  const logoutInstagram = async () => {
+    if (accounts.length === 0) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Logout all Instagram accounts from this browser?",
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    await Promise.allSettled(
+      accounts.map((account) => disconnectSocialAccount(account.id)),
+    );
+    accounts.forEach((account) => stopLocalAutomationForAccount(account.id));
+
+    localStorage.removeItem("ig_accounts");
+    localStorage.removeItem("fb_access_token");
+    localStorage.removeItem("ig_user_id");
+    localStorage.removeItem("fb_page_id");
+    localStorage.removeItem("primary_ig_account_id");
+    setAccounts([]);
+    setSelectedAccountId("");
+    setPrimaryAccountId("");
+    setMedia([]);
+  };
+
   return (
     <div className="min-h-screen bg-slate-950 text-white">
       <header className="sticky top-0 z-50 border-b border-white/10 bg-slate-900/80 backdrop-blur-xl">
@@ -189,16 +270,26 @@ export default function MyInstaIdPage() {
               </div>
             </div>
           </div>
-          <button
-            onClick={() => setRefreshSeed((current) => current + 1)}
-            disabled={loadingMedia}
-            className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/80 transition-colors hover:bg-white/10 disabled:opacity-50"
-          >
-            <RefreshCw
-              className={`h-4 w-4 ${loadingMedia ? "animate-spin" : ""}`}
-            />
-            Refresh
-          </button>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <button
+              onClick={() => void logoutInstagram()}
+              disabled={accounts.length === 0}
+              className="flex items-center gap-2 rounded-xl border border-red-400/20 bg-red-500/10 px-4 py-2 text-sm text-red-200 transition-colors hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <LogOut className="h-4 w-4" />
+              Logout Instagram
+            </button>
+            <button
+              onClick={() => setRefreshSeed((current) => current + 1)}
+              disabled={loadingMedia}
+              className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/80 transition-colors hover:bg-white/10 disabled:opacity-50"
+            >
+              <RefreshCw
+                className={`h-4 w-4 ${loadingMedia ? "animate-spin" : ""}`}
+              />
+              Refresh
+            </button>
+          </div>
         </div>
       </header>
 
@@ -272,7 +363,7 @@ export default function MyInstaIdPage() {
                         </div>
                       </div>
                     </button>
-                    <div className="mt-3 flex gap-2">
+                    <div className="mt-3 flex flex-wrap gap-2">
                       <button
                         onClick={() => setPrimaryAccount(account.id)}
                         className={`rounded-xl px-3 py-2 text-xs font-medium transition-colors ${
@@ -282,6 +373,13 @@ export default function MyInstaIdPage() {
                         }`}
                       >
                         {isPrimary ? "Primary Account" : "Set Primary"}
+                      </button>
+                      <button
+                        onClick={() => void removeInstagramLogin(account.id)}
+                        className="inline-flex items-center gap-1.5 rounded-xl bg-red-500/10 px-3 py-2 text-xs font-medium text-red-200 transition-colors hover:bg-red-500/20"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        Disconnect Account
                       </button>
                       {isPrimary && (
                         <button

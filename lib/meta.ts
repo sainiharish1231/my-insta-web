@@ -220,6 +220,60 @@ export async function publishFacebookPageVideo({
   return data;
 }
 
+export async function publishFacebookPageText({
+  pageId,
+  token,
+  message,
+  scheduledPublishAt,
+}: {
+  pageId?: string;
+  token?: string;
+  message: string;
+  scheduledPublishAt?: string | number | Date | null;
+}) {
+  if (!pageId) {
+    throw new Error("Connected Facebook Page ID missing hai.");
+  }
+
+  if (!token) {
+    throw new Error("Facebook Page token missing hai.");
+  }
+
+  const body: any = {
+    message,
+    access_token: token,
+  };
+
+  if (scheduledPublishAt) {
+    const timestamp = getUnixTimestampSeconds(scheduledPublishAt);
+    if (!timestamp) {
+      throw new Error("Facebook Page schedule time valid nahi hai.");
+    }
+
+    body.published = false;
+    body.scheduled_publish_time = timestamp;
+  }
+
+  const res = await fetch(`https://graph.facebook.com/v21.0/${pageId}/feed`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  const data = await res.json();
+  if (data.error) {
+    const errorMsg = data.error.message || "Unknown error";
+    const errorCode = data.error.code || "";
+    throw new Error(`Facebook Page text failed (${errorCode}): ${errorMsg}`);
+  }
+
+  if (!res.ok || !data.id) {
+    throw new Error("Facebook Page text post failed.");
+  }
+
+  return data;
+}
+
 export async function publishInstagramAndFacebookReel({
   igUserId,
   token,
