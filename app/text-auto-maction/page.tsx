@@ -19,7 +19,6 @@ import {
   Sparkles,
   Trash2,
   TrendingUp,
-  Youtube,
 } from "lucide-react";
 import {
   AUTO_PHOTO_SEED_STORAGE_KEY,
@@ -40,17 +39,7 @@ interface InstagramAccount {
   pageId?: string;
 }
 
-interface YouTubeAccount {
-  id: string;
-  name?: string;
-  username?: string;
-  thumbnail?: string;
-  accessToken?: string;
-  refreshToken?: string;
-  token?: string;
-}
-
-type PublishTargetMode = "instagram" | "facebook-youtube" | "all";
+type PublishTargetMode = "instagram" | "facebook" | "all";
 
 interface TrendIdea {
   title: string;
@@ -69,7 +58,6 @@ interface TextAutomationSettings {
   tone: string;
   accountIds: string[];
   publishTargetMode?: PublishTargetMode;
-  youtubeAccountIds?: string[];
 }
 
 interface PublishStatus {
@@ -201,29 +189,13 @@ function getVideoMimeType(hasAudio: boolean) {
   );
 }
 
-function buildYouTubeTitle(draft: AutoTextDraft) {
-  const cleanTitle = draft.hook.replace(/\s+/g, " ").trim() || draft.topic;
-  return cleanTitle.length > 92 ? `${cleanTitle.slice(0, 89)}...` : cleanTitle;
-}
-
-function buildYouTubeTags(hashtags: string[]) {
-  return hashtags
-    .map((tag) => tag.replace(/^#/, "").trim())
-    .filter(Boolean)
-    .slice(0, 15);
-}
-
 export default function TextAutoMactionPage() {
   const router = useRouter();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const musicInputRef = useRef<HTMLInputElement>(null);
   const autoRunInProgressRef = useRef(false);
   const [accounts, setAccounts] = useState<InstagramAccount[]>([]);
-  const [youtubeAccounts, setYouTubeAccounts] = useState<YouTubeAccount[]>([]);
   const [selectedAccountIds, setSelectedAccountIds] = useState<string[]>([]);
-  const [selectedYouTubeAccountIds, setSelectedYouTubeAccountIds] = useState<
-    string[]
-  >([]);
   const [drafts, setDrafts] = useState<AutoTextDraft[]>([]);
   const [topic, setTopic] = useState("trending creator growth");
   const [language, setLanguage] = useState("Hinglish");
@@ -249,10 +221,6 @@ export default function TextAutoMactionPage() {
 
   useEffect(() => {
     const storedAccounts = readJson<InstagramAccount[]>("ig_accounts", []);
-    const storedYouTubeAccounts = readJson<YouTubeAccount[]>(
-      "youtube_accounts",
-      [],
-    );
     const storedDrafts = readJson<AutoTextDraft[]>(
       AUTO_TEXT_DRAFTS_STORAGE_KEY,
       [],
@@ -263,14 +231,21 @@ export default function TextAutoMactionPage() {
     );
 
     setAccounts(storedAccounts);
-    setYouTubeAccounts(storedYouTubeAccounts);
     setDrafts(storedDrafts);
     setTopic(settings.topic || "trending creator growth");
     setLanguage(settings.language || "Hinglish");
     setTone(settings.tone || "curious, sharp, and easy to comment on");
     setIntervalHours(settings.intervalHours || 1);
     setWorkerEnabled(Boolean(settings.enabled));
-    setPublishTargetMode(settings.publishTargetMode || "instagram");
+    const savedPublishTargetMode = settings.publishTargetMode as
+      | PublishTargetMode
+      | "facebook-youtube"
+      | undefined;
+    setPublishTargetMode(
+      savedPublishTargetMode === "facebook-youtube"
+        ? "facebook"
+        : savedPublishTargetMode || "instagram",
+    );
     setNextRunAt(settings.nextRunAt);
     setLastRunAt(settings.lastRunAt);
 
@@ -280,13 +255,6 @@ export default function TextAutoMactionPage() {
       ) || [];
     setSelectedAccountIds(
       savedSelection.length > 0 ? savedSelection : [],
-    );
-    const savedYouTubeSelection =
-      settings.youtubeAccountIds?.filter((id) =>
-        storedYouTubeAccounts.some((account) => account.id === id),
-      ) || [];
-    setSelectedYouTubeAccountIds(
-      savedYouTubeSelection.length > 0 ? savedYouTubeSelection : [],
     );
   }, []);
 
@@ -301,7 +269,6 @@ export default function TextAutoMactionPage() {
       tone,
       accountIds: selectedAccountIds,
       publishTargetMode,
-      youtubeAccountIds: selectedYouTubeAccountIds,
     };
 
     localStorage.setItem(AUTO_TEXT_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
@@ -312,7 +279,6 @@ export default function TextAutoMactionPage() {
     nextRunAt,
     publishTargetMode,
     selectedAccountIds,
-    selectedYouTubeAccountIds,
     tone,
     topic,
     workerEnabled,
@@ -322,13 +288,6 @@ export default function TextAutoMactionPage() {
     () => accounts.filter((account) => selectedAccountIds.includes(account.id)),
     [accounts, selectedAccountIds],
   );
-  const selectedYouTubeAccounts = useMemo(
-    () =>
-      youtubeAccounts.filter((account) =>
-        selectedYouTubeAccountIds.includes(account.id),
-      ),
-    [selectedYouTubeAccountIds, youtubeAccounts],
-  );
   const selectedFacebookPageCount = useMemo(
     () =>
       selectedAccounts.filter((account) => account.pageId && account.token)
@@ -336,10 +295,10 @@ export default function TextAutoMactionPage() {
     [selectedAccounts],
   );
   const hasPublishTargets =
-    (publishTargetMode !== "facebook-youtube" &&
+    (publishTargetMode !== "facebook" &&
       selectedAccounts.length > 0) ||
     (publishTargetMode !== "instagram" &&
-      (selectedFacebookPageCount > 0 || selectedYouTubeAccounts.length > 0));
+      selectedFacebookPageCount > 0);
 
   const appendDraft = useCallback((draft: AutoTextDraft) => {
     setDrafts((current) => {
@@ -406,14 +365,6 @@ export default function TextAutoMactionPage() {
 
   const toggleAccount = (accountId: string) => {
     setSelectedAccountIds((current) =>
-      current.includes(accountId)
-        ? current.filter((id) => id !== accountId)
-        : [...current, accountId],
-    );
-  };
-
-  const toggleYouTubeAccount = (accountId: string) => {
-    setSelectedYouTubeAccountIds((current) =>
       current.includes(accountId)
         ? current.filter((id) => id !== accountId)
         : [...current, accountId],
@@ -687,18 +638,17 @@ export default function TextAutoMactionPage() {
   }, [musicFile, renderTextCanvas]);
 
   const publishDraft = useCallback(async (draft: AutoTextDraft) => {
-    const shouldPublishInstagram = publishTargetMode !== "facebook-youtube";
-    const shouldPublishFacebookYouTube = publishTargetMode !== "instagram";
+    const shouldPublishInstagram = publishTargetMode !== "facebook";
+    const shouldPublishFacebook = publishTargetMode !== "instagram";
     const facebookTargets = selectedAccounts.filter(
       (account) => account.pageId && account.token,
     );
     const hasAnyTarget =
       (shouldPublishInstagram && selectedAccounts.length > 0) ||
-      (shouldPublishFacebookYouTube &&
-        (facebookTargets.length > 0 || selectedYouTubeAccounts.length > 0));
+      (shouldPublishFacebook && facebookTargets.length > 0);
 
     if (!hasAnyTarget) {
-      setError("Post ke liye Instagram, Facebook Page, ya YouTube target select karo.");
+      setError("Post ke liye Instagram ya Facebook Page target select karo.");
       return false;
     }
 
@@ -712,12 +662,9 @@ export default function TextAutoMactionPage() {
         nextStatuses[`instagram-${account.id}`] = { state: "pending" };
       }
     }
-    if (shouldPublishFacebookYouTube) {
+    if (shouldPublishFacebook) {
       for (const account of facebookTargets) {
         nextStatuses[`facebook-${account.id}`] = { state: "pending" };
-      }
-      for (const account of selectedYouTubeAccounts) {
-        nextStatuses[`youtube-${account.id}`] = { state: "pending" };
       }
     }
     setPublishStatuses(nextStatuses);
@@ -749,7 +696,7 @@ export default function TextAutoMactionPage() {
         }
       }
 
-      if (shouldPublishFacebookYouTube) {
+      if (shouldPublishFacebook) {
         for (const account of facebookTargets) {
           const statusKey = `facebook-${account.id}`;
           setPublishStatuses((current) => ({
@@ -778,40 +725,11 @@ export default function TextAutoMactionPage() {
             }));
           }
         }
-
-        for (const account of selectedYouTubeAccounts) {
-          const statusKey = `youtube-${account.id}`;
-          setPublishStatuses((current) => ({
-            ...current,
-            [statusKey]: { state: "uploading" },
-          }));
-
-          try {
-            const accessToken = account.accessToken || account.token;
-            if (!accessToken) {
-              throw new Error("YouTube token missing hai. Account reconnect karo.");
-            }
-            throw new Error(
-              "YouTube direct text post support nahi karta. Photo page se video bana ke upload karo.",
-            );
-          } catch (publishError: any) {
-            setPublishStatuses((current) => ({
-              ...current,
-              [statusKey]: {
-                state: "error",
-                error: publishError?.message || "YouTube upload failed.",
-              },
-            }));
-          }
-        }
       }
 
-      if (
-        shouldPublishInstagram ||
-        (shouldPublishFacebookYouTube && selectedYouTubeAccounts.length > 0)
-      ) {
+      if (shouldPublishInstagram) {
         setWarning(
-          "Text page Cloudinary upload nahi karega. FB Page direct text post hota hai; Instagram/YouTube ke liye Make Photo use karo.",
+          "Text page Cloudinary upload nahi karega. FB Page direct text post hota hai; Instagram ke liye Make Photo use karo.",
         );
       }
 
@@ -828,7 +746,6 @@ export default function TextAutoMactionPage() {
     musicFile,
     publishTargetMode,
     selectedAccounts,
-    selectedYouTubeAccounts,
   ]);
 
   const postNow = useCallback(async () => {
@@ -847,7 +764,7 @@ export default function TextAutoMactionPage() {
 
     if (!hasPublishTargets) {
       setWorkerEnabled(false);
-      setError("Auto post ke liye Instagram, Facebook Page, ya YouTube target select karo.");
+      setError("Auto post ke liye Instagram ya Facebook Page target select karo.");
       return;
     }
 
@@ -873,8 +790,8 @@ export default function TextAutoMactionPage() {
         topic: draft.topic,
         language: draft.language,
         accountIds: selectedAccountIds,
-        publishTargetMode,
-        youtubeAccountIds: selectedYouTubeAccountIds,
+        publishTargetMode:
+          publishTargetMode === "facebook" ? "facebook-youtube" : publishTargetMode,
       }),
     );
     router.push("/photo-with-text-auto-maction");
@@ -882,7 +799,7 @@ export default function TextAutoMactionPage() {
 
   const startAutomation = () => {
     if (!hasPublishTargets) {
-      setError("Auto post ke liye Instagram, Facebook Page, ya YouTube target select karo.");
+      setError("Auto post ke liye Instagram ya Facebook Page target select karo.");
       return;
     }
 
@@ -1084,11 +1001,11 @@ export default function TextAutoMactionPage() {
                       icon: Instagram,
                     },
                     {
-                      value: "facebook-youtube",
-                      label: "FB + YouTube only",
+                      value: "facebook",
+                      label: "Facebook Page only",
                       icon: Facebook,
                     },
-                    { value: "all", label: "All targets", icon: Send },
+                    { value: "all", label: "IG + FB", icon: Send },
                   ].map((option) => {
                     const Icon = option.icon;
                     const selected = publishTargetMode === option.value;
@@ -1112,7 +1029,7 @@ export default function TextAutoMactionPage() {
                   })}
                 </div>
                 <p className="mt-2 text-xs text-white/45">
-                  FB par direct text feed post hoga. Instagram/YouTube direct text support nahi karte.
+                  FB par direct text feed post hoga. Instagram ke liye Make Photo use karo.
                 </p>
               </div>
 
@@ -1260,7 +1177,7 @@ export default function TextAutoMactionPage() {
                           {status?.state === "error"
                             ? status.error
                             : status?.state ||
-                              (publishTargetMode === "facebook-youtube"
+                              (publishTargetMode === "facebook"
                                 ? account.pageId
                                   ? "FB Page text ready, Instagram ignore hoga"
                                   : "FB Page missing"
@@ -1279,68 +1196,6 @@ export default function TextAutoMactionPage() {
                 })
               )}
 
-              {publishTargetMode !== "instagram" && (
-                <div className="pt-3">
-                  <div className="mb-2 flex items-center gap-2">
-                    <Youtube className="h-4 w-4 text-red-300" />
-                    <p className="text-xs font-medium uppercase tracking-[0.18em] text-white/45">
-                      YouTube
-                    </p>
-                  </div>
-                  {youtubeAccounts.length === 0 ? (
-                    <div className="rounded-2xl border border-dashed border-white/10 p-5 text-center text-sm text-white/50">
-                      YouTube account connect karo.
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      {youtubeAccounts.map((account) => {
-                        const selected = selectedYouTubeAccountIds.includes(
-                          account.id,
-                        );
-                        const status = publishStatuses[`youtube-${account.id}`];
-                        return (
-                          <button
-                            key={account.id}
-                            onClick={() => toggleYouTubeAccount(account.id)}
-                            className={`flex w-full items-center gap-3 rounded-2xl border p-3 text-left transition-all ${
-                              selected
-                                ? "border-red-400/40 bg-red-500/10"
-                                : "border-white/10 bg-slate-950/40 hover:border-white/20"
-                            }`}
-                          >
-                            <img
-                              src={
-                                account.thumbnail ||
-                                "/placeholder.svg?height=40&width=40&query=youtube channel"
-                              }
-                              alt={account.name || account.username || "YouTube"}
-                              className="h-10 w-10 rounded-full object-cover"
-                            />
-                            <div className="min-w-0 flex-1">
-                              <p className="truncate font-medium">
-                                {account.name || account.username || "YouTube"}
-                              </p>
-                              <p className="text-xs text-white/45">
-                                {status?.state === "error"
-                                  ? status.error
-                                  : status?.state ||
-                                    "Text card video upload ke liye use hoga."}
-                              </p>
-                            </div>
-                            {status?.state === "uploading" ? (
-                              <Loader2 className="h-5 w-5 animate-spin text-cyan-300" />
-                            ) : status?.state === "success" ? (
-                              <CheckCircle className="h-5 w-5 text-emerald-300" />
-                            ) : selected ? (
-                              <CheckCircle className="h-5 w-5 text-red-200" />
-                            ) : null}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
           </section>
 
@@ -1402,7 +1257,7 @@ export default function TextAutoMactionPage() {
               <div className="rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3 text-sm text-white/70">
                 {publishTargetMode === "instagram"
                   ? `${selectedAccounts.length} Instagram selected`
-                  : `${selectedAccounts.length} IG/FB, ${selectedYouTubeAccounts.length} YouTube selected`}
+                  : `${selectedAccounts.length} IG/FB selected`}
               </div>
             </div>
           </div>

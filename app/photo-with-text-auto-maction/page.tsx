@@ -116,9 +116,8 @@ interface TrendIdea {
 }
 
 const AUTO_PHOTO_SETTINGS_STORAGE_KEY = "auto_photo_text_maction_settings";
-const MIN_CONTEXT_WORDS = 20;
-const MAX_TOPIC_WORDS = 45;
-const MAX_HEADLINE_WORDS = 34;
+const MAX_TOPIC_WORDS = 42;
+const MAX_HEADLINE_WORDS = 12;
 const DEFAULT_VIDEO_DURATION_SECONDS = 10;
 const MAX_MUSIC_VIDEO_SECONDS = 60;
 
@@ -340,42 +339,110 @@ function limitWords(value: string, maxWords: number) {
   return words.length > maxWords ? words.slice(0, maxWords).join(" ") : value;
 }
 
+function cleanTrendContext(value = "") {
+  return value
+    .replace(/\s+/g, " ")
+    .replace(
+      /search interest is rising\s*\(([^)]+)\)\s*;\s*turn it into a quick opinion post\.?/i,
+      "search interest rising ($1) hai, isliye ise quick opinion angle banao",
+    )
+    .replace(
+      /turn this rising search into a quick opinion post\.?/i,
+      "rising search ko quick opinion angle mein convert karo",
+    )
+    .replace(
+      /turn it into a quick opinion post\.?/i,
+      "quick opinion angle banao",
+    )
+    .replace(/^use the search spike to explain:\s*/i, "")
+    .trim();
+}
+
+function removePromptLeakage(value = "", kind: "topic" | "headline") {
+  let cleanValue = value.replace(/\s+/g, " ").trim();
+  if (!cleanValue) {
+    return "";
+  }
+
+  cleanValue = cleanValue
+    .replace(/\s+isliye ye visual post\b.*$/i, "")
+    .replace(/\s+aur isi wajah se ye\b.*$/i, "")
+    .trim();
+
+  const mainContextMatch = cleanValue.match(
+    /^(.*?)\s+kyunki is(?:ka| caption ka)? main context hai\s+(.+)$/i,
+  );
+  if (mainContextMatch) {
+    const base = mainContextMatch[1].trim();
+    const context = cleanTrendContext(mainContextMatch[2]);
+    return kind === "headline"
+      ? base
+      : [base, context].filter(Boolean).join(": ");
+  }
+
+  const fillerIndex = cleanValue.search(
+    /\s+(?:jisme audience reaction|kyunki iske peeche audience reaction)\b/i,
+  );
+  if (fillerIndex > 0) {
+    return cleanValue.slice(0, fillerIndex).trim();
+  }
+
+  return cleanTrendContext(cleanValue);
+}
+
 function expandPostContext(
   value: string,
   kind: "topic" | "headline",
   context = "",
 ) {
-  const cleanValue = value.replace(/\s+/g, " ").trim();
-  if (countWords(cleanValue) >= MIN_CONTEXT_WORDS) {
-    return limitWords(
-      cleanValue,
-      kind === "topic" ? MAX_TOPIC_WORDS : MAX_HEADLINE_WORDS,
-    );
+  const cleanValue = removePromptLeakage(value, kind);
+  const maxWords = kind === "topic" ? MAX_TOPIC_WORDS : MAX_HEADLINE_WORDS;
+
+  if (kind === "headline") {
+    return limitWords(cleanValue || "Aaj ka real सवाल", maxWords);
   }
 
-  const cleanContext = context.replace(/\s+/g, " ").trim();
-  const extension =
-    cleanContext && countWords(cleanContext) >= 6
-      ? `kyunki iska main context hai ${cleanContext}`
-      : kind === "topic"
-        ? "jisme audience reaction creator angle timing social discussion practical opinion emotional hook aur shareable Instagram context clearly cover hota hai"
-        : "kyunki iske peeche audience reaction timing creator angle real opinion social media discussion aur post ka complete context clearly cover hota hai";
+  const cleanContext = removePromptLeakage(context, "topic");
+  if (!cleanValue && !cleanContext) {
+    return "viral social media update ko quick opinion post angle se frame karo";
+  }
 
-  const expanded = `${cleanValue || "viral social media update"} ${extension}`
-    .replace(/\s+/g, " ")
-    .trim();
+  if (!cleanContext) {
+    return limitWords(cleanValue, maxWords);
+  }
 
-  if (countWords(expanded) >= MIN_CONTEXT_WORDS) {
-    return limitWords(
-      expanded,
-      kind === "topic" ? MAX_TOPIC_WORDS : MAX_HEADLINE_WORDS,
-    );
+  const lowerValue = cleanValue.toLowerCase();
+  const lowerContext = cleanContext.toLowerCase();
+  if (lowerValue && lowerContext.includes(lowerValue)) {
+    return limitWords(cleanContext, maxWords);
   }
 
   return limitWords(
-    `${expanded} isliye ye visual post audience ko rukkar padhne aur apna opinion share karne ka clear reason deta hai`,
-    kind === "topic" ? MAX_TOPIC_WORDS : MAX_HEADLINE_WORDS,
+    `${cleanValue || "viral social media update"}: ${cleanContext}`
+      .replace(/\s+/g, " ")
+      .trim(),
+    maxWords,
   );
+}
+
+function buildOpinionCta(value: string) {
+  const cleanValue = removePromptLeakage(value, "headline");
+  const shortTopic = limitWords(cleanValue || "is topic", 5);
+  return `Aapka ${shortTopic} par real take kya hai?`;
+}
+
+function buildTrendCaptionContext(title: string, angle = "") {
+  const cleanTitle = removePromptLeakage(title, "headline");
+  const cleanAngle = cleanTrendContext(angle);
+  return [
+    cleanTitle ? `${cleanTitle} par public reaction fast move kar raha hai.` : "",
+    cleanAngle,
+    "Post ka angle simple rakho: kya ye issue sach me important hai ya sirf trend timing ka effect hai?",
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function getVideoMimeType(hasAudio: boolean) {
@@ -792,11 +859,10 @@ export default function PhotoWithTextAutoMactionPage() {
         requestCaption || requestCta,
       );
       const headlineBase =
-        overrides.headline || (headlineIsCustom ? headline : requestTopic);
+        overrides.headline || (headlineIsCustom ? headline : overrides.topic || topic);
       const requestHeadline = expandPostContext(
         headlineBase,
         "headline",
-        `${requestTopic} ${requestCaption || requestCta}`,
       );
       const requestAspect = overrides.aspect || aspect;
       const requestBackgroundPrompt =
@@ -898,7 +964,7 @@ export default function PhotoWithTextAutoMactionPage() {
       if (trends[0]?.title) {
         setTopic(expandPostContext(trends[0].title, "topic", trends[0].angle));
         setHeadline(
-          expandPostContext(trends[0].title, "headline", trends[0].angle),
+          expandPostContext(trends[0].title, "headline"),
         );
         setHeadlineIsCustom(false);
         setBackgroundPrompt("");
@@ -972,20 +1038,14 @@ export default function PhotoWithTextAutoMactionPage() {
     setTopic((current) => {
       const expandedTopic = expandPostContext(current, "topic", caption || cta);
       if (!headlineIsCustom) {
-        setHeadline(
-          expandPostContext(
-            expandedTopic,
-            "headline",
-            `${caption || ""} ${cta || ""}`,
-          ),
-        );
+        setHeadline(expandPostContext(current, "headline"));
       }
       return expandedTopic;
     });
   };
 
   const completeHeadlineMinimum = () => {
-    setHeadline((current) => expandPostContext(current, "headline", topic));
+    setHeadline((current) => expandPostContext(current, "headline"));
   };
 
   const handleMusicUpload = (file?: File) => {
@@ -1381,12 +1441,16 @@ export default function PhotoWithTextAutoMactionPage() {
       const trendHeadline = expandPostContext(
         trends[0]?.title || headline,
         "headline",
-        trendTopic,
       );
-      const trendAngle = trends[0]?.angle || cta;
+      const trendCaption = buildTrendCaptionContext(
+        trends[0]?.title || topic,
+        trends[0]?.angle,
+      );
+      const trendCta = buildOpinionCta(trends[0]?.title || topic);
       const draft = await generatePhotoPost(true, {
         backgroundPrompt: "",
-        cta: trendAngle,
+        caption: trendCaption || caption,
+        cta: trendCta,
         headline: trendHeadline,
         topic: trendTopic,
       });
@@ -1565,7 +1629,7 @@ export default function PhotoWithTextAutoMactionPage() {
                   className="mt-2 h-28 w-full resize-none rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 text-sm text-white outline-none ring-amber-400/40 transition focus:border-amber-300/50 focus:ring-2"
                 />
                 <span className="mt-1 block text-xs text-white/40">
-                  {countWords(topic)}/{MIN_CONTEXT_WORDS} words minimum
+                  {countWords(topic)}/{MAX_TOPIC_WORDS} words. Trend context yahan clean brief banega.
                 </span>
               </label>
 
@@ -1762,9 +1826,10 @@ export default function PhotoWithTextAutoMactionPage() {
                             expandPostContext(
                               idea.title,
                               "headline",
-                              idea.angle,
                             ),
                           );
+                          setCaption(buildTrendCaptionContext(idea.title, idea.angle));
+                          setCta(buildOpinionCta(idea.title));
                           setHeadlineIsCustom(false);
                           setBackgroundPrompt("");
                           setBackgroundPromptIsCustom(false);
@@ -1808,7 +1873,7 @@ export default function PhotoWithTextAutoMactionPage() {
                   className="mt-2 h-28 w-full resize-none rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 text-sm text-white outline-none ring-cyan-400/40 transition focus:border-cyan-300/50 focus:ring-2"
                 />
                 <span className="mt-1 block text-xs text-white/40">
-                  {countWords(headline)}/{MIN_CONTEXT_WORDS} words minimum
+                  {countWords(headline)}/{MAX_HEADLINE_WORDS} words. Short overlay headline best rahega.
                 </span>
               </label>
 

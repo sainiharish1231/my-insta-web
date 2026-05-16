@@ -127,12 +127,13 @@ export function createFallbackPhotoDraft({
     tone,
     accountIds,
   });
+  const shortTopic = textDraft.topic.split(/\s+/).slice(0, 6).join(" ");
 
   return {
     ...textDraft,
     id: createAutoMactionId("photo"),
-    hook: `${textDraft.topic} par ek line jo rukne pe majboor kare`,
-    caption: `${textDraft.caption}\n\nSave this for your next post idea.`,
+    hook: `${shortTopic} par asli sawaal kya hai?`,
+    caption: `${textDraft.caption}\n\nAapka real take kya hai?`,
     backgroundPrompt: buildPhotoBackgroundPrompt({
       topic: textDraft.topic,
       headline: textDraft.hook,
@@ -158,9 +159,14 @@ export function buildPhotoBackgroundPrompt({
   const cleanCaption = caption?.replace(/\s+/g, " ").trim();
 
   const parts = [
-    `${cleanStyle} for a social media text post about ${cleanTopic}.`,
-    headline?.trim() ? `Visual mood should support this headline: ${headline.trim()}.` : "",
-    cleanCaption ? `Caption context: ${cleanCaption.slice(0, 240)}.` : "",
+    `${cleanStyle} for a social media opinion post about ${cleanTopic}.`,
+    cleanCaption
+      ? `Use this caption context to choose concrete visual elements: ${cleanCaption.slice(0, 260)}.`
+      : "",
+    headline?.trim()
+      ? `The visual mood should support a short bold opinion headline without drawing any words.`
+      : "",
+    "Use realistic editorial objects, people silhouettes when appropriate, phones, news-room lighting, symbolic colors, and a clear focal scene tied to the topic.",
     "No readable text, no logos, no watermark.",
     "Leave clean space near the center for a bold overlay text block.",
     "High contrast, modern, realistic, scroll-stopping composition.",
