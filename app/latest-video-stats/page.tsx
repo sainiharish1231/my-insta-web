@@ -15,8 +15,14 @@ import {
   Play,
   Calendar,
   MessageCircle,
+  Facebook,
 } from "lucide-react";
-import { getMediaInsights, getMediaList } from "@/lib/meta";
+import {
+  getFacebookPageLatestVideo,
+  getFacebookPageProfile,
+  getMediaInsights,
+  getMediaList,
+} from "@/lib/meta";
 
 interface InstagramAccount {
   id: string;
@@ -24,6 +30,7 @@ interface InstagramAccount {
   profile_picture_url?: string;
   followers_count?: number;
   token?: string;
+  pageId?: string;
 }
 
 interface InstagramMediaItem {
@@ -53,7 +60,7 @@ interface AccountVideoStat {
   id: string;
   accountId: string;
   accountName: string;
-  platform: "instagram" | "youtube";
+  platform: "instagram" | "facebook" | "youtube";
   accountImage?: string;
   title: string;
   caption?: string;
@@ -65,6 +72,12 @@ interface AccountVideoStat {
   mediaType?: string;
   error?: string;
   mediaUrl?: string;
+}
+
+interface FacebookPageAccount {
+  id: string;
+  token?: string;
+  instagramAccountId: string;
 }
 
 function formatDate(value?: string) {
@@ -213,16 +226,108 @@ export default function LatestVideoStatsPage() {
       const ytAccounts = JSON.parse(
         localStorage.getItem("youtube_accounts") || "[]",
       ) as YouTubeAccount[];
+      const facebookPages = Array.from(
+        new Map(
+          igAccounts
+            .filter((account) => account.pageId)
+            .map((account) => [
+              account.pageId as string,
+              {
+                id: account.pageId as string,
+                token: account.token,
+                instagramAccountId: account.id,
+              } satisfies FacebookPageAccount,
+            ]),
+        ).values(),
+      );
 
-      if (igAccounts.length === 0 && ytAccounts.length === 0) {
+      if (
+        igAccounts.length === 0 &&
+        ytAccounts.length === 0 &&
+        facebookPages.length === 0
+      ) {
         setError(
-          "No connected accounts found. Please connect Instagram or YouTube accounts first.",
+          "No connected accounts found. Please connect Instagram, Facebook, or YouTube accounts first.",
         );
         setStats([]);
         return;
       }
 
       const nextStats: AccountVideoStat[] = [];
+
+      // Facebook Pages are connected through Instagram Business accounts.
+      // Deduplicate by Page ID because one Page can be linked to more than one
+      // connected Instagram account.
+      for (const page of facebookPages) {
+        if (!page.token) {
+          nextStats.push({
+            id: `facebook-${page.id}`,
+            accountId: page.id,
+            accountName: "Facebook Page",
+            platform: "facebook",
+            title: "Account not connected",
+            views: "N/A",
+            likes: "N/A",
+            error:
+              "Facebook Page token missing. Reconnect the Instagram/Facebook account.",
+          });
+          continue;
+        }
+
+        try {
+          const [profile, latestVideo] = await Promise.all([
+            getFacebookPageProfile(page.id, page.token),
+            getFacebookPageLatestVideo(page.id, page.token),
+          ]);
+
+          if (!latestVideo) {
+            nextStats.push({
+              id: `facebook-${page.id}`,
+              accountId: page.id,
+              accountName: profile.name || "Facebook Page",
+              platform: "facebook",
+              accountImage: profile.picture_url,
+              title: "No videos found",
+              views: "N/A",
+              likes: "N/A",
+              error: "No recent video found for this Facebook Page.",
+            });
+            continue;
+          }
+
+          nextStats.push({
+            id: latestVideo.id,
+            accountId: page.id,
+            accountName: profile.name || "Facebook Page",
+            platform: "facebook",
+            accountImage: profile.picture_url,
+            title:
+              latestVideo.description ||
+              latestVideo.message ||
+              "Latest Facebook Video",
+            thumbnail: latestVideo.thumbnail_url,
+            publishedAt: latestVideo.created_time,
+            views: latestVideo.views ?? "N/A",
+            likes: latestVideo.likes ?? "N/A",
+            comments: latestVideo.comments ?? "N/A",
+            mediaType: "VIDEO",
+          });
+        } catch (accountError: any) {
+          console.error(`Error processing Facebook Page ${page.id}:`, accountError);
+          nextStats.push({
+            id: `facebook-${page.id}`,
+            accountId: page.id,
+            accountName: "Facebook Page",
+            platform: "facebook",
+            title: "Failed to load",
+            views: "N/A",
+            likes: "N/A",
+            error:
+              accountError?.message ||
+              "Could not load Facebook Page stats. Check Page permissions.",
+          });
+        }
+      }
 
       // Process Instagram accounts
       for (const account of igAccounts) {
@@ -545,8 +650,8 @@ export default function LatestVideoStatsPage() {
               No accounts connected
             </p>
             <p className="mt-2 text-sm text-white/50">
-              Connect Instagram or YouTube accounts to see their latest video
-              stats.
+              Connect Instagram, Facebook Page, or YouTube accounts to see
+              their latest video stats.
             </p>
             <button
               onClick={() => router.push("/dashboard")}
@@ -586,6 +691,8 @@ export default function LatestVideoStatsPage() {
                         <div className="absolute -bottom-0.5 -right-0.5 rounded-full bg-slate-900 p-0.5">
                           {item.platform === "instagram" ? (
                             <Instagram className="h-3 w-3 text-pink-400" />
+                          ) : item.platform === "facebook" ? (
+                            <Facebook className="h-3 w-3 text-blue-400" />
                           ) : (
                             <Youtube className="h-3 w-3 text-red-400" />
                           )}

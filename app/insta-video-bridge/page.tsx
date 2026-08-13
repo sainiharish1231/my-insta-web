@@ -58,7 +58,7 @@ interface TargetAccount {
   accessToken?: string;
   refreshToken?: string;
   selected: boolean;
-  status: "idle" | "uploading" | "success" | "error";
+  status: "idle" | "uploading" | "success" | "partial" | "error";
   error?: string;
 }
 
@@ -286,6 +286,8 @@ export default function InstaVideoBridgePage() {
       return;
     }
 
+    const sourceMediaUrl = latestVideo.media_url;
+
     setPublishing(true);
     setError("");
     setTargets((current) =>
@@ -298,96 +300,127 @@ export default function InstaVideoBridgePage() {
 
     try {
       const uploadedAsset = await uploadRemoteMediaToCloudinary(
-        latestVideo.media_url,
+        sourceMediaUrl,
         {
           folder: `reposts/${new Date().toISOString().slice(0, 10)}`,
           resourceType: "video",
         }
       );
+      await Promise.allSettled(
+        selectedTargets.map(async (target) => {
+          setTargets((current) =>
+            current.map((item) =>
+              item.id === target.id && item.platform === target.platform
+                ? { ...item, status: "uploading", error: undefined }
+                : item,
+            ),
+          );
 
-      for (const target of selectedTargets) {
-        setTargets((current) =>
-          current.map((item) =>
-            item.id === target.id && item.platform === target.platform
-              ? { ...item, status: "uploading", error: undefined }
-              : item
-          )
-        );
+          try {
+            if (target.platform === "instagram") {
+              if (!target.token) {
+                throw new Error("Instagram token missing.");
+              }
 
-        try {
-          if (target.platform === "instagram") {
-            if (!target.token) {
-              throw new Error("Instagram token missing.");
-            }
+              const publishWithMediaUrl = (mediaUrl: string) =>
+                publishInstagramAndFacebookReel({
+                  igUserId: target.id,
+                  token: target.token,
+                  pageId: target.pageId,
+                  // Keep the original Instagram CDN asset for Instagram
+                  // publishing; only FB/YT use the hosted copy.
+                  mediaUrl,
+                  caption,
+                  facebookMediaUrl: uploadedAsset.secureUrl,
+                });
 
-            const publishResult = await publishInstagramAndFacebookReel({
-              igUserId: target.id,
-              token: target.token,
-              pageId: target.pageId,
-              mediaUrl: uploadedAsset.secureUrl,
-              caption,
-            });
+              const publishResult = await publishWithMediaUrl(
+                sourceMediaUrl,
+              ).catch(async (directPublishError: any) => {
+                const directErrorMessage = directPublishError?.message || "";
+                if (!directErrorMessage.startsWith("Media creation failed")) {
+                  throw directPublishError;
+                }
 
-            if (publishResult.facebookError) {
-              throw new Error(
-                `Instagram post ho gaya, lekin connected FB Page fail hua: ${publishResult.facebookError}`,
+                console.warn(
+                  "[v0] Original Instagram media URL was rejected; retrying with hosted copy.",
+                );
+                return publishWithMediaUrl(uploadedAsset.secureUrl);
+              });
+
+              if (publishResult.facebookError) {
+                setTargets((current) =>
+                  current.map((item) =>
+                    item.id === target.id && item.platform === target.platform
+                      ? {
+                          ...item,
+                          status: "partial",
+                          error: `Instagram post ho gaya, lekin connected FB Page fail hua: ${publishResult.facebookError}`,
+                        }
+                      : item,
+                  ),
+                );
+                return;
+              }
+            } else {
+              if (!target.accessToken) {
+                throw new Error("YouTube access token missing.");
+              }
+
+              const youtubeTags = buildYouTubeTags(caption);
+              const youtubeDescription = buildYouTubeDescription(
+                caption,
+                youtubeTags,
               );
-            }
-          } else {
-            if (!target.accessToken) {
-              throw new Error("YouTube access token missing.");
+
+              const response = await fetch("/api/youtube/upload", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  accessToken: target.accessToken,
+                  refreshToken: target.refreshToken,
+                  videoUrl: uploadedAsset.secureUrl,
+                  title: caption.substring(0, 100) || "Instagram repost video",
+                  description: youtubeDescription,
+                  keywords: youtubeTags,
+                  privacy: "public",
+                  isShort: false,
+                }),
+              });
+
+              const result = await response.json();
+              if (!response.ok) {
+                throw new Error(result.error || "YouTube upload failed");
+              }
             }
 
-            const youtubeTags = buildYouTubeTags(caption);
-            const youtubeDescription = buildYouTubeDescription(caption, youtubeTags);
-
-            const response = await fetch("/api/youtube/upload", {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                accessToken: target.accessToken,
-                refreshToken: target.refreshToken,
-                videoUrl: uploadedAsset.secureUrl,
-                title: caption.substring(0, 100) || "Instagram repost video",
-                description: youtubeDescription,
-                keywords: youtubeTags,
-                privacy: "public",
-                isShort: false,
-              }),
-            });
-
-            const result = await response.json();
-            if (!response.ok) {
-              throw new Error(result.error || "YouTube upload failed");
-            }
+            setTargets((current) =>
+              current.map((item) =>
+                item.id === target.id && item.platform === target.platform
+                  ? { ...item, status: "success", error: undefined }
+                  : item,
+              ),
+            );
+          } catch (targetError: any) {
+            setTargets((current) =>
+              current.map((item) =>
+                item.id === target.id && item.platform === target.platform
+                  ? {
+                      ...item,
+                      status: "error",
+                      error: getFriendlyPublishError(
+                        targetError?.message || "Publishing failed",
+                        target.platform,
+                      ),
+                    }
+                  : item,
+              ),
+            );
           }
-
-          setTargets((current) =>
-            current.map((item) =>
-              item.id === target.id && item.platform === target.platform
-                ? { ...item, status: "success", error: undefined }
-                : item
-            )
-          );
-        } catch (targetError: any) {
-          setTargets((current) =>
-            current.map((item) =>
-              item.id === target.id && item.platform === target.platform
-                ? {
-                    ...item,
-                    status: "error",
-                    error: getFriendlyPublishError(
-                      targetError?.message || "Publishing failed",
-                      target.platform
-                    ),
-                  }
-                : item
-            )
-          );
-        }
-      }
+        }),
+      );
     } catch (publishError: any) {
       console.error("[v0] Bridge publish failed:", publishError);
       setError(publishError?.message || "Publishing failed");
@@ -608,6 +641,11 @@ export default function InstaVideoBridgePage() {
                             {target.status === "error" && (
                               <p className="text-xs text-red-300">Failed</p>
                             )}
+                            {target.status === "partial" && (
+                              <p className="text-xs text-amber-300">
+                                Instagram done / FB failed
+                              </p>
+                            )}
                           </div>
                         </div>
                         {target.error && (
@@ -643,11 +681,18 @@ export default function InstaVideoBridgePage() {
 
                 <div className="mt-4 space-y-2 text-sm text-white/55">
                   <p>1. Primary Insta latest reel/video pick hota hai.</p>
-                  <p>2. Video Cloudinary par ek baar upload hota hai.</p>
-                  <p>3. Wahi asset selected Instagram aur YouTube accounts me publish hota hai.</p>
+                  <p>
+                    2. Instagram ko original Graph media URL milta hai; FB/YT ke liye hosted copy use hoti hai.
+                  </p>
+                  <p>
+                    3. Sabhi selected accounts parallel publish hote hain; connected Facebook Page bhi saath upload hota hai.
+                  </p>
                 </div>
 
-                {targets.some((target) => target.status === "success") && (
+                {targets.some(
+                  (target) =>
+                    target.status === "success" || target.status === "partial",
+                ) && (
                   <div className="mt-5 flex items-start gap-3 rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-4 text-emerald-200">
                     <CheckCircle2 className="mt-0.5 h-5 w-5 flex-shrink-0" />
                     <p className="text-sm">

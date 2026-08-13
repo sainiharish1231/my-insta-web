@@ -3,6 +3,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState, useCallback } from "react";
 import {
   Instagram,
+  Facebook,
   Youtube,
   Upload,
   LogOut,
@@ -20,7 +21,12 @@ import {
   Bot,
   ImagePlus,
 } from "lucide-react";
-import { getMediaList, getMediaInsights } from "@/lib/meta";
+import {
+  getFacebookPageLatestVideo,
+  getFacebookPageProfile,
+  getMediaList,
+  getMediaInsights,
+} from "@/lib/meta";
 import {
   fetchInstagramAccountsFromFacebook,
   mergeInstagramAccounts,
@@ -49,6 +55,8 @@ interface InstagramAccount {
   profile_picture_url?: string;
   followers_count?: number;
   platform: "instagram";
+  token?: string;
+  pageId?: string;
 }
 
 interface YouTubeAccount {
@@ -59,6 +67,16 @@ interface YouTubeAccount {
   accessToken: string;
   refreshToken: string;
   platform: "youtube";
+}
+
+interface FacebookPageAccount {
+  id: string;
+  name: string;
+  picture_url?: string;
+  lastVideoTitle?: string;
+  lastVideoViews?: number | string;
+  lastVideoPublishedAt?: string;
+  error?: string;
 }
 
 type SocialAccount = InstagramAccount | YouTubeAccount;
@@ -78,6 +96,7 @@ export default function Dashboard() {
     InstagramAccount[]
   >([]);
   const [youtubeAccounts, setYoutubeAccounts] = useState<YouTubeAccount[]>([]);
+  const [facebookPages, setFacebookPages] = useState<FacebookPageAccount[]>([]);
   const [selectedAccounts, setSelectedAccounts] = useState<string[]>([]);
   const [accountDropdownOpen, setAccountDropdownOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<"all" | "instagram" | "youtube">(
@@ -94,6 +113,57 @@ export default function Dashboard() {
   const [showScheduled, setShowScheduled] = useState(false);
   const [showVideoSplitter, setShowVideoSplitter] = useState(false); // added state for splitter
   const [lastVideoViews, setLastVideoViews] = useState<Record<string, number>>({}); // Track views for each account
+
+  const loadFacebookPages = useCallback(async (accounts: InstagramAccount[]) => {
+    const pageSources = Array.from(
+      new Map(
+        accounts
+          .filter((account) => account.pageId)
+          .map((account) => [account.pageId as string, account]),
+      ).values(),
+    );
+
+    const pages = await Promise.all(
+      pageSources.map(async (account): Promise<FacebookPageAccount> => {
+        const pageId = account.pageId as string;
+        if (!account.token) {
+          return {
+            id: pageId,
+            name: "Facebook Page",
+            error: "Page token missing. Reconnect this account.",
+          };
+        }
+
+        try {
+          const [profile, latestVideo] = await Promise.all([
+            getFacebookPageProfile(pageId, account.token),
+            getFacebookPageLatestVideo(pageId, account.token),
+          ]);
+
+          return {
+            id: pageId,
+            name: profile.name || "Facebook Page",
+            picture_url: profile.picture_url,
+            lastVideoTitle:
+              latestVideo?.description ||
+              latestVideo?.message ||
+              (latestVideo ? "Latest Facebook Video" : "No videos found"),
+            lastVideoViews: latestVideo?.views ?? "N/A",
+            lastVideoPublishedAt: latestVideo?.created_time,
+          };
+        } catch (pageError: any) {
+          return {
+            id: pageId,
+            name: "Facebook Page",
+            error:
+              pageError?.message || "Could not load Facebook Page analytics.",
+          };
+        }
+      }),
+    );
+
+    setFacebookPages(pages);
+  }, []);
 
   const loadInstagramAccounts = useCallback(async (token: string) => {
     try {
@@ -124,6 +194,7 @@ export default function Dashboard() {
       if (storedAccounts.length > 0) {
         setInstagramAccounts(storedAccounts);
         applyDefaultSelection(storedAccounts);
+        void loadFacebookPages(storedAccounts);
       }
 
       const syncedAccounts = await fetchInstagramAccountsFromFacebook(token);
@@ -145,10 +216,11 @@ export default function Dashboard() {
       );
       setInstagramAccounts(mergedAccounts);
       applyDefaultSelection(mergedAccounts);
+      void loadFacebookPages(mergedAccounts);
     } catch (err) {
       console.error("[v0] Error loading Instagram accounts:", err);
     }
-  }, []);
+  }, [loadFacebookPages]);
 
   const loadYouTubeAccounts = useCallback(() => {
     const stored = localStorage.getItem("youtube_accounts");
@@ -449,6 +521,12 @@ export default function Dashboard() {
         setInstagramAccounts(
           updatedAccounts.map((a: any) => ({ ...a, platform: "instagram" }))
         );
+        void loadFacebookPages(
+          updatedAccounts.map((a: any) => ({
+            ...a,
+            platform: "instagram" as const,
+          })),
+        );
       } else {
         localStorage.removeItem("ig_accounts");
         localStorage.removeItem("fb_access_token");
@@ -456,6 +534,7 @@ export default function Dashboard() {
         localStorage.removeItem("fb_page_id");
         localStorage.removeItem("primary_ig_account_id");
         setInstagramAccounts([]);
+        setFacebookPages([]);
       }
     } else {
       const accounts = JSON.parse(
@@ -1168,6 +1247,47 @@ export default function Dashboard() {
                       account.subscriberCount || "0"
                     ).toLocaleString()}
                   </span>
+                </div>
+              </div>
+            ))}
+            {facebookPages.map((page) => (
+              <div
+                key={`facebook-${page.id}`}
+                className="bg-slate-900/50 backdrop-blur-sm rounded-2xl p-5 border border-white/10 hover:border-blue-500/30 transition-colors"
+              >
+                <div className="flex items-center gap-4 mb-4">
+                  <div className="relative">
+                    <img
+                      src={
+                        page.picture_url ||
+                        "/placeholder.svg?height=56&width=56&query=facebook page"
+                      }
+                      alt={page.name}
+                      className="w-14 h-14 rounded-full object-cover"
+                    />
+                    <div className="absolute -bottom-1 -right-1 w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center border-2 border-slate-900">
+                      <Facebook className="w-3 h-3 text-white" />
+                    </div>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-semibold text-white truncate">
+                      {page.name}
+                    </p>
+                    <p className="text-sm text-white/50">Facebook Page</p>
+                  </div>
+                </div>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-white/40">Last Video Views</span>
+                    <span className="font-semibold text-blue-400">
+                      {typeof page.lastVideoViews === "number"
+                        ? page.lastVideoViews.toLocaleString()
+                        : page.lastVideoViews || "N/A"}
+                    </span>
+                  </div>
+                  <p className="border-t border-white/10 pt-3 text-xs text-white/45 line-clamp-2">
+                    {page.error || page.lastVideoTitle || "No video data"}
+                  </p>
                 </div>
               </div>
             ))}

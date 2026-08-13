@@ -113,6 +113,7 @@ export async function createMedia({
 
   if (isReel) {
     body.video_url = mediaUrl;
+    body.share_to_feed = true;
     if (coverUrl) {
       body.cover_url = coverUrl;
     }
@@ -282,6 +283,7 @@ export async function publishInstagramAndFacebookReel({
   caption,
   coverUrl,
   publishTime,
+  facebookMediaUrl,
 }: {
   igUserId: string;
   token?: string;
@@ -290,6 +292,7 @@ export async function publishInstagramAndFacebookReel({
   caption: string;
   coverUrl?: string;
   publishTime?: string | number | Date | null;
+  facebookMediaUrl?: string;
 }) {
   if (!token) {
     throw new Error("Instagram token missing hai.");
@@ -305,27 +308,34 @@ export async function publishInstagramAndFacebookReel({
     publishTime,
   });
 
-  const instagram = await publishMedia({
+  let facebookError: string | null = null;
+  const instagramPromise = publishMedia({
     igUserId,
     token,
     creationId,
   });
-
-  let facebookError: string | null = null;
-  if (pageId) {
-    try {
-      await publishFacebookPageVideo({
+  const facebookPromise = pageId
+    ? publishFacebookPageVideo({
         pageId,
         token,
-        mediaUrl,
+        mediaUrl: facebookMediaUrl || mediaUrl,
         caption,
         scheduledPublishAt: publishTime,
-      });
-    } catch (error: any) {
-      facebookError = error?.message || "Facebook Page video upload failed.";
-      console.warn("[v0] Connected Facebook Page publish failed:", error);
-    }
-  }
+      })
+        .then(() => null)
+        .catch((error: any) => {
+          const message =
+            error?.message || "Facebook Page video upload failed.";
+          console.warn("[v0] Connected Facebook Page publish failed:", error);
+          return message;
+        })
+    : Promise.resolve(null);
+
+  const [instagram, resolvedFacebookError] = await Promise.all([
+    instagramPromise,
+    facebookPromise,
+  ]);
+  facebookError = resolvedFacebookError;
 
   return {
     creationId,
@@ -434,6 +444,170 @@ export async function getMediaList(igUserId: string, token: string) {
   }
 
   return data.data || [];
+}
+
+export interface FacebookPageProfile {
+  id: string;
+  name?: string;
+  picture_url?: string;
+}
+
+export interface FacebookPageVideo {
+  id: string;
+  description?: string;
+  message?: string;
+  created_time?: string;
+  permalink_url?: string;
+  thumbnail_url?: string;
+  views?: number;
+  likes?: number;
+  comments?: number;
+}
+
+async function getFacebookGraphJson(path: string, token: string) {
+  const separator = path.includes("?") ? "&" : "?";
+  const response = await fetch(
+    `https://graph.facebook.com/v24.0/${path}${separator}access_token=${encodeURIComponent(token)}`,
+  );
+  const data = await response.json();
+
+  if (data?.error) {
+    throw new Error(data.error.message || "Facebook Graph API request failed.");
+  }
+
+  if (!response.ok) {
+    throw new Error("Facebook Graph API request failed.");
+  }
+
+  return data;
+}
+
+export async function getFacebookPageProfile(
+  pageId: string,
+  token: string,
+): Promise<FacebookPageProfile> {
+  if (!pageId || !token) {
+    throw new Error("Facebook Page ID or token missing hai.");
+  }
+
+  let data;
+  try {
+    data = await getFacebookGraphJson(
+      `${pageId}?fields=id,name,picture{url}`,
+      token,
+    );
+  } catch (error) {
+    console.warn("[v0] Facebook Page picture unavailable, retrying profile:", error);
+    data = await getFacebookGraphJson(`${pageId}?fields=id,name`, token);
+  }
+
+  return {
+    id: data.id || pageId,
+    name: typeof data.name === "string" ? data.name : undefined,
+    picture_url:
+      typeof data.picture?.data?.url === "string"
+        ? data.picture.data.url
+        : undefined,
+  };
+}
+
+function getFacebookSummaryCount(value: unknown) {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const summary = (value as { summary?: { total_count?: unknown } }).summary;
+  return getNumericMetricValue(summary?.total_count);
+}
+
+function getFacebookThumbnail(video: any) {
+  if (typeof video?.picture === "string") {
+    return video.picture;
+  }
+
+  const thumbnails = Array.isArray(video?.thumbnails?.data)
+    ? video.thumbnails.data
+    : [];
+  return thumbnails.find((item: any) => typeof item?.uri === "string")?.uri;
+}
+
+export async function getFacebookPageLatestVideo(
+  pageId: string,
+  token: string,
+): Promise<FacebookPageVideo | null> {
+  if (!pageId || !token) {
+    throw new Error("Facebook Page ID or token missing hai.");
+  }
+
+  const fullFields =
+    "id,description,message,created_time,permalink_url,picture,thumbnails,views";
+  let data;
+
+  try {
+    data = await getFacebookGraphJson(
+      `${pageId}/videos?fields=${encodeURIComponent(fullFields)}&limit=10`,
+      token,
+    );
+  } catch (error) {
+    // Some Page tokens/API versions do not expose the views field on the edge.
+    // Retry the list without it so the latest video can still be displayed.
+    console.warn("[v0] Facebook video views field unavailable, retrying list:", error);
+    const basicFields =
+      "id,description,message,created_time,permalink_url,picture,thumbnails";
+    try {
+      data = await getFacebookGraphJson(
+        `${pageId}/videos?fields=${encodeURIComponent(basicFields)}&limit=10`,
+        token,
+      );
+    } catch (basicError) {
+      console.warn(
+        "[v0] Facebook video metadata fields unavailable, retrying minimal list:",
+        basicError,
+      );
+      data = await getFacebookGraphJson(
+        `${pageId}/videos?fields=id,created_time&limit=10`,
+        token,
+      );
+    }
+  }
+
+  const videos = Array.isArray(data?.data) ? data.data : [];
+  if (videos.length === 0) {
+    return null;
+  }
+
+  const latest = [...videos].sort(
+    (a, b) =>
+      new Date(b.created_time || 0).getTime() -
+      new Date(a.created_time || 0).getTime(),
+  )[0];
+
+  let details = latest;
+  try {
+    details = await getFacebookGraphJson(
+      `${latest.id}?fields=views,likes.limit(0).summary(true),comments.limit(0).summary(true)`,
+      token,
+    );
+  } catch (error) {
+    console.warn("[v0] Facebook latest video detail metrics unavailable:", error);
+  }
+
+  return {
+    id: latest.id,
+    description:
+      typeof latest.description === "string" ? latest.description : undefined,
+    message: typeof latest.message === "string" ? latest.message : undefined,
+    created_time:
+      typeof latest.created_time === "string" ? latest.created_time : undefined,
+    permalink_url:
+      typeof latest.permalink_url === "string"
+        ? latest.permalink_url
+        : undefined,
+    thumbnail_url: getFacebookThumbnail(latest),
+    views: getNumericMetricValue(details?.views),
+    likes: getFacebookSummaryCount(details?.likes),
+    comments: getFacebookSummaryCount(details?.comments),
+  };
 }
 
 function getCloudinaryConfig() {
