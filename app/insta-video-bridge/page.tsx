@@ -163,6 +163,36 @@ function buildYouTubeDescription(baseCaption: string, tags: string[]) {
   return `${cleanCaption}\n\n${hashtagLine}`.trim();
 }
 
+function buildYouTubeTitle(baseCaption: string) {
+  const titleCandidate =
+    baseCaption
+      .split(/\r?\n/)
+      .map((line) => line.replace(/#[^\s#]+/g, " ").replace(/\s+/g, " ").trim())
+      .find(Boolean) || "Instagram video";
+
+  return titleCandidate.substring(0, 100).trim() || "Instagram video";
+}
+
+function shouldPublishAsYouTubeShort(
+  mediaType: string,
+  asset: { duration?: number; width?: number; height?: number },
+) {
+  if (typeof asset.duration === "number" && asset.duration > 180) {
+    return false;
+  }
+
+  if (
+    typeof asset.width === "number" &&
+    typeof asset.height === "number"
+  ) {
+    return asset.height >= asset.width;
+  }
+
+  // Instagram marks Reel media as REELS. If Cloudinary did not return
+  // dimensions, keep the source classification as the safest fallback.
+  return mediaType === "REELS";
+}
+
 export default function InstaVideoBridgePage() {
   const router = useRouter();
   const [primaryAccount, setPrimaryAccount] = useState<InstagramAccount | null>(null);
@@ -404,7 +434,11 @@ export default function InstaVideoBridgePage() {
                 throw new Error("YouTube access token missing.");
               }
 
-              const youtubeTags = buildYouTubeTags(caption);
+              const isYouTubeShort = shouldPublishAsYouTubeShort(
+                latestVideo.media_type,
+                uploadedAsset,
+              );
+              const youtubeTags = buildYouTubeTags(caption).slice(0, 15);
               const youtubeDescription = buildYouTubeDescription(
                 caption,
                 youtubeTags,
@@ -418,12 +452,15 @@ export default function InstaVideoBridgePage() {
                 body: JSON.stringify({
                   accessToken: target.accessToken,
                   refreshToken: target.refreshToken,
-                  videoUrl: uploadedAsset.secureUrl,
-                  title: caption.substring(0, 100) || "Instagram repost video",
+                  // Use the same normalized H.264/AAC MP4 that is sent to
+                  // Instagram so YouTube receives a stable, web-compatible
+                  // source instead of a possible HEVC/MOV original.
+                  videoUrl: hostedInstagramMediaUrl,
+                  title: buildYouTubeTitle(caption),
                   description: youtubeDescription,
                   keywords: youtubeTags,
                   privacy: "public",
-                  isShort: false,
+                  isShort: isYouTubeShort,
                 }),
               });
 
