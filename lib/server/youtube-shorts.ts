@@ -1953,7 +1953,7 @@ async function mergeDownloadedTracks({
         ...(isMatroskaOutput ? [] : ["-b:a 192k", "-movflags +faststart"]),
       ])
       .on("end", () => resolve())
-      .on("error", (error) => reject(error))
+      .on("error", (error: Error) => reject(error))
       .save(outputPath);
   });
 }
@@ -2078,10 +2078,10 @@ async function renderVerticalShort({
             "-ar 48000",
             "-ac 2",
           ])
-          .on("start", (value) => {
+          .on("start", (value: string) => {
             commandLine = value;
           })
-          .on("stderr", (line) => {
+          .on("stderr", (line: string) => {
             const normalizedLine = line.trim();
             if (!normalizedLine) {
               return;
@@ -2092,7 +2092,7 @@ async function renderVerticalShort({
               stderrLines.shift();
             }
           })
-          .on("progress", (progress) => {
+          .on("progress", (progress: { timemark?: string }) => {
             const timemarkSeconds = parseFfmpegTimemarkToSeconds(
               progress.timemark,
             );
@@ -2109,7 +2109,7 @@ async function renderVerticalShort({
             void onProgress?.(normalizedProgress);
           })
           .on("end", () => resolve())
-          .on("error", (error) => {
+          .on("error", (error: Error) => {
             const failureSummary = summarizeFfmpegFailure(stderrLines);
             const stderrTail = stderrLines.slice(-20).join("\n");
             const rawErrorMessage = failureSummary

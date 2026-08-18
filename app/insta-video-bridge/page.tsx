@@ -193,6 +193,33 @@ function shouldPublishAsYouTubeShort(
   return mediaType === "REELS";
 }
 
+function persistYouTubeAccessToken(accountId: string, accessToken?: string) {
+  if (!accessToken) {
+    return;
+  }
+
+  try {
+    const storedAccounts = JSON.parse(
+      localStorage.getItem("youtube_accounts") || "[]",
+    );
+    if (!Array.isArray(storedAccounts)) {
+      return;
+    }
+
+    const updatedAccounts = storedAccounts.map((account) =>
+      account?.id === accountId
+        ? { ...account, accessToken, token: accessToken }
+        : account,
+    );
+    localStorage.setItem("youtube_accounts", JSON.stringify(updatedAccounts));
+  } catch (persistError) {
+    console.warn(
+      `[v0] Could not persist refreshed YouTube token for ${accountId}:`,
+      persistError,
+    );
+  }
+}
+
 export default function InstaVideoBridgePage() {
   const router = useRouter();
   const [primaryAccount, setPrimaryAccount] = useState<InstagramAccount | null>(null);
@@ -388,11 +415,11 @@ export default function InstaVideoBridgePage() {
                   igUserId: target.id,
                   token: target.token,
                   pageId: target.pageId,
-                  // Instagram gets a public, normalized copy that satisfies
-                  // Graph API processing requirements; source is fallback.
+                  // All Meta destinations get the same public, normalized
+                  // copy so codec and quality processing stay consistent.
                   mediaUrl,
                   caption,
-                  facebookMediaUrl: uploadedAsset.secureUrl,
+                  facebookMediaUrl: hostedInstagramMediaUrl,
                 });
 
               const publishResult = await publishWithMediaUrl(
@@ -468,6 +495,18 @@ export default function InstaVideoBridgePage() {
               if (!response.ok) {
                 throw new Error(result.error || "YouTube upload failed");
               }
+
+              persistYouTubeAccessToken(target.id, result.accessToken);
+              setTargets((current) =>
+                current.map((item) =>
+                  item.id === target.id && item.platform === target.platform
+                    ? {
+                        ...item,
+                        accessToken: result.accessToken || item.accessToken,
+                      }
+                    : item,
+                ),
+              );
             }
 
             setTargets((current) =>
