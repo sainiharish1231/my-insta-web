@@ -15,6 +15,7 @@ import {
   Youtube,
 } from "lucide-react";
 import {
+  buildInstagramReadyCloudinaryVideoUrl,
   getMediaList,
   publishInstagramAndFacebookReel,
   uploadRemoteMediaToCloudinary,
@@ -86,6 +87,15 @@ function getFriendlyPublishError(
   message: string,
   platform: "instagram" | "youtube"
 ) {
+  if (
+    platform === "instagram" &&
+    (message.includes("2207076") ||
+      message.includes("Media upload has failed") ||
+      message.includes("could not process this video"))
+  ) {
+    return "Instagram ne video processing reject ki. Web ab H.264/AAC MP4 fallback try karta hai; agar phir bhi fail ho to video 3 sec–15 min, max 1920px width aur 1GB ke andar rakho.";
+  }
+
   if (
     platform === "instagram" &&
     message.includes(
@@ -306,6 +316,9 @@ export default function InstaVideoBridgePage() {
           resourceType: "video",
         }
       );
+      const hostedInstagramMediaUrl =
+        buildInstagramReadyCloudinaryVideoUrl(uploadedAsset.publicId) ||
+        uploadedAsset.secureUrl;
       await Promise.allSettled(
         selectedTargets.map(async (target) => {
           setTargets((current) =>
@@ -338,14 +351,20 @@ export default function InstaVideoBridgePage() {
                 sourceMediaUrl,
               ).catch(async (directPublishError: any) => {
                 const directErrorMessage = directPublishError?.message || "";
-                if (!directErrorMessage.startsWith("Media creation failed")) {
+                const shouldRetryWithHostedVideo =
+                  directErrorMessage.startsWith("Media creation failed") ||
+                  directErrorMessage.includes("2207076") ||
+                  directErrorMessage.includes("Media upload has failed") ||
+                  directErrorMessage.includes("could not process this video");
+
+                if (!shouldRetryWithHostedVideo) {
                   throw directPublishError;
                 }
 
                 console.warn(
-                  "[v0] Original Instagram media URL was rejected; retrying with hosted copy.",
+                  "[v0] Instagram media processing failed; retrying with H.264/AAC hosted copy.",
                 );
-                return publishWithMediaUrl(uploadedAsset.secureUrl);
+                return publishWithMediaUrl(hostedInstagramMediaUrl);
               });
 
               if (publishResult.facebookError) {

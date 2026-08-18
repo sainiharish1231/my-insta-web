@@ -635,7 +635,7 @@ export function buildInstagramReadyCloudinaryVideoUrl(publicId: string) {
     .map((part) => encodeURIComponent(part))
     .join("/");
 
-  return `https://res.cloudinary.com/${cloudName}/video/upload/f_mp4,q_auto:best,so_0/${encodedPublicId}.mp4`;
+  return `https://res.cloudinary.com/${cloudName}/video/upload/f_mp4,vc_h264,ac_aac,q_auto:best,c_limit,w_1080,h_1920,so_0/${encodedPublicId}.mp4`;
 }
 
 export function buildCloudinaryVideoDownloadUrl(publicId: string) {
