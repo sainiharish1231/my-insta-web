@@ -635,7 +635,7 @@ export function buildInstagramReadyCloudinaryVideoUrl(publicId: string) {
     .map((part) => encodeURIComponent(part))
     .join("/");
 
-  return `https://res.cloudinary.com/${cloudName}/video/upload/f_mp4,vc_h264,ac_aac,q_auto:best,c_limit,w_1080,h_1920,so_0/${encodedPublicId}.mp4`;
+  return `https://res.cloudinary.com/${cloudName}/video/upload/f_mp4,vc_h264:high,ac_aac,af_48000,q_auto:best,c_limit,w_1080,h_1920,so_0/${encodedPublicId}.mp4`;
 }
 
 export function buildCloudinaryVideoDownloadUrl(publicId: string) {
@@ -714,7 +714,24 @@ async function parseCloudinaryUploadResponse(
     secureUrl: data.secure_url,
     publicId: data.public_id,
     resourceType: data.resource_type || resourceType,
+    bytes: typeof data.bytes === "number" ? data.bytes : undefined,
+    duration: typeof data.duration === "number" ? data.duration : undefined,
+    width: typeof data.width === "number" ? data.width : undefined,
+    height: typeof data.height === "number" ? data.height : undefined,
+    frameRate:
+      typeof data.frame_rate === "number" ? data.frame_rate : undefined,
   };
+}
+
+export interface CloudinaryMediaAsset {
+  secureUrl: string;
+  publicId: string;
+  resourceType: string;
+  bytes?: number;
+  duration?: number;
+  width?: number;
+  height?: number;
+  frameRate?: number;
 }
 
 async function uploadToSignedCloudinary({
@@ -821,7 +838,7 @@ function isSignedCloudinarySetupError(error: unknown) {
 export async function uploadMediaAssetToCloudinary(
   file: File,
   options?: { folder?: string },
-): Promise<{ secureUrl: string; publicId: string; resourceType: string }> {
+): Promise<CloudinaryMediaAsset> {
   const { cloudName, uploadPreset } = getCloudinaryConfig();
   const resourceType = getCloudinaryResourceType(file);
 
@@ -858,7 +875,7 @@ export async function uploadRemoteMediaToCloudinary(
     folder?: string;
     resourceType?: "image" | "video" | "raw" | "auto";
   },
-): Promise<{ secureUrl: string; publicId: string; resourceType: string }> {
+): Promise<CloudinaryMediaAsset> {
   const { cloudName, uploadPreset } = getCloudinaryConfig();
   const resourceType = options?.resourceType || "auto";
 

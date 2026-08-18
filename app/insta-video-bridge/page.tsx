@@ -316,6 +316,24 @@ export default function InstaVideoBridgePage() {
           resourceType: "video",
         }
       );
+      if (
+        typeof uploadedAsset.duration === "number" &&
+        (uploadedAsset.duration < 3 || uploadedAsset.duration > 900)
+      ) {
+        throw new Error(
+          `Instagram Reel duration ${uploadedAsset.duration.toFixed(1)}s hai. API ke liye video 3 seconds se 15 minutes ke beech hona chahiye.`,
+        );
+      }
+
+      if (
+        typeof uploadedAsset.bytes === "number" &&
+        uploadedAsset.bytes > 1024 * 1024 * 1024
+      ) {
+        throw new Error(
+          "Instagram Reel file 1GB se badi hai. Chhota/compressed video upload karo.",
+        );
+      }
+
       const hostedInstagramMediaUrl =
         buildInstagramReadyCloudinaryVideoUrl(uploadedAsset.publicId) ||
         uploadedAsset.secureUrl;
@@ -340,31 +358,31 @@ export default function InstaVideoBridgePage() {
                   igUserId: target.id,
                   token: target.token,
                   pageId: target.pageId,
-                  // Keep the original Instagram CDN asset for Instagram
-                  // publishing; only FB/YT use the hosted copy.
+                  // Instagram gets a public, normalized copy that satisfies
+                  // Graph API processing requirements; source is fallback.
                   mediaUrl,
                   caption,
                   facebookMediaUrl: uploadedAsset.secureUrl,
                 });
 
               const publishResult = await publishWithMediaUrl(
-                sourceMediaUrl,
-              ).catch(async (directPublishError: any) => {
-                const directErrorMessage = directPublishError?.message || "";
-                const shouldRetryWithHostedVideo =
-                  directErrorMessage.startsWith("Media creation failed") ||
-                  directErrorMessage.includes("2207076") ||
-                  directErrorMessage.includes("Media upload has failed") ||
-                  directErrorMessage.includes("could not process this video");
+                hostedInstagramMediaUrl,
+              ).catch(async (hostedPublishError: any) => {
+                const hostedErrorMessage = hostedPublishError?.message || "";
+                const shouldRetryWithSourceVideo =
+                  hostedErrorMessage.startsWith("Media creation failed") ||
+                  hostedErrorMessage.includes("2207076") ||
+                  hostedErrorMessage.includes("Media upload has failed") ||
+                  hostedErrorMessage.includes("could not process this video");
 
-                if (!shouldRetryWithHostedVideo) {
-                  throw directPublishError;
+                if (!shouldRetryWithSourceVideo) {
+                  throw hostedPublishError;
                 }
 
                 console.warn(
-                  "[v0] Instagram media processing failed; retrying with H.264/AAC hosted copy.",
+                  "[v0] Normalized Instagram media processing failed; retrying with original source URL.",
                 );
-                return publishWithMediaUrl(hostedInstagramMediaUrl);
+                return publishWithMediaUrl(sourceMediaUrl);
               });
 
               if (publishResult.facebookError) {
@@ -701,7 +719,7 @@ export default function InstaVideoBridgePage() {
                 <div className="mt-4 space-y-2 text-sm text-white/55">
                   <p>1. Primary Insta latest reel/video pick hota hai.</p>
                   <p>
-                    2. Instagram ko original Graph media URL milta hai; FB/YT ke liye hosted copy use hoti hai.
+                    2. Instagram ke liye H.264/AAC hosted copy use hoti hai; original Graph URL fallback hai.
                   </p>
                   <p>
                     3. Sabhi selected accounts parallel publish hote hain; connected Facebook Page bhi saath upload hota hai.
