@@ -42,11 +42,15 @@ export async function POST(request: NextRequest) {
   const igUserId = typeof body.accountId === "string" ? body.accountId.trim() : "";
   const keyword = typeof body.keyword === "string" ? body.keyword.trim().slice(0, 60) : "";
   const reply = typeof body.reply === "string" ? body.reply.trim() : "";
+  const dmReply = typeof body.dmReply === "string" ? body.dmReply.trim() : "";
   const matchType = body.matchType === "exact" ? "exact" : "contains";
   const triggerType = body.triggerType === "reel_comment" ? "reel_comment" : "dm";
   if (!igUserId || !keyword || !reply) return NextResponse.json({ error: "Account, keyword aur reply required hain." }, { status: 400 });
   if (reply.length > 900 || Buffer.byteLength(reply, "utf8") > 1000) {
     return NextResponse.json({ error: "Reply 1,000 UTF-8 bytes se chhota rakho." }, { status: 400 });
+  }
+  if (dmReply.length > 900 || Buffer.byteLength(dmReply, "utf8") > 1000) {
+    return NextResponse.json({ error: "DM reply 1,000 UTF-8 bytes se chhota rakho." }, { status: 400 });
   }
   try {
     const accounts = await listInstagramAutomationAccounts(ownerKey);
@@ -59,6 +63,7 @@ export async function POST(request: NextRequest) {
       triggerType,
       keyword,
       reply,
+      dmReply,
       matchType,
       enabled: typeof body.enabled === "boolean" ? body.enabled : true,
     });

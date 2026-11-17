@@ -100,6 +100,7 @@ export async function listInstagramAutomations(ownerKey: string, igUserId: strin
     matchType: row.matchType,
     enabled: row.enabled,
     triggerType: row.triggerType || "dm",
+    dmReply: row.dmReply || "",
   }));
 }
 
@@ -108,6 +109,7 @@ export async function saveInstagramAutomation(ownerKey: string, input: {
   igUserId: string;
   keyword: string;
   reply: string;
+  dmReply?: string;
   matchType: "contains" | "exact";
   enabled: boolean;
   triggerType?: "dm" | "reel_comment";
@@ -130,6 +132,7 @@ export async function saveInstagramAutomation(ownerKey: string, input: {
     keyword: input.keyword,
     normalizedKeyword: input.keyword.trim().toLocaleLowerCase(),
     reply: input.reply,
+    dmReply: input.dmReply || "",
     matchType: input.matchType,
     enabled: input.enabled,
     updatedAt: new Date(),
@@ -241,6 +244,18 @@ async function replyToInstagramComment(commentId: string, token: string, message
   if (!response.ok || data.error) throw new Error(data.error?.message || "Instagram comment reply failed.");
 }
 
+async function sendPrivateReplyToInstagramComment(pageId: string, commentId: string, token: string, message: string) {
+  const url = new URL(`https://graph.facebook.com/${GRAPH_VERSION}/${pageId}/messages`);
+  url.searchParams.set("access_token", token);
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ recipient: { comment_id: commentId }, message: { text: message } }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.error) throw new Error(data.error?.message || "Instagram private reply failed.");
+}
+
 export async function processRecentInstagramReelComments() {
   const db = await getDb();
   const accounts = await db.collection("instagram_automation_accounts").find({}).toArray();
@@ -308,7 +323,12 @@ export async function processRecentInstagramReelComments() {
               continue;
             }
             await replyToInstagramComment(commentId, token, match.reply);
-            await events.updateOne({ messageId: `comment:${commentId}` }, { $set: { status: "replied", automationId: match._id, repliedAt: new Date() } });
+            let dmRepliedAt: Date | undefined;
+            if (typeof match.dmReply === "string" && match.dmReply.trim()) {
+              await sendPrivateReplyToInstagramComment(account.pageId, commentId, token, match.dmReply.trim());
+              dmRepliedAt = new Date();
+            }
+            await events.updateOne({ messageId: `comment:${commentId}` }, { $set: { status: "replied", automationId: match._id, repliedAt: new Date(), ...(dmRepliedAt ? { dmRepliedAt } : {}) } });
             processed += 1;
           } catch (error: any) {
             await events.updateOne({ messageId: `comment:${commentId}` }, { $set: { status: "error", error: String(error?.message || "Comment reply failed").slice(0, 500), failedAt: new Date() } });
