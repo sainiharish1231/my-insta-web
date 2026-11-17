@@ -2,7 +2,6 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CircularProgress, Stack, Typography, Alert, Box } from "@mui/material";
-import { clearPkceCodeVerifier, getPkceCodeVerifier } from "@/lib/pkce-storage";
 import {
   fetchInstagramAccountsFromFacebook,
   mergeInstagramAccounts,
@@ -40,31 +39,12 @@ export default function AuthCallback() {
     async function exchangeCodeForToken() {
       try {
         setStatus("Exchanging authorization code for access token...");
-        console.log("[v0] Exchanging code for token with PKCE");
-
-        const { codeVerifier, source } = getPkceCodeVerifier();
-        const fbAppId = process.env.NEXT_PUBLIC_FACEBOOK_APP_ID;
-
-        console.log("[v0] PKCE verifier source:", source);
-
-        if (!codeVerifier) {
-          throw new Error(
-            "PKCE code verifier not found. Please try logging in again."
-          );
-        }
-
-        if (!fbAppId) {
-          throw new Error("Facebook App ID not configured");
-        }
-
         const redirectUri = `${window.location.origin}/auth/callback`;
-
-        // Exchange code for access token using PKCE
-        const tokenUrl = `https://graph.facebook.com/v27.0/oauth/access_token?client_id=${fbAppId}&redirect_uri=${encodeURIComponent(
-          redirectUri
-        )}&code=${code}&code_verifier=${codeVerifier}`;
-
-        const tokenRes = await fetch(tokenUrl);
+        const tokenRes = await fetch("/api/auth/instagram", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code, redirectUri }),
+        });
         const tokenData = await tokenRes.json();
 
         console.log(
@@ -83,9 +63,6 @@ export default function AuthCallback() {
         }
 
         const accessToken = tokenData.access_token;
-
-        // Clear the code verifier from all storage locations
-        clearPkceCodeVerifier();
 
         setStatus("Fetching Instagram accounts...");
         console.log("[v0] Fetching Instagram accounts");

@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { runDueInstagramScheduledPosts } from "@/lib/server/instagram-scheduled-posts";
+import { processRecentInstagramReelComments } from "@/lib/server/instagram-automation";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -19,7 +20,8 @@ export async function GET(request: NextRequest) {
 
   try {
     const results = await runDueInstagramScheduledPosts(3);
-    return NextResponse.json({ processed: results.length, results });
+    const commentResults = await processRecentInstagramReelComments();
+    return NextResponse.json({ processed: results.length, results, commentResults });
   } catch (error: any) {
     console.error("[instagram-scheduler] Cron run failed:", error);
     return NextResponse.json({ error: "Instagram scheduler run failed." }, { status: 500 });

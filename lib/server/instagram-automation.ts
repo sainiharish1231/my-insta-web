@@ -83,10 +83,13 @@ export async function listInstagramAutomationAccounts(ownerKey: string) {
     .toArray();
 }
 
-export async function listInstagramAutomations(ownerKey: string, igUserId: string) {
+export async function listInstagramAutomations(ownerKey: string, igUserId: string, triggerType: "dm" | "reel_comment" = "dm") {
   const db = await getDb();
+  const triggerFilter = triggerType === "dm"
+    ? { $or: [{ triggerType: "dm" }, { triggerType: { $exists: false } }] }
+    : { triggerType };
   const rows = await db.collection("instagram_dm_automations")
-    .find({ ownerKeyHash: instagramAutomationOwnerHash(ownerKey), igUserId })
+    .find({ ownerKeyHash: instagramAutomationOwnerHash(ownerKey), igUserId, ...triggerFilter })
     .sort({ createdAt: -1 })
     .limit(20)
     .toArray();
@@ -96,6 +99,7 @@ export async function listInstagramAutomations(ownerKey: string, igUserId: strin
     reply: row.reply,
     matchType: row.matchType,
     enabled: row.enabled,
+    triggerType: row.triggerType || "dm",
   }));
 }
 
@@ -106,6 +110,7 @@ export async function saveInstagramAutomation(ownerKey: string, input: {
   reply: string;
   matchType: "contains" | "exact";
   enabled: boolean;
+  triggerType?: "dm" | "reel_comment";
 }) {
   const db = await getDb();
   const ownerKeyHash = instagramAutomationOwnerHash(ownerKey);
@@ -121,6 +126,7 @@ export async function saveInstagramAutomation(ownerKey: string, input: {
   const values = {
     ownerKeyHash,
     igUserId: input.igUserId,
+    triggerType: input.triggerType || "dm",
     keyword: input.keyword,
     normalizedKeyword: input.keyword.trim().toLocaleLowerCase(),
     reply: input.reply,
@@ -214,4 +220,115 @@ export async function processInstagramMessageWebhook(payload: any) {
       }
     }
   }
+}
+
+async function fetchGraphJson(url: URL) {
+  const response = await fetch(url, { cache: "no-store" });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.error) throw new Error(data.error?.message || "Instagram Graph API request failed.");
+  return data;
+}
+
+async function replyToInstagramComment(commentId: string, token: string, message: string) {
+  const url = new URL(`https://graph.facebook.com/${GRAPH_VERSION}/${commentId}/replies`);
+  url.searchParams.set("access_token", token);
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.error) throw new Error(data.error?.message || "Instagram comment reply failed.");
+}
+
+export async function processRecentInstagramReelComments() {
+  const db = await getDb();
+  const accounts = await db.collection("instagram_automation_accounts").find({}).toArray();
+  const rules = db.collection("instagram_dm_automations");
+  const cursors = db.collection("instagram_reel_comment_cursors");
+  const events = db.collection("instagram_dm_events");
+  await events.createIndex({ messageId: 1 }, { unique: true, sparse: true });
+  const results: Array<{ igUserId: string; processed: number; error?: string }> = [];
+
+  for (const account of accounts as any[]) {
+    const cursor = await cursors.findOne({ igUserId: account.igUserId });
+    if (!cursor) {
+      await cursors.insertOne({ igUserId: account.igUserId, lastScannedAt: new Date(), createdAt: new Date() });
+      results.push({ igUserId: account.igUserId, processed: 0 });
+      continue;
+    }
+
+    const lastScannedAt = new Date(cursor.lastScannedAt);
+    let processed = 0;
+    try {
+      const token = decryptToken(account.accessToken);
+      const mediaUrl = new URL(`https://graph.facebook.com/${GRAPH_VERSION}/${account.igUserId}/media`);
+      mediaUrl.searchParams.set("fields", "id,media_type,media_product_type,timestamp");
+      mediaUrl.searchParams.set("limit", "100");
+      mediaUrl.searchParams.set("access_token", token);
+      const mediaData = await fetchGraphJson(mediaUrl);
+      const reels = (mediaData.data || []).filter((media: any) => media.media_product_type === "REELS").slice(0, 25);
+      const enabledRules = await rules.find({
+        igUserId: account.igUserId,
+        ownerKeyHash: account.ownerKeyHash,
+        triggerType: "reel_comment",
+        enabled: true,
+      }).sort({ createdAt: 1 }).toArray();
+
+      for (const reel of reels) {
+        const commentsUrl = new URL(`https://graph.facebook.com/${GRAPH_VERSION}/${reel.id}/comments`);
+        commentsUrl.searchParams.set("fields", "id,text,timestamp,from{id,username}");
+        commentsUrl.searchParams.set("limit", "100");
+        commentsUrl.searchParams.set("access_token", token);
+        let nextCommentsUrl: URL | null = commentsUrl;
+        while (nextCommentsUrl) {
+          const commentsData = await fetchGraphJson(nextCommentsUrl);
+          for (const comment of commentsData.data || []) {
+          const commentId = String(comment.id || "");
+          const text = String(comment.text || "").trim();
+          const createdAt = comment.timestamp ? new Date(comment.timestamp) : new Date(0);
+          if (!commentId || !text || Number.isNaN(createdAt.getTime()) || createdAt <= lastScannedAt) continue;
+          if (String(comment.from?.id || "") === String(account.igUserId)) continue;
+
+          try {
+            await events.insertOne({ messageId: `comment:${commentId}`, igUserId: account.igUserId, status: "processing", createdAt: new Date() });
+          } catch (error: any) {
+            if (error?.code === 11000) continue;
+            throw error;
+          }
+
+          try {
+            const normalizedText = text.normalize("NFKC").toLocaleLowerCase();
+            const match: any = enabledRules.find((rule: any) => {
+              const keyword = rule.normalizedKeyword || String(rule.keyword || "").normalize("NFKC").toLocaleLowerCase();
+              return rule.matchType === "exact" ? normalizedText === keyword : normalizedText.includes(keyword);
+            });
+            if (!match) {
+              await events.updateOne({ messageId: `comment:${commentId}` }, { $set: { status: "ignored", reason: "no_keyword_match" } });
+              continue;
+            }
+            await replyToInstagramComment(commentId, token, match.reply);
+            await events.updateOne({ messageId: `comment:${commentId}` }, { $set: { status: "replied", automationId: match._id, repliedAt: new Date() } });
+            processed += 1;
+          } catch (error: any) {
+            await events.updateOne({ messageId: `comment:${commentId}` }, { $set: { status: "error", error: String(error?.message || "Comment reply failed").slice(0, 500), failedAt: new Date() } });
+            console.error("[instagram-comments] Auto reply failed:", error);
+          }
+          }
+          nextCommentsUrl = commentsData.paging?.next ? new URL(commentsData.paging.next) : null;
+          if ((commentsData.data || []).some((comment: any) => comment.timestamp && new Date(comment.timestamp) <= lastScannedAt)) {
+            nextCommentsUrl = null;
+          }
+        }
+      }
+
+      await cursors.updateOne({ igUserId: account.igUserId }, { $set: { lastScannedAt: new Date(), updatedAt: new Date() } });
+      results.push({ igUserId: account.igUserId, processed });
+    } catch (error: any) {
+      console.error("[instagram-comments] Reel comment scan failed:", error);
+      results.push({ igUserId: account.igUserId, processed, error: String(error?.message || "Scan failed") });
+    }
+  }
+
+  return results;
 }

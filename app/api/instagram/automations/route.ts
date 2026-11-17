@@ -20,13 +20,14 @@ function validSameOrigin(request: NextRequest) {
 export async function GET(request: NextRequest) {
   const ownerKey = getOwnerKey(request);
   const igUserId = request.nextUrl.searchParams.get("accountId") || "";
+  const triggerType = request.nextUrl.searchParams.get("triggerType") === "reel_comment" ? "reel_comment" : "dm";
   if (!ownerKey) return NextResponse.json({ error: "Instagram owner key invalid hai." }, { status: 401 });
   try {
     const accounts = await listInstagramAutomationAccounts(ownerKey);
     if (!accounts.some((account: any) => account.igUserId === igUserId)) {
       return NextResponse.json({ rules: [], accounts });
     }
-    return NextResponse.json({ rules: await listInstagramAutomations(ownerKey, igUserId), accounts });
+    return NextResponse.json({ rules: await listInstagramAutomations(ownerKey, igUserId, triggerType), accounts });
   } catch (error) {
     console.error("[instagram-dm] Automation list failed:", error);
     return NextResponse.json({ error: "Automation rules load nahi ho paye." }, { status: 503 });
@@ -42,6 +43,7 @@ export async function POST(request: NextRequest) {
   const keyword = typeof body.keyword === "string" ? body.keyword.trim().slice(0, 60) : "";
   const reply = typeof body.reply === "string" ? body.reply.trim() : "";
   const matchType = body.matchType === "exact" ? "exact" : "contains";
+  const triggerType = body.triggerType === "reel_comment" ? "reel_comment" : "dm";
   if (!igUserId || !keyword || !reply) return NextResponse.json({ error: "Account, keyword aur reply required hain." }, { status: 400 });
   if (reply.length > 900 || Buffer.byteLength(reply, "utf8") > 1000) {
     return NextResponse.json({ error: "Reply 1,000 UTF-8 bytes se chhota rakho." }, { status: 400 });
@@ -54,6 +56,7 @@ export async function POST(request: NextRequest) {
     const id = await saveInstagramAutomation(ownerKey, {
       id: typeof body.id === "string" ? body.id : undefined,
       igUserId,
+      triggerType,
       keyword,
       reply,
       matchType,

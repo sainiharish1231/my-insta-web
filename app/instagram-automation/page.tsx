@@ -20,6 +20,7 @@ interface AutomationRule {
   reply: string;
   matchType: "contains" | "exact";
   enabled: boolean;
+  triggerType?: "dm" | "reel_comment";
 }
 
 export default function InstagramAutomationPage() {
@@ -30,6 +31,7 @@ export default function InstagramAutomationPage() {
   const [rules, setRules] = useState<AutomationRule[]>([]);
   const [keyword, setKeyword] = useState("");
   const [reply, setReply] = useState("");
+  const [triggerType, setTriggerType] = useState<"dm" | "reel_comment">("dm");
   const [matchType, setMatchType] = useState<"contains" | "exact">("contains");
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -55,7 +57,7 @@ export default function InstagramAutomationPage() {
     }
     setIsLoading(true);
     try {
-      const response = await fetch(`/api/instagram/automations?accountId=${encodeURIComponent(selectedId)}`, {
+      const response = await fetch(`/api/instagram/automations?accountId=${encodeURIComponent(selectedId)}&triggerType=${triggerType}`, {
         headers: { "x-instagram-owner-key": getInstagramOwnerKey(true) },
         cache: "no-store",
       });
@@ -69,7 +71,7 @@ export default function InstagramAutomationPage() {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [triggerType]);
 
   useEffect(() => loadLocalAccounts(), [loadLocalAccounts]);
   useEffect(() => { void loadRules(accountId); }, [accountId, loadRules]);
@@ -107,7 +109,7 @@ export default function InstagramAutomationPage() {
       const response = await fetch("/api/instagram/automations", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-instagram-owner-key": getInstagramOwnerKey(false) },
-        body: JSON.stringify({ accountId, keyword, reply, matchType, enabled: true }),
+        body: JSON.stringify({ accountId, keyword, reply, matchType, triggerType, enabled: true }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Rule save nahi hua.");
@@ -127,7 +129,7 @@ export default function InstagramAutomationPage() {
       const response = await fetch("/api/instagram/automations", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-instagram-owner-key": getInstagramOwnerKey(false) },
-        body: JSON.stringify({ ...rule, ...patch, accountId }),
+        body: JSON.stringify({ ...rule, ...patch, accountId, triggerType: rule.triggerType || triggerType }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Rule update nahi hua.");
@@ -161,7 +163,7 @@ export default function InstagramAutomationPage() {
         <button onClick={() => router.push("/dashboard")} className="mb-6 inline-flex items-center gap-2 text-sm text-white/60 hover:text-white"><ArrowLeft className="h-4 w-4" /> Dashboard</button>
         <header className="mb-8 flex items-start gap-4">
           <div className="rounded-2xl bg-pink-500/15 p-3 text-pink-300"><Zap className="h-6 w-6" /></div>
-          <div><h1 className="text-3xl font-bold">Instagram Auto DM</h1><p className="mt-2 max-w-2xl text-sm text-white/60">Incoming DM mein keyword match hone par ek automatic reply bhejo. Replies sirf user ke message ke jawab mein jaate hain.</p></div>
+          <div><h1 className="text-3xl font-bold">Instagram Automation</h1><p className="mt-2 max-w-2xl text-sm text-white/60">DM keywords par automatic DM reply set karo, ya Reel comments par matching public reply lagao.</p></div>
         </header>
 
         <section className="mb-6 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
@@ -178,13 +180,13 @@ export default function InstagramAutomationPage() {
         </section>
 
         <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 sm:p-6">
-          <h2 className="mb-4 text-lg font-semibold">New keyword rule</h2>
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h2 className="text-lg font-semibold">New keyword rule</h2><label className="text-sm text-white/70">Trigger<select value={triggerType} onChange={(event) => setTriggerType(event.target.value as "dm" | "reel_comment")} className="ml-2 rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-white"><option value="dm">Incoming DM</option><option value="reel_comment">Reel comment</option></select></label></div>
           <form onSubmit={saveRule} className="space-y-4">
             <div className="grid gap-4 sm:grid-cols-[1fr_180px]">
               <label className="text-sm text-white/70">Keyword<input required minLength={1} maxLength={60} value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="e.g. price" className="mt-2 block w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-white placeholder:text-white/30" /></label>
               <label className="text-sm text-white/70">Match<select value={matchType} onChange={(event) => setMatchType(event.target.value as "contains" | "exact")} className="mt-2 block w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-white"><option value="contains">Contains keyword</option><option value="exact">Exact message</option></select></label>
             </div>
-            <label className="block text-sm text-white/70">Automatic reply<textarea required maxLength={900} rows={3} value={reply} onChange={(event) => setReply(event.target.value)} placeholder="Thanks for messaging! Here are the details..." className="mt-2 block w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-white placeholder:text-white/30" /><span className="mt-1 block text-right text-xs text-white/40">{reply.length}/900</span></label>
+            <label className="block text-sm text-white/70">{triggerType === "dm" ? "Automatic DM reply" : "Public comment reply"}<textarea required maxLength={900} rows={3} value={reply} onChange={(event) => setReply(event.target.value)} placeholder={triggerType === "dm" ? "Thanks for messaging! Here are the details..." : "Thanks! Check your DMs for details."} className="mt-2 block w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-white placeholder:text-white/30" /><span className="mt-1 block text-right text-xs text-white/40">{reply.length}/900</span></label>
             <button disabled={!isRegistered || isSaving || !keyword.trim() || !reply.trim()} className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-pink-600 to-violet-600 px-5 py-3 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50">{isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}Save rule</button>
           </form>
         </section>
@@ -194,7 +196,7 @@ export default function InstagramAutomationPage() {
           {isLoading ? <div className="flex items-center gap-2 text-sm text-white/50"><Loader2 className="h-4 w-4 animate-spin" />Loading rules…</div> : rules.length === 0 ? <div className="rounded-2xl border border-dashed border-white/10 p-8 text-center text-sm text-white/45">Is account ke liye abhi koi auto-reply rule nahi hai.</div> : <div className="space-y-3">{rules.map((rule) => <article key={rule.id} className="rounded-xl border border-white/10 bg-white/[0.03] p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-medium">{rule.keyword} <span className="ml-2 text-xs text-white/40">{rule.matchType}</span></p><p className="mt-2 whitespace-pre-wrap text-sm text-white/65">{rule.reply}</p></div><div className="flex items-center gap-3"><label className="flex items-center gap-2 text-xs text-white/60"><input type="checkbox" checked={rule.enabled} onChange={(event) => void updateRule(rule, { enabled: event.target.checked })} />Enabled</label><button onClick={() => void deleteRule(rule.id)} aria-label="Delete rule" className="rounded-lg p-2 text-white/50 hover:bg-red-500/10 hover:text-red-300"><Trash2 className="h-4 w-4" /></button></div></div></article>)}</div>}
         </section>
 
-        <p className="mt-8 text-xs leading-5 text-white/40">Meta app ka public webhook URL, Messages webhook subscription, account permissions aur App Review status ke bina live DM events nahi aayenge. Read setup guide for Meta Developer settings.</p>
+        <p className="mt-8 text-xs leading-5 text-white/40">Auto DM ke liye Meta ka public webhook, Messages subscription aur permissions chahiye. Reel comments polling se har 5 minute check hote hain; GitHub Actions scheduler enabled, app public URL par deployed, aur instagram_manage_comments permission approved honi chahiye.</p>
       </div>
     </main>
   );

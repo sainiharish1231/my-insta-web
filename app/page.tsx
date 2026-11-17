@@ -1,8 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { generateCodeVerifier, generateCodeChallenge } from "@/lib/pkce";
-import { setPkceCodeVerifier } from "@/lib/pkce-storage";
 import {
   Instagram,
   Youtube,
@@ -50,10 +48,6 @@ export default function LoginPage() {
     }
 
     try {
-      const codeVerifier = await generateCodeVerifier();
-      const codeChallenge = await generateCodeChallenge(codeVerifier);
-      setPkceCodeVerifier(codeVerifier);
-
       const redirectUri =
         typeof window !== "undefined"
           ? `${window.location.origin}/auth/callback`
@@ -63,7 +57,7 @@ export default function LoginPage() {
 
       const authUrl = `https://www.facebook.com/v27.0/dialog/oauth?client_id=${fbAppId}&redirect_uri=${encodeURIComponent(
         redirectUri,
-      )}&scope=${scope}&response_type=code&code_challenge=${codeChallenge}&code_challenge_method=S256`;
+      )}&scope=${encodeURIComponent(scope)}&response_type=code`;
 
       window.location.href = authUrl;
     } catch (error) {
