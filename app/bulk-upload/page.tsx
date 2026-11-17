@@ -23,6 +23,7 @@ import { toast } from "sonner";
 import {
   buildCloudinaryVideoDownloadUrl,
   getInstagramScheduleValidationError,
+  publishFacebookPageVideo,
   publishInstagramAndFacebookReel,
   uploadMediaAssetToCloudinary,
 } from "@/lib/meta";
@@ -39,6 +40,7 @@ import {
   validateMediaFile,
 } from "@/lib/media-upload";
 import { processDueScheduledPosts } from "@/lib/scheduled-posts";
+import { scheduleInstagramReel } from "@/lib/instagram-scheduler-client";
 
 interface VideoItem {
   id: string;
@@ -785,19 +787,27 @@ function BulkUploadContent() {
 
         for (const account of selectedAccountsRef.current) {
           if (account.platform === "instagram") {
-            const publishResult = await publishInstagramAndFacebookReel({
+            await scheduleInstagramReel({
               igUserId: account.id,
-              token: account.token,
-              pageId: account.pageId,
+              username: account.username,
+              accessToken: account.token || "",
               mediaUrl: asset.secureUrl,
               caption,
-              publishTime: scheduledFor,
+              scheduledFor: scheduledFor.toISOString(),
             });
 
-            if (publishResult.facebookError) {
-              throw new Error(
-                `${account.username}: Instagram schedule ho gaya, lekin connected FB Page fail hua: ${publishResult.facebookError}`,
-              );
+            if (account.pageId) {
+              try {
+                await publishFacebookPageVideo({
+                  pageId: account.pageId,
+                  token: account.token,
+                  mediaUrl: asset.secureUrl,
+                  caption,
+                  scheduledPublishAt: scheduledFor,
+                });
+              } catch (facebookError: any) {
+                toast.error(`${account.username}: Instagram queued hai, lekin Facebook schedule nahi hua: ${facebookError?.message || "Facebook schedule failed"}`);
+              }
             }
             continue;
           }

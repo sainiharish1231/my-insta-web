@@ -20,6 +20,8 @@ import {
   Scissors,
   Bot,
   ImagePlus,
+  Sparkles,
+  Zap,
 } from "lucide-react";
 import {
   getFacebookPageLatestVideo,
@@ -37,6 +39,10 @@ import {
   getUpcomingScheduledPosts,
   processDueScheduledPosts,
 } from "@/lib/scheduled-posts";
+import {
+  deleteInstagramScheduledPost,
+  listInstagramScheduledPosts,
+} from "@/lib/instagram-scheduler-client";
 import { stopLocalAutomationForAccount } from "@/lib/local-automation-cleanup";
 import { disconnectSocialAccount } from "@/lib/social-disconnect";
 import { VideoSplitterView } from "@/components/video-splitter-view"; // added VideoSplitterView import
@@ -366,7 +372,21 @@ export default function Dashboard() {
 
     let isProcessingScheduledPosts = false;
     const loadScheduledPosts = () => {
-      setScheduledPosts(getUpcomingScheduledPosts());
+      const localPosts = getUpcomingScheduledPosts();
+      setScheduledPosts(localPosts);
+      void listInstagramScheduledPosts()
+        .then((jobs) => {
+          const serverPosts = jobs.map((job: any) => ({
+            ...job,
+            source: "server",
+            contentType: "REEL",
+            accounts: [{ id: job.igUserId, username: job.username, platform: "instagram" }],
+          }));
+          setScheduledPosts([...serverPosts, ...localPosts]);
+        })
+        .catch((error) => {
+          console.warn("[scheduler] Could not refresh server schedule list:", error);
+        });
     };
     const runScheduledWorker = async () => {
       if (isProcessingScheduledPosts) {
@@ -396,7 +416,18 @@ export default function Dashboard() {
     };
   }, [router, loadProfile, loadInstagramAccounts, loadYouTubeAccounts]);
 
-  const handleDeleteScheduledPost = (postId: string) => {
+  const handleDeleteScheduledPost = async (postId: string) => {
+    const selectedPost = scheduledPosts.find((post) => post.id === postId);
+    if (selectedPost?.source === "server") {
+      try {
+        await deleteInstagramScheduledPost(postId);
+        setScheduledPosts((current) => current.filter((post) => post.id !== postId));
+      } catch (error: any) {
+        console.error("[scheduler] Could not delete scheduled post:", error);
+        alert(error?.message || "Scheduled post delete nahi ho paaya.");
+      }
+      return;
+    }
     const posts = JSON.parse(localStorage.getItem("scheduled_posts") || "[]");
     const updated = posts.filter((p: any) => p.id !== postId);
     localStorage.setItem("scheduled_posts", JSON.stringify(updated));
@@ -976,6 +1007,24 @@ export default function Dashboard() {
           </button>
 
           <button
+            onClick={() => router.push("/content-studio")}
+            className="p-6 bg-gradient-to-br from-violet-500/20 to-cyan-500/20 hover:from-violet-500/30 hover:to-cyan-500/30 border border-violet-500/30 rounded-2xl transition-all group"
+          >
+            <Sparkles className="w-8 h-8 text-violet-300 mb-3 group-hover:scale-110 transition-transform" />
+            <h3 className="font-semibold text-white mb-1">Content Studio</h3>
+            <p className="text-xs text-white/50">Source se platform drafts banao</p>
+          </button>
+
+          <button
+            onClick={() => router.push("/instagram-automation")}
+            className="p-6 bg-gradient-to-br from-pink-500/20 to-violet-500/20 hover:from-pink-500/30 hover:to-violet-500/30 border border-pink-500/30 rounded-2xl transition-all group"
+          >
+            <Zap className="w-8 h-8 text-pink-300 mb-3 group-hover:scale-110 transition-transform" />
+            <h3 className="font-semibold text-white mb-1">Instagram Auto DM</h3>
+            <p className="text-xs text-white/50">Keyword-based DM replies</p>
+          </button>
+
+          <button
             onClick={() => router.push("/text-auto-maction")}
             className="p-6 bg-gradient-to-br from-cyan-500/20 to-emerald-500/20 hover:from-cyan-500/30 hover:to-emerald-500/30 border border-cyan-500/30 rounded-2xl transition-all group"
           >
@@ -1106,6 +1155,15 @@ export default function Dashboard() {
                         {new Date(post.scheduledFor).toLocaleString()}
                       </span>
                     </div>
+
+                    {post.source === "server" && (
+                      <div className="mb-3">
+                        <span className={`rounded-full px-2 py-1 text-[11px] font-medium ${post.status === "published" ? "bg-emerald-500/15 text-emerald-300" : post.status === "error" ? "bg-red-500/15 text-red-300" : "bg-cyan-500/15 text-cyan-300"}`}>
+                          {post.status === "processing_media" || post.status === "publishing" ? "Processing" : post.status}
+                        </span>
+                        {post.error && <p className="mt-2 text-xs text-red-300">{post.error}</p>}
+                      </div>
+                    )}
 
                     <div className="flex items-center gap-2">
                       <div className="flex -space-x-2">

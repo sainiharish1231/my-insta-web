@@ -9,6 +9,7 @@ import {
   persistInstagramAccounts,
   readStoredInstagramAccounts,
 } from "@/lib/instagram-accounts";
+import { getInstagramOwnerKey } from "@/lib/instagram-scheduler-client";
 
 export default function AuthCallback() {
   const router = useRouter();
@@ -59,7 +60,7 @@ export default function AuthCallback() {
         const redirectUri = `${window.location.origin}/auth/callback`;
 
         // Exchange code for access token using PKCE
-        const tokenUrl = `https://graph.facebook.com/v21.0/oauth/access_token?client_id=${fbAppId}&redirect_uri=${encodeURIComponent(
+        const tokenUrl = `https://graph.facebook.com/v27.0/oauth/access_token?client_id=${fbAppId}&redirect_uri=${encodeURIComponent(
           redirectUri
         )}&code=${code}&code_verifier=${codeVerifier}`;
 
@@ -128,6 +129,24 @@ export default function AuthCallback() {
           localStorage.setItem("fb_page_id", preferredAccount.pageId);
         }
 
+        let dmSetupMessage = "";
+        try {
+          const dmSetupResponse = await fetch("/api/instagram/automation/register", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-instagram-owner-key": getInstagramOwnerKey(true),
+            },
+            body: JSON.stringify({ accounts: mergedIGAccounts }),
+          });
+          const dmSetupData = await dmSetupResponse.json().catch(() => ({}));
+          if (!dmSetupResponse.ok || dmSetupData.warnings?.length) {
+            dmSetupMessage = " DM setup may need Meta permissions/webhook configuration.";
+          }
+        } catch {
+          dmSetupMessage = " DM setup did not sync; open Instagram Auto DM from the dashboard.";
+        }
+
         if (
           !storedPrimaryId ||
           !mergedIGAccounts.some((account) => account.id === storedPrimaryId)
@@ -137,7 +156,7 @@ export default function AuthCallback() {
 
         console.log("[v0] Auth successful, redirecting to dashboard");
         setStatus(
-          `Success! ${mergedIGAccounts.length} Instagram account(s) synced. Redirecting to dashboard...`
+          `Success! ${mergedIGAccounts.length} Instagram account(s) synced.${dmSetupMessage} Redirecting to dashboard...`
         );
         setTimeout(() => router.push("/dashboard"), 1000);
       } catch (error: any) {

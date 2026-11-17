@@ -9,7 +9,7 @@ const GEMINI_GENERATE_CONTENT_URL =
 const POLLINATIONS_IMAGES_URL = "https://image.pollinations.ai/prompt/";
 const TOGETHER_IMAGES_URL = "https://api.together.xyz/v1/images/generations";
 
-const DEFAULT_GROQ_TEXT_MODEL = "deepseek-r1-distill-llama-70b";
+const DEFAULT_GROQ_TEXT_MODEL = "openai/gpt-oss-120b";
 const DEFAULT_OPENROUTER_TEXT_MODEL = "deepseek/deepseek-r1:free";
 const DEFAULT_GEMINI_TEXT_MODEL = "gemini-2.0-flash";
 const DEFAULT_TOGETHER_IMAGE_MODEL = "black-forest-labs/FLUX.1-schnell-Free";

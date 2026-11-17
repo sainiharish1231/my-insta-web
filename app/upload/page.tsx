@@ -84,6 +84,11 @@ export default function UploadPage() {
 
   useEffect(() => {
     loadAccounts();
+    const studioCaption = sessionStorage.getItem("content_studio_caption");
+    if (studioCaption) {
+      setCaption(studioCaption);
+      sessionStorage.removeItem("content_studio_caption");
+    }
   }, []);
 
   const loadAccounts = () => {

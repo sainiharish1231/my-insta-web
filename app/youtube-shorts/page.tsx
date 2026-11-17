@@ -36,6 +36,7 @@ import {
 import {
   buildCloudinaryVideoDownloadUrl,
   getInstagramScheduleValidationError,
+  publishFacebookPageVideo,
   publishInstagramAndFacebookReel,
 } from "@/lib/meta";
 import {
@@ -45,6 +46,7 @@ import {
   buildYouTubeTagsFromKeywords,
 } from "@/lib/bulk-video-seo";
 import { processDueScheduledPosts } from "@/lib/scheduled-posts";
+import { scheduleInstagramReel } from "@/lib/instagram-scheduler-client";
 import {
   fetchInstagramAccountsFromFacebook,
   mergeInstagramAccounts,
@@ -2394,18 +2396,32 @@ export default function YouTubeShortsPage() {
             if (selectedInstagramAccounts.length > 0) {
               const instagramResults = await Promise.all(
                 selectedInstagramAccounts.map(async (account) => {
-                  const result = await publishInstagramAndFacebookReel({
+                  await scheduleInstagramReel({
                     igUserId: account.id,
-                    token: account.token,
-                    pageId: account.pageId,
+                    username: account.username,
+                    accessToken: account.token || "",
                     mediaUrl: item.assetUrl,
                     caption: item.caption,
-                    publishTime: publishAt,
+                    scheduledFor: publishAt,
                   });
 
+                  let facebookError: string | null = null;
+                  if (account.pageId) {
+                    try {
+                      await publishFacebookPageVideo({
+                        pageId: account.pageId,
+                        token: account.token,
+                        mediaUrl: item.assetUrl,
+                        caption: item.caption,
+                        scheduledPublishAt: publishAt,
+                      });
+                    } catch (error: any) {
+                      facebookError = error?.message || "Facebook schedule failed.";
+                    }
+                  }
                   return {
                     username: account.username,
-                    facebookError: result.facebookError,
+                    facebookError,
                   };
                 }),
               );

@@ -59,9 +59,9 @@ export default function LoginPage() {
           ? `${window.location.origin}/auth/callback`
           : "";
       const scope =
-        "instagram_basic,instagram_content_publish,instagram_manage_comments,instagram_manage_insights,pages_show_list,pages_read_engagement,pages_manage_posts,business_management";
+        "instagram_basic,instagram_content_publish,instagram_manage_comments,instagram_manage_insights,instagram_manage_messages,pages_show_list,pages_read_engagement,pages_manage_posts,pages_manage_metadata,pages_messaging,business_management";
 
-      const authUrl = `https://www.facebook.com/v21.0/dialog/oauth?client_id=${fbAppId}&redirect_uri=${encodeURIComponent(
+      const authUrl = `https://www.facebook.com/v27.0/dialog/oauth?client_id=${fbAppId}&redirect_uri=${encodeURIComponent(
         redirectUri,
       )}&scope=${scope}&response_type=code&code_challenge=${codeChallenge}&code_challenge_method=S256`;
 
