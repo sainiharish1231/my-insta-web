@@ -1,0 +1,30 @@
+name: Instagram scheduled publisher
+
+on:
+  schedule:
+    - cron: "3-59/5 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: instagram-scheduled-publisher
+  cancel-in-progress: false
+
+jobs:
+  publish-due-instagram-posts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Trigger the protected scheduler endpoint
+        env:
+          APP_URL: ${{ secrets.SCHEDULED_PUBLISHER_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "Set SCHEDULED_PUBLISHER_URL and CRON_SECRET in repository Actions secrets."
+            exit 1
+          fi
+          APP_URL="${APP_URL%/}"
+          curl --fail --silent --show-error --max-time 65 \
+            --retry 1 --retry-delay 3 \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL}/api/cron/instagram-scheduler"
