@@ -43,9 +43,9 @@ export async function POST(request: NextRequest) {
   const keyword = typeof body.keyword === "string" ? body.keyword.trim().slice(0, 60) : "";
   const reply = typeof body.reply === "string" ? body.reply.trim() : "";
   const dmReply = typeof body.dmReply === "string" ? body.dmReply.trim() : "";
-  const matchType = body.matchType === "exact" ? "exact" : "contains";
+  const matchType = body.matchType === "exact" ? "exact" : body.matchType === "any" ? "any" : "contains";
   const triggerType = body.triggerType === "reel_comment" ? "reel_comment" : "dm";
-  if (!igUserId || !keyword || !reply) return NextResponse.json({ error: "Account, keyword aur reply required hain." }, { status: 400 });
+  if (!igUserId || (!keyword && matchType !== "any") || !reply) return NextResponse.json({ error: "Account, keyword aur reply required hain." }, { status: 400 });
   if (reply.length > 900 || Buffer.byteLength(reply, "utf8") > 1000) {
     return NextResponse.json({ error: "Reply 1,000 UTF-8 bytes se chhota rakho." }, { status: 400 });
   }

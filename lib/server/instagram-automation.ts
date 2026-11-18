@@ -110,7 +110,7 @@ export async function saveInstagramAutomation(ownerKey: string, input: {
   keyword: string;
   reply: string;
   dmReply?: string;
-  matchType: "contains" | "exact";
+  matchType: "contains" | "exact" | "any";
   enabled: boolean;
   triggerType?: "dm" | "reel_comment";
 }) {
@@ -208,6 +208,7 @@ export async function processInstagramMessageWebhook(payload: any) {
         const enabledRules = await rules.find({ igUserId, ownerKeyHash: account.ownerKeyHash, enabled: true }).sort({ createdAt: 1 }).toArray();
         const match: any = enabledRules.find((rule: any) => {
           const keyword = rule.normalizedKeyword || String(rule.keyword || "").normalize("NFKC").toLocaleLowerCase();
+          if (rule.matchType === "any") return true;
           return rule.matchType === "exact" ? normalizedText === keyword : normalizedText.includes(keyword);
         });
         if (!match) {
@@ -263,7 +264,7 @@ export async function processRecentInstagramReelComments() {
   const cursors = db.collection("instagram_reel_comment_cursors");
   const events = db.collection("instagram_dm_events");
   await events.createIndex({ messageId: 1 }, { unique: true, sparse: true });
-  const results: Array<{ igUserId: string; processed: number; error?: string }> = [];
+  const results: Array<{ igUserId: string; processed: number; privateReplyFailures?: number; errors?: Array<{ stage: string; message: string }>; error?: string }> = [];
 
   for (const account of accounts as any[]) {
     const cursor = await cursors.findOne({ igUserId: account.igUserId });
@@ -275,6 +276,8 @@ export async function processRecentInstagramReelComments() {
 
     const lastScannedAt = new Date(cursor.lastScannedAt);
     let processed = 0;
+    let privateReplyFailures = 0;
+    const errors: Array<{ stage: string; message: string }> = [];
     try {
       const token = decryptToken(account.accessToken);
       const mediaUrl = new URL(`https://graph.facebook.com/${GRAPH_VERSION}/${account.igUserId}/media`);
@@ -305,6 +308,7 @@ export async function processRecentInstagramReelComments() {
           if (!commentId || !text || Number.isNaN(createdAt.getTime()) || createdAt <= lastScannedAt) continue;
           if (String(comment.from?.id || "") === String(account.igUserId)) continue;
 
+          let stage = "public_comment_reply";
           try {
             await events.insertOne({ messageId: `comment:${commentId}`, igUserId: account.igUserId, status: "processing", createdAt: new Date() });
           } catch (error: any) {
@@ -316,6 +320,7 @@ export async function processRecentInstagramReelComments() {
             const normalizedText = text.normalize("NFKC").toLocaleLowerCase();
             const match: any = enabledRules.find((rule: any) => {
               const keyword = rule.normalizedKeyword || String(rule.keyword || "").normalize("NFKC").toLocaleLowerCase();
+              if (rule.matchType === "any") return true;
               return rule.matchType === "exact" ? normalizedText === keyword : normalizedText.includes(keyword);
             });
             if (!match) {
@@ -325,14 +330,18 @@ export async function processRecentInstagramReelComments() {
             await replyToInstagramComment(commentId, token, match.reply);
             let dmRepliedAt: Date | undefined;
             if (typeof match.dmReply === "string" && match.dmReply.trim()) {
+              stage = "private_dm_reply";
               await sendPrivateReplyToInstagramComment(account.igUserId, commentId, token, match.dmReply.trim());
               dmRepliedAt = new Date();
             }
             await events.updateOne({ messageId: `comment:${commentId}` }, { $set: { status: "replied", automationId: match._id, repliedAt: new Date(), ...(dmRepliedAt ? { dmRepliedAt } : {}) } });
             processed += 1;
           } catch (error: any) {
-            await events.updateOne({ messageId: `comment:${commentId}` }, { $set: { status: "error", error: String(error?.message || "Comment reply failed").slice(0, 500), failedAt: new Date() } });
-            console.error("[instagram-comments] Auto reply failed:", error);
+            const message = String(error?.message || "Comment reply failed").slice(0, 500);
+            await events.updateOne({ messageId: `comment:${commentId}` }, { $set: { status: stage === "private_dm_reply" ? "private_reply_error" : "error", failedStage: stage, error: message, failedAt: new Date() } });
+            if (stage === "private_dm_reply") privateReplyFailures += 1;
+            if (errors.length < 5) errors.push({ stage, message });
+            console.error(`[instagram-comments] ${stage} failed for comment ${commentId}:`, error);
           }
           }
           nextCommentsUrl = commentsData.paging?.next ? new URL(commentsData.paging.next) : null;
@@ -343,7 +352,7 @@ export async function processRecentInstagramReelComments() {
       }
 
       await cursors.updateOne({ igUserId: account.igUserId }, { $set: { lastScannedAt: new Date(), updatedAt: new Date() } });
-      results.push({ igUserId: account.igUserId, processed });
+      results.push({ igUserId: account.igUserId, processed, privateReplyFailures, ...(errors.length ? { errors } : {}) });
     } catch (error: any) {
       console.error("[instagram-comments] Reel comment scan failed:", error);
       results.push({ igUserId: account.igUserId, processed, error: String(error?.message || "Scan failed") });

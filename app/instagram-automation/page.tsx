@@ -18,7 +18,7 @@ interface AutomationRule {
   id: string;
   keyword: string;
   reply: string;
-  matchType: "contains" | "exact";
+  matchType: "contains" | "exact" | "any";
   enabled: boolean;
   triggerType?: "dm" | "reel_comment";
   dmReply?: string;
@@ -35,7 +35,7 @@ export default function InstagramAutomationPage() {
   const [dmReply, setDmReply] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [triggerType, setTriggerType] = useState<"dm" | "reel_comment">("dm");
-  const [matchType, setMatchType] = useState<"contains" | "exact">("contains");
+  const [matchType, setMatchType] = useState<"contains" | "exact" | "any">("contains");
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -198,12 +198,12 @@ export default function InstagramAutomationPage() {
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h2 className="text-lg font-semibold">{editingId ? "Edit keyword rule" : "New keyword rule"}</h2><label className="text-sm text-white/70">Trigger<select value={triggerType} onChange={(event) => setTriggerType(event.target.value as "dm" | "reel_comment")} className="ml-2 rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-white"><option value="dm">Incoming DM</option><option value="reel_comment">Reel comment</option></select></label></div>
           <form onSubmit={saveRule} className="space-y-4">
             <div className="grid gap-4 sm:grid-cols-[1fr_180px]">
-              <label className="text-sm text-white/70">Keyword<input required minLength={1} maxLength={60} value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="e.g. price" className="mt-2 block w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-white placeholder:text-white/30" /></label>
-              <label className="text-sm text-white/70">Match<select value={matchType} onChange={(event) => setMatchType(event.target.value as "contains" | "exact")} className="mt-2 block w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-white"><option value="contains">Contains keyword</option><option value="exact">Exact message</option></select></label>
+              <label className="text-sm text-white/70">{matchType === "any" ? "Keyword (not used)" : "Keyword"}<input required={matchType !== "any"} minLength={matchType === "any" ? undefined : 1} maxLength={60} value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder={matchType === "any" ? `Every ${triggerType === "dm" ? "incoming message" : "matching comment"} will match` : "e.g. price"} className="mt-2 block w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-white placeholder:text-white/30" /></label>
+              <label className="text-sm text-white/70">Match<select value={matchType} onChange={(event) => setMatchType(event.target.value as "contains" | "exact" | "any")} className="mt-2 block w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-white"><option value="contains">Contains keyword</option><option value="exact">Exact message</option><option value="any">Any text</option></select></label>
             </div>
             <label className="block text-sm text-white/70">{triggerType === "dm" ? "Automatic DM reply" : "Public comment reply"}<textarea required maxLength={900} rows={3} value={reply} onChange={(event) => setReply(event.target.value)} placeholder={triggerType === "dm" ? "Thanks for messaging! Here are the details..." : "Thanks! Check your DMs for details."} className="mt-2 block w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-white placeholder:text-white/30" /><span className="mt-1 block text-right text-xs text-white/40">{reply.length}/900</span></label>
             {triggerType === "reel_comment" && <label className="block text-sm text-white/70">Private DM reply (optional)<textarea maxLength={900} rows={3} value={dmReply} onChange={(event) => setDmReply(event.target.value)} placeholder="Thanks for commenting! Here are the details..." className="mt-2 block w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-white placeholder:text-white/30" /><span className="mt-1 block text-right text-xs text-white/40">{dmReply.length}/900</span><span className="mt-1 block text-xs text-white/40">Meta allows one private DM per comment, within 7 days.</span></label>}
-            <div className="flex gap-2"><button disabled={!isRegistered || isSaving || !keyword.trim() || !reply.trim()} className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-pink-600 to-violet-600 px-5 py-3 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50">{isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}{editingId ? "Update rule" : "Save rule"}</button>{editingId && <button type="button" onClick={() => { setEditingId(null); setKeyword(""); setReply(""); setDmReply(""); }} className="rounded-xl border border-white/10 px-4 py-3 text-sm">Cancel</button>}</div>
+            <div className="flex gap-2"><button disabled={!isRegistered || isSaving || (matchType !== "any" && !keyword.trim()) || !reply.trim()} className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-pink-600 to-violet-600 px-5 py-3 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50">{isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}{editingId ? "Update rule" : "Save rule"}</button>{editingId && <button type="button" onClick={() => { setEditingId(null); setKeyword(""); setReply(""); setDmReply(""); }} className="rounded-xl border border-white/10 px-4 py-3 text-sm">Cancel</button>}</div>
           </form>
         </section>
 
@@ -212,7 +212,7 @@ export default function InstagramAutomationPage() {
           {isLoading ? <div className="flex items-center gap-2 text-sm text-white/50"><Loader2 className="h-4 w-4 animate-spin" />Loading rules…</div> : rules.length === 0 ? <div className="rounded-2xl border border-dashed border-white/10 p-8 text-center text-sm text-white/45">Is account ke liye abhi koi auto-reply rule nahi hai.</div> : <div className="space-y-3">{rules.map((rule) => <article key={rule.id} className="rounded-xl border border-white/10 bg-white/[0.03] p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-medium">{rule.keyword} <span className="ml-2 text-xs text-white/40">{rule.matchType}</span></p><p className="mt-2 whitespace-pre-wrap text-sm text-white/65">{rule.reply}</p>{rule.dmReply && <p className="mt-2 text-sm text-pink-300">DM: {rule.dmReply}</p>}</div><div className="flex items-center gap-3"><label className="flex items-center gap-2 text-xs text-white/60"><input type="checkbox" checked={rule.enabled} onChange={(event) => void updateRule(rule, { enabled: event.target.checked })} />Enabled</label><button onClick={() => editRule(rule)} aria-label="Edit rule" className="rounded-lg p-2 text-white/50 hover:bg-white/10"><Pencil className="h-4 w-4" /></button><button onClick={() => void deleteRule(rule.id)} aria-label="Delete rule" className="rounded-lg p-2 text-white/50 hover:bg-red-500/10 hover:text-red-300"><Trash2 className="h-4 w-4" /></button></div></div></article>)}</div>}
         </section>
 
-        <p className="mt-8 text-xs leading-5 text-white/40">Auto DM ke liye Meta ka public webhook, Messages subscription aur permissions chahiye. Reel comments polling se har 5 minute check hote hain; GitHub Actions scheduler enabled, app public URL par deployed, aur instagram_manage_comments permission approved honi chahiye.</p>
+        <p className="mt-8 text-xs leading-5 text-white/40">Incoming DM auto-reply ke liye Meta Developer Dashboard me Instagram webhook callback `/api/instagram/webhook` configure karein, `messages` subscription aur `instagram_manage_messages` permission enable honi chahiye. Reel comments cron-job.org se har minute scan hote hain. Comment ke saath private DM bhejne ke liye “Private DM reply” field bharna zaroori hai; non-followers ka message Requests folder me aa sakta hai.</p>
       </div>
     </main>
   );
