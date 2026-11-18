@@ -1,4 +1,4 @@
-name: Instagram scheduled publisher
+name: Instagram automation scheduler
 
 on:
   schedule:
