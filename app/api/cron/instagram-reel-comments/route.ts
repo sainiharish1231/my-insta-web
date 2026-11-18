@@ -6,7 +6,7 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 
 export async function GET(request: NextRequest) {
-  const expected = process.env.CRON_SECRET || "";
+  const expected = process.env.REEL_COMMENT_CRON_SECRET || "";
   const supplied = request.headers.get("authorization") || "";
   const expectedHeader = `Bearer ${expected}`;
   const authorized = Boolean(expected) &&
