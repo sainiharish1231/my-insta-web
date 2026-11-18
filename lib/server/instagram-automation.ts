@@ -205,7 +205,12 @@ export async function processInstagramMessageWebhook(payload: any) {
           continue;
         }
         const normalizedText = text.normalize("NFKC").toLocaleLowerCase();
-        const enabledRules = await rules.find({ igUserId, ownerKeyHash: account.ownerKeyHash, enabled: true }).sort({ createdAt: 1 }).toArray();
+        const enabledRules = await rules.find({
+          igUserId,
+          ownerKeyHash: account.ownerKeyHash,
+          enabled: true,
+          $or: [{ triggerType: "dm" }, { triggerType: { $exists: false } }],
+        }).sort({ createdAt: 1 }).toArray();
         const match: any = enabledRules.find((rule: any) => {
           const keyword = rule.normalizedKeyword || String(rule.keyword || "").normalize("NFKC").toLocaleLowerCase();
           if (rule.matchType === "any") return true;
