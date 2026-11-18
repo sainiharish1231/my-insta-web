@@ -244,8 +244,8 @@ async function replyToInstagramComment(commentId: string, token: string, message
   if (!response.ok || data.error) throw new Error(data.error?.message || "Instagram comment reply failed.");
 }
 
-async function sendPrivateReplyToInstagramComment(pageId: string, commentId: string, token: string, message: string) {
-  const url = new URL(`https://graph.facebook.com/${GRAPH_VERSION}/${pageId}/messages`);
+async function sendPrivateReplyToInstagramComment(igUserId: string, commentId: string, token: string, message: string) {
+  const url = new URL(`https://graph.facebook.com/${GRAPH_VERSION}/${igUserId}/messages`);
   url.searchParams.set("access_token", token);
   const response = await fetch(url, {
     method: "POST",
@@ -325,7 +325,7 @@ export async function processRecentInstagramReelComments() {
             await replyToInstagramComment(commentId, token, match.reply);
             let dmRepliedAt: Date | undefined;
             if (typeof match.dmReply === "string" && match.dmReply.trim()) {
-              await sendPrivateReplyToInstagramComment(account.pageId, commentId, token, match.dmReply.trim());
+              await sendPrivateReplyToInstagramComment(account.igUserId, commentId, token, match.dmReply.trim());
               dmRepliedAt = new Date();
             }
             await events.updateOne({ messageId: `comment:${commentId}` }, { $set: { status: "replied", automationId: match._id, repliedAt: new Date(), ...(dmRepliedAt ? { dmRepliedAt } : {}) } });
