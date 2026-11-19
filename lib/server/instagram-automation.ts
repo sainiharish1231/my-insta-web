@@ -285,6 +285,29 @@ export async function processRecentInstagramReelComments() {
     const errors: Array<{ stage: string; message: string }> = [];
     try {
       const token = decryptToken(account.accessToken);
+      const failedPrivateReplies = await events.find({
+        igUserId: account.igUserId,
+        status: "private_reply_error",
+        privateReplyAttempts: { $lt: 3 },
+        nextRetryAt: { $lte: new Date() },
+      }).limit(10).toArray();
+      for (const failedEvent of failedPrivateReplies as any[]) {
+        const rule = failedEvent.automationId
+          ? await rules.findOne({ _id: failedEvent.automationId, igUserId: account.igUserId, ownerKeyHash: account.ownerKeyHash, triggerType: "reel_comment", enabled: true })
+          : null;
+        const failedCommentId = String(failedEvent.messageId || "").replace(/^comment:/, "");
+        if (!rule?.dmReply || !failedCommentId) continue;
+        try {
+          await sendPrivateReplyToInstagramComment(account.igUserId, failedCommentId, token, String(rule.dmReply).trim());
+          await events.updateOne({ _id: failedEvent._id }, { $set: { status: "replied", dmRepliedAt: new Date(), updatedAt: new Date() }, $unset: { error: "", nextRetryAt: "" } });
+          processed += 1;
+        } catch (error: any) {
+          const message = String(error?.message || "Private DM retry failed").slice(0, 500);
+          await events.updateOne({ _id: failedEvent._id }, { $inc: { privateReplyAttempts: 1 }, $set: { error: message, failedAt: new Date(), nextRetryAt: new Date(Date.now() + 5 * 60 * 1000) } });
+          privateReplyFailures += 1;
+          if (errors.length < 5) errors.push({ stage: "private_dm_retry", message });
+        }
+      }
       const mediaUrl = new URL(`https://graph.facebook.com/${GRAPH_VERSION}/${account.igUserId}/media`);
       mediaUrl.searchParams.set("fields", "id,media_type,media_product_type,timestamp");
       mediaUrl.searchParams.set("limit", "100");
@@ -314,6 +337,7 @@ export async function processRecentInstagramReelComments() {
           if (String(comment.from?.id || "") === String(account.igUserId)) continue;
 
           let stage = "public_comment_reply";
+          let matchedAutomationId: any;
           try {
             await events.insertOne({ messageId: `comment:${commentId}`, igUserId: account.igUserId, status: "processing", createdAt: new Date() });
           } catch (error: any) {
@@ -332,7 +356,9 @@ export async function processRecentInstagramReelComments() {
               await events.updateOne({ messageId: `comment:${commentId}` }, { $set: { status: "ignored", reason: "no_keyword_match" } });
               continue;
             }
+            matchedAutomationId = match._id;
             await replyToInstagramComment(commentId, token, match.reply);
+            await events.updateOne({ messageId: `comment:${commentId}` }, { $set: { status: "public_replied", automationId: match._id, publicRepliedAt: new Date() } });
             let dmRepliedAt: Date | undefined;
             if (typeof match.dmReply === "string" && match.dmReply.trim()) {
               stage = "private_dm_reply";
@@ -343,7 +369,7 @@ export async function processRecentInstagramReelComments() {
             processed += 1;
           } catch (error: any) {
             const message = String(error?.message || "Comment reply failed").slice(0, 500);
-            await events.updateOne({ messageId: `comment:${commentId}` }, { $set: { status: stage === "private_dm_reply" ? "private_reply_error" : "error", failedStage: stage, error: message, failedAt: new Date() } });
+            await events.updateOne({ messageId: `comment:${commentId}` }, { $set: { status: stage === "private_dm_reply" ? "private_reply_error" : "error", ...(matchedAutomationId ? { automationId: matchedAutomationId } : {}), failedStage: stage, error: message, failedAt: new Date(), ...(stage === "private_dm_reply" ? { privateReplyAttempts: 1, nextRetryAt: new Date(Date.now() + 5 * 60 * 1000) } : {}) } });
             if (stage === "private_dm_reply") privateReplyFailures += 1;
             if (errors.length < 5) errors.push({ stage, message });
             console.error(`[instagram-comments] ${stage} failed for comment ${commentId}:`, error);
