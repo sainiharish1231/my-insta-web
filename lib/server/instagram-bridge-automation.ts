@@ -77,19 +77,25 @@ export async function getInstagramBridgeAutomation(ownerKey: string) {
 async function uploadSourceVideoToCloudinary(mediaUrl: string, date: string) {
   const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME || "";
   const apiKey = process.env.CLOUDINARY_API_KEY || "";
-  if (!cloudName || !apiKey || !process.env.CLOUDINARY_API_SECRET) {
-    throw new Error("Daily repost ke liye Cloudinary signed upload env vars missing hain.");
+  const apiSecret = process.env.CLOUDINARY_API_SECRET || "";
+  const uploadPreset = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET || "";
+  if (!cloudName || ((!apiKey || !apiSecret) && !uploadPreset)) {
+    throw new Error("Daily repost ke liye Cloudinary upload configuration missing hai.");
   }
-  const timestamp = Math.floor(Date.now() / 1000);
   const folder = `instagram-bridge-auto/${date}`;
-  const { generateCloudinarySignature } = await import("@/lib/cloudinary");
-  const signature = await generateCloudinarySignature({ timestamp, folder });
   const body = new FormData();
   body.append("file", mediaUrl);
   body.append("folder", folder);
-  body.append("timestamp", String(timestamp));
-  body.append("api_key", apiKey);
-  body.append("signature", signature);
+  if (apiKey && apiSecret) {
+    const timestamp = Math.floor(Date.now() / 1000);
+    const { generateCloudinarySignature } = await import("@/lib/cloudinary");
+    const signature = await generateCloudinarySignature({ timestamp, folder });
+    body.append("timestamp", String(timestamp));
+    body.append("api_key", apiKey);
+    body.append("signature", signature);
+  } else {
+    body.append("upload_preset", uploadPreset);
+  }
   const response = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/video/upload`, { method: "POST", body });
   const data: any = await response.json().catch(() => ({}));
   if (!response.ok || !data.public_id) {
