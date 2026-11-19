@@ -30,7 +30,7 @@ function decryptToken(value: { iv: string; ciphertext: string; tag: string }) {
   return Buffer.concat([decipher.update(Buffer.from(value.ciphertext, "base64")), decipher.final()]).toString("utf8");
 }
 
-export async function registerInstagramAutomationAccounts(ownerKey: string, accounts: any[]) {
+export async function registerInstagramAutomationAccounts(ownerKey: string, accounts: any[], options: { subscribeWebhooks?: boolean } = {}) {
   const db = await getDb();
   const collection = db.collection("instagram_automation_accounts");
   const ownerKeyHash = instagramAutomationOwnerHash(ownerKey);
@@ -59,6 +59,7 @@ export async function registerInstagramAutomationAccounts(ownerKey: string, acco
       { upsert: true },
     );
 
+    if (options.subscribeWebhooks === false) continue;
     const subscription = new URL(`https://graph.facebook.com/${GRAPH_VERSION}/${pageId}/subscribed_apps`);
     subscription.searchParams.set("subscribed_fields", "messages,messaging_postbacks");
     subscription.searchParams.set("access_token", token);
@@ -81,6 +82,25 @@ export async function listInstagramAutomationAccounts(ownerKey: string) {
     )
     .sort({ username: 1 })
     .toArray();
+}
+
+export async function getInstagramAutomationAccountsWithTokens(ownerKey: string, igUserIds: string[]) {
+  return getInstagramAutomationAccountsWithTokensByHash(instagramAutomationOwnerHash(ownerKey), igUserIds);
+}
+
+export async function getInstagramAutomationAccountsWithTokensByHash(ownerKeyHash: string, igUserIds: string[]) {
+  const ids = [...new Set(igUserIds.filter((id) => typeof id === "string" && id.trim()).map((id) => id.trim()))];
+  if (!ids.length) return [];
+  const db = await getDb();
+  const rows = await db.collection("instagram_automation_accounts")
+    .find({ ownerKeyHash, igUserId: { $in: ids } })
+    .toArray();
+  return rows.map((row: any) => ({
+    igUserId: row.igUserId,
+    username: row.username,
+    pageId: row.pageId,
+    token: decryptToken(row.accessToken),
+  }));
 }
 
 export async function listInstagramAutomations(ownerKey: string, igUserId: string, triggerType: "dm" | "reel_comment" = "dm") {

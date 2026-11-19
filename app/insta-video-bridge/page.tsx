@@ -20,6 +20,7 @@ import {
   publishInstagramAndFacebookReel,
   uploadRemoteMediaToCloudinary,
 } from "@/lib/meta";
+import { getInstagramOwnerKey } from "@/lib/instagram-scheduler-client";
 
 interface InstagramAccount {
   id: string;
@@ -232,6 +233,10 @@ export default function InstaVideoBridgePage() {
   const [refreshing, setRefreshing] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [error, setError] = useState("");
+  const [autoEnabled, setAutoEnabled] = useState(false);
+  const [autoTargetIds, setAutoTargetIds] = useState<string[]>([]);
+  const [autoSaving, setAutoSaving] = useState(false);
+  const [autoStatus, setAutoStatus] = useState("");
 
   const selectedTargets = useMemo(
     () => targets.filter((target) => target.selected),
@@ -316,6 +321,21 @@ export default function InstaVideoBridgePage() {
       setLatestVideo(latestPlayable);
       setCaption(latestPlayable.caption || "");
       setTargets(nextTargets);
+      setAutoTargetIds(nextTargets.filter((target) => target.platform === "instagram").map((target) => target.id));
+      try {
+        const response = await fetch("/api/instagram/bridge-automation", {
+          headers: { "x-instagram-owner-key": getInstagramOwnerKey(true) },
+          cache: "no-store",
+        });
+        const data = await response.json();
+        if (response.ok && data.settings) {
+          setAutoEnabled(Boolean(data.settings.enabled));
+          setAutoTargetIds(Array.isArray(data.settings.targetIgUserIds) ? data.settings.targetIgUserIds : []);
+          setAutoStatus(data.settings.lastRunMessage || "");
+        }
+      } catch (settingsError) {
+        console.warn("[instagram-bridge-auto] Could not load auto repost settings:", settingsError);
+      }
     } catch (loadError: any) {
       console.error("[v0] Failed to load bridge data:", loadError);
       setPrimaryAccount(null);
@@ -539,6 +559,52 @@ export default function InstaVideoBridgePage() {
       setError(publishError?.message || "Publishing failed");
     } finally {
       setPublishing(false);
+    }
+  };
+
+  const saveAutoRepostSettings = async () => {
+    if (!primaryAccount || !latestVideo) return;
+    const selectedIds = autoTargetIds.filter((id) => id !== primaryAccount.id);
+    if (autoEnabled && selectedIds.length === 0) {
+      setAutoStatus("Kam se kam ek doosra Instagram target select karo.");
+      return;
+    }
+    setAutoSaving(true);
+    setAutoStatus("");
+    try {
+      const instagramAccounts = [
+        { ...primaryAccount, id: primaryAccount.id },
+        ...targets.filter((target) => target.platform === "instagram").map((target) => ({
+          id: target.id,
+          username: target.username,
+          token: target.token,
+          pageId: target.pageId,
+        })),
+      ];
+      const response = await fetch("/api/instagram/bridge-automation", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-instagram-owner-key": getInstagramOwnerKey(true),
+        },
+        body: JSON.stringify({
+          enabled: autoEnabled,
+          sourceIgUserId: primaryAccount.id,
+          baselineMediaId: latestVideo.id,
+          targetIgUserIds: selectedIds,
+          accounts: instagramAccounts,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Daily repost settings save nahi hui.");
+      setAutoStatus(autoEnabled
+        ? "Daily repost 5:00 PM IST ke liye ON hai. Sirf nayi Reel/video ek baar post hogi."
+        : "Daily repost automation OFF hai.");
+      if (data.warnings?.length) setAutoStatus(`${data.warnings.join(" ")} ${autoEnabled ? "Repost setting save hai." : ""}`);
+    } catch (saveError: any) {
+      setAutoStatus(saveError?.message || "Daily repost settings save nahi hui.");
+    } finally {
+      setAutoSaving(false);
     }
   };
 
@@ -768,6 +834,46 @@ export default function InstaVideoBridgePage() {
                     ))
                   )}
                 </div>
+              </div>
+
+              <div className="rounded-3xl border border-fuchsia-400/20 bg-fuchsia-400/[0.06] p-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-sm uppercase tracking-[0.22em] text-fuchsia-200/75">Daily auto repost</p>
+                    <h3 className="mt-2 text-xl font-semibold">Har din shaam 5:00 baje IST</h3>
+                    <p className="mt-2 text-sm text-white/55">Cron har 5 minute check karega. Nayi source Reel/video mile to target par ek baar post hogi; nayi post na mile to aaj skip karke kal phir check hoga.</p>
+                  </div>
+                  <label className="flex shrink-0 items-center gap-2 text-sm text-white/75">
+                    <input type="checkbox" checked={autoEnabled} onChange={(event) => setAutoEnabled(event.target.checked)} />
+                    ON
+                  </label>
+                </div>
+                <div className="mt-5 space-y-2">
+                  {targets.filter((target) => target.platform === "instagram").map((target) => (
+                    <label key={`auto-${target.id}`} className="flex items-center gap-3 rounded-xl border border-white/10 bg-black/15 p-3 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={autoTargetIds.includes(target.id)}
+                        onChange={(event) => setAutoTargetIds((current) => event.target.checked
+                          ? [...new Set([...current, target.id])]
+                          : current.filter((id) => id !== target.id))}
+                      />
+                      <span>@{target.username}</span>
+                    </label>
+                  ))}
+                  {targets.filter((target) => target.platform === "instagram").length === 0 && (
+                    <p className="text-sm text-amber-200/80">Auto repost ke liye kam se kam ek doosra Instagram account connect karo.</p>
+                  )}
+                </div>
+                <button
+                  onClick={() => void saveAutoRepostSettings()}
+                  disabled={autoSaving || !primaryAccount || !latestVideo}
+                  className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-fuchsia-600 px-4 py-3 text-sm font-semibold disabled:opacity-50"
+                >
+                  {autoSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                  Save daily repost settings
+                </button>
+                {autoStatus && <p className="mt-3 rounded-xl border border-white/10 bg-black/20 p-3 text-sm text-white/75">{autoStatus}</p>}
               </div>
 
               <div className="rounded-3xl border border-white/10 bg-slate-900/60 p-5">

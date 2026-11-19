@@ -38,7 +38,9 @@ function decryptToken(value: { iv: string; ciphertext: string; tag: string }) {
 }
 
 export async function insertInstagramScheduledPost(input: {
-  ownerKey: string;
+  ownerKey?: string;
+  ownerKeyHash?: string;
+  automationKey?: string;
   igUserId: string;
   username: string;
   accessToken: string;
@@ -50,18 +52,30 @@ export async function insertInstagramScheduledPost(input: {
   const collection = db.collection(COLLECTION);
   await collection.createIndex({ status: 1, scheduledFor: 1 });
   await collection.createIndex({ ownerKeyHash: 1, createdAt: -1 });
-  const result = await collection.insertOne({
-    ownerKeyHash: hashScheduleOwnerKey(input.ownerKey),
-    igUserId: input.igUserId,
-    username: input.username,
-    accessToken: encryptToken(input.accessToken),
-    mediaUrl: input.mediaUrl,
-    caption: input.caption,
-    scheduledFor: input.scheduledFor,
-    status: "scheduled",
-    createdAt: new Date(),
-  });
-  return result.insertedId.toString();
+  if (input.automationKey) await collection.createIndex({ automationKey: 1 }, { unique: true, sparse: true });
+  const ownerKeyHash = input.ownerKeyHash || (input.ownerKey ? hashScheduleOwnerKey(input.ownerKey) : "");
+  if (!ownerKeyHash) throw new Error("Schedule owner key missing hai.");
+  try {
+    const result = await collection.insertOne({
+      ownerKeyHash,
+      ...(input.automationKey ? { automationKey: input.automationKey } : {}),
+      igUserId: input.igUserId,
+      username: input.username,
+      accessToken: encryptToken(input.accessToken),
+      mediaUrl: input.mediaUrl,
+      caption: input.caption,
+      scheduledFor: input.scheduledFor,
+      status: "scheduled",
+      createdAt: new Date(),
+    });
+    return result.insertedId.toString();
+  } catch (error: any) {
+    if (input.automationKey && error?.code === 11000) {
+      const existing = await collection.findOne({ automationKey: input.automationKey }, { projection: { _id: 1 } });
+      if (existing?._id) return existing._id.toString();
+    }
+    throw error;
+  }
 }
 
 export async function listInstagramScheduledPosts(ownerKey: string) {
